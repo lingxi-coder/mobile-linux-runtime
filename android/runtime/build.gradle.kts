@@ -2,7 +2,7 @@ plugins { id("com.android.library"); id("org.jetbrains.kotlin.android"); id("mav
 extensions.configure<com.android.build.api.dsl.LibraryExtension> {
     namespace = "io.lingxi.mobilelinux.runtime"
     compileSdk = 37
-    defaultConfig { minSdk = 26 }
+    defaultConfig { minSdk = 26; consumerProguardFiles("consumer-rules.pro") }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     publishing { singleVariant("release") { withSourcesJar() } }
     sourceSets.getByName("main").assets.srcDir(providers.gradleProperty("ffiArtifacts").map { "$it/licenses" }.getOrElse("build/missing/licenses"))

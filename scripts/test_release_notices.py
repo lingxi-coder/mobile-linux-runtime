@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 import importlib.util
 import hashlib
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
 import zipfile
 import sys
 sys.dont_write_bytecode=True
-from release_notices import FILES,stage,verify
+from release_notices import FILES,registry_files,stage,verify
 ROOT=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('package_sdk',Path(__file__).with_name('package-sdk.py'))
 package=importlib.util.module_from_spec(spec);spec.loader.exec_module(package)
@@ -39,4 +40,17 @@ class NoticeTests(unittest.TestCase):
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
                 target=Path(temporary);stage(ROOT,target);(target/name).write_bytes(b'changed')
                 with self.assertRaisesRegex(ValueError,'license'):verify(ROOT,target)
+
+    def test_registry_notice_inventory_rejects_lock_and_text_drift(self):
+        self.assertEqual(len(registry_files(ROOT)), 240)  # manifest plus 239 texts
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            shutil.copy2(ROOT/'Cargo.lock',root/'Cargo.lock')
+            shutil.copytree(ROOT/'docs/licenses/rust',root/'docs/licenses/rust')
+            with (root/'Cargo.lock').open('a') as lock:
+                lock.write('\n[[package]]\nname = "unnoticed-crate"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "'+'0'*64+'"\n')
+            with self.assertRaisesRegex(ValueError,'inventory differs'):registry_files(root)
+            shutil.copy2(ROOT/'Cargo.lock',root/'Cargo.lock')
+            (root/'docs/licenses/rust/files/uniffi-0.28.3-0-uniffi-0.28.3-MPL-2.0.txt').write_bytes(b'tampered')
+            with self.assertRaisesRegex(ValueError,'committed digest'):registry_files(root)
 if __name__=='__main__':unittest.main()

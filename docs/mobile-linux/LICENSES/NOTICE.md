@@ -11,6 +11,7 @@ individual component license files and source notices remain authoritative.
 | Component | Recorded source / license evidence |
 | --- | --- |
 | SDK API, core, FFI and original wrappers | MIT OR Apache-2.0; preserved source metadata, with crate-specific exceptions |
+| Locked Rust registry dependencies | [Registry license inventory](../../licenses/rust/registry-manifest.json): all 132 `Cargo.lock` packages, exact crate checksums and 239 original license texts; [override attribution](../../licenses/rust/overrides.json) for UniFFI and winapi crates whose published tarballs omit the text |
 | `platform-pty` | [NOTICE](../../../crates/platform-pty/NOTICE): OpenAI Codex at `b8c2d29cc23b41fa7c7f5f5483e92fc71099635a`, Apache-2.0; Windows code originating from WezTerm, MIT |
 | Android OpenMinis PTY bridge | OpenMinis `9cf3a855fecd27bb5735b84cacbd56852a3ab8dd`, GPL-3.0-only; [exact license](../../../native/android/OPENMINIS-LICENSE) |
 | Android PRoot fork | OpenMinis/proot `8cf13e997cdc9472997aae19df8050c073c9a86c`, GPL-2.0-or-later; the pinned source's `COPYING` and source headers |

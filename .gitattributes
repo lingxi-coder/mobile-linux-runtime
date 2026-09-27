@@ -1,0 +1,2 @@
+# Preserve third-party license texts byte-for-byte, including CRLF and whitespace.
+docs/licenses/rust/** -text
