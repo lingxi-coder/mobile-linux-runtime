@@ -127,25 +127,28 @@ def main():
     for abi in abis:
         triple, machine = ("aarch64-linux-android", 183) if abi == "arm64-v8a" else ("x86_64-linux-android", 62)
         cc = tools / f"{triple}{args.android_api}-clang"
+        page_flag = "-Wl,-z,max-page-size=16384" if abi == "arm64-v8a" else ""
         with tempfile.TemporaryDirectory(prefix=f"native-{abi}-", dir=cache) as temporary:
             work = Path(temporary)
             proot = work / "proot"
             proot.mkdir()
             with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
                 tar.extractall(proot, filter="data")
+            if abi == "arm64-v8a":
+                run(["patch", "--batch", "--forward", "-p1", "-i", NATIVE / "patches/proot-loader-16k.patch"], cwd=proot, env=env)
             shutil.copy2(NATIVE / "proot_lingxi_network_policy.c", proot / "src/extension/port_switch/port_switch.c")
             talloc = work / "talloc"
             shutil.copytree(NATIVE / "talloc", talloc)
             run([cc, "-c", talloc / "talloc.c", "-o", talloc / "talloc.o", "-I" + str(talloc), "-fPIC", "-O2", "-std=gnu99", "-DHAVE_STDARG_H=1", "-DHAVE_VA_COPY=1", "-DHAVE_UNISTD_H=1", "-DHAVE_INTPTR_T=1"], env=env)
             run([tools / "llvm-ar", "rcs", talloc / "libtalloc.a", talloc / "talloc.o"], env=env)
-            run(["make", f"CC={cc}", f"STRIP={tools / 'llvm-strip'}", f"OBJCOPY={tools / 'llvm-objcopy'}", f"OBJDUMP={tools / 'llvm-objdump'}", "PROOT_UNBUNDLE_LOADER=/proc/self/fd", f"CPPFLAGS=-D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -DARG_MAX=131072 -I{talloc}", 'CFLAGS=-O2 -Wall -Wextra -fPIE -DPROOT_UNBUNDLE_LOADER=\\\"/proc/self/fd\\\"', f"LDFLAGS=-Wl,-z,noexecstack -pie {talloc / 'libtalloc.a'}", f"-j{args.jobs}"], cwd=proot / "src", env=env)
+            run(["make", f"CC={cc}", f"STRIP={tools / 'llvm-strip'}", f"OBJCOPY={tools / 'llvm-objcopy'}", f"OBJDUMP={tools / 'llvm-objdump'}", "PROOT_UNBUNDLE_LOADER=/proc/self/fd", f"CPPFLAGS=-D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -DARG_MAX=131072 -I{talloc}", 'CFLAGS=-O2 -Wall -Wextra -fPIE -DPROOT_UNBUNDLE_LOADER=\\\"/proc/self/fd\\\"', f"LDFLAGS=-Wl,-z,noexecstack -pie {page_flag} {talloc / 'libtalloc.a'}", f"-j{args.jobs}"], cwd=proot / "src", env=env)
             stage = work / "artifacts"
             stage.mkdir()
             shutil.copy2(proot / "src/proot", stage / "libproot.so")
             shutil.copy2(proot / "src/loader/loader", stage / "libproot-loader.so")
-            run([cc, NATIVE / "mobile_linux_policy_launcher.c", "-o", stage / "libmobile_linux_policy_launcher.so", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIE", "-pie", "-Wl,-z,noexecstack"], env=env)
+            run([cc, NATIVE / "mobile_linux_policy_launcher.c", "-o", stage / "libmobile_linux_policy_launcher.so", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIE", "-pie", "-Wl,-z,noexecstack", *([page_flag] if page_flag else [])], env=env)
             if not args.without_legacy_shell:
-                run([cc, NATIVE / "pty_bridge.c", "-o", stage / "libpty_bridge.so", "-shared", "-fPIC", "-O2", "-llog"], env=env)
+                run([cc, NATIVE / "pty_bridge.c", "-o", stage / "libpty_bridge.so", "-shared", "-fPIC", "-O2", "-llog", *([page_flag] if page_flag else [])], env=env)
                 run(["cargo", "ndk", "-t", abi, "--platform", "29", "build", "--locked", "--release", "-j", str(args.jobs), "-p", "platform-android-shellbin", "-p", "platform-android-minijail"], cwd=SDK, env=env)
                 candidates = sorted((cache / "cargo" / triple / "release/build").glob("platform-android-shellbin-*/out"), key=lambda p: p.stat().st_mtime, reverse=True)
                 shell_out = next((p for p in candidates if (p / "mksh").is_file() and (p / "toybox").is_file()), None)
@@ -156,6 +159,11 @@ def main():
                 data = artifact.read_bytes()
                 if data[:6] != b"\x7fELF\x02\x01" or struct.unpack_from("<H", data, 18)[0] != machine:
                     raise SystemExit("wrong ELF architecture: " + str(artifact))
+                if abi == "arm64-v8a":
+                    headers = subprocess.check_output([tools / "llvm-readelf", "-l", artifact], text=True)
+                    alignments = [int(line.split()[-1], 16) for line in headers.splitlines() if line.lstrip().startswith("LOAD ")]
+                    if not alignments or min(alignments) < 16384:
+                        raise SystemExit("Android ARM64 helper lacks 16 KiB page alignment: " + str(artifact))
                 dest = output / "jniLibs" / abi / artifact.name
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(artifact, dest)

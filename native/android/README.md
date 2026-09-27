@@ -9,7 +9,10 @@ never patched by the builder.
 The PRoot input is archived from revision
 `8cf13e997cdc9472997aae19df8050c073c9a86c`. PTY/talloc are extracted from OpenMinis
 `9cf3a855fecd27bb5735b84cacbd56852a3ab8dd`. PRoot receives the SDK network overlay
-only in a temporary build directory. `PtyBridge.kt` retains its JNI class name
+and the pinned `patches/proot-loader-16k.patch` only in a temporary build directory.
+The builder forces 16 KiB ELF page alignment for all ARM64 helpers and verifies
+every PT_LOAD segment before publication; this also supports 16 KiB Android devices
+when the caller builds with an older NDK 27 revision. `PtyBridge.kt` retains its JNI class name
 `com.openminis.app.sandbox.PtyBridge`, matching the pinned C symbol exports.
 It belongs to the optional legacy host-shell API; the PRoot guest backend uses
 the independent Rust `platform-pty` implementation.

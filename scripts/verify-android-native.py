@@ -26,7 +26,7 @@ def main():
     if pins.get("schema_version") != 1 or set(pins["components"]) != {"openminis", "proot", "talloc", "pty_bridge"}:
         fail("Android-only source pin schema/components diverged")
     sources = pins.get("sdk_sources", {})
-    required_sources = {"mobile_linux_policy_launcher.c", "proot_lingxi_network_policy.c", "pty_bridge.c", "talloc/talloc.c", "talloc/talloc.h", "talloc/replace.h", "PtyBridge.kt"}
+    required_sources = {"mobile_linux_policy_launcher.c", "proot_lingxi_network_policy.c", "pty_bridge.c", "talloc/talloc.c", "talloc/talloc.h", "talloc/replace.h", "PtyBridge.kt", "patches/proot-loader-16k.patch"}
     if set(sources) != required_sources: fail("incomplete Android SDK source inventory")
     for relative, expected in sources.items():
         path = SDK / "native/android" / relative
@@ -92,6 +92,17 @@ def main():
         if path.stat().st_size != record.get("size_bytes") or sha(path) != record.get("sha256"): fail("native digest mismatch: " + relative)
         data = path.read_bytes(); machine = 183 if record["abi"] == "arm64-v8a" else 62
         if data[:6] != b"\x7fELF\x02\x01" or struct.unpack_from("<H", data, 18)[0] != machine: fail("native ELF ABI mismatch: " + relative)
+        if record["abi"] == "arm64-v8a":
+            if len(data) < 64: fail("truncated ARM64 ELF header: " + relative)
+            phoff = struct.unpack_from("<Q", data, 32)[0]
+            phsize, phcount = struct.unpack_from("<HH", data, 54)
+            if phsize < 56 or not phcount or phoff + phsize * phcount > len(data):
+                fail("invalid ARM64 ELF program headers: " + relative)
+            loads = [struct.unpack_from("<Q", data, phoff + index * phsize + 48)[0]
+                     for index in range(phcount)
+                     if struct.unpack_from("<I", data, phoff + index * phsize)[0] == 1]
+            if not loads or min(loads) < 16384:
+                fail("Android ARM64 helper lacks 16 KiB page alignment: " + relative)
     expected_paths = {f"jniLibs/{abi}/{name}" for abi in abis for name in expected_names}
     actual_paths = {p.relative_to(root).as_posix() for p in (root / "jniLibs").rglob("*") if p.is_file() or p.is_symlink()}
     if seen != expected_paths or actual_paths != expected_paths: fail("native-support artifact set differs from declared features")

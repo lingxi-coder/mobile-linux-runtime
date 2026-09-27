@@ -58,8 +58,23 @@ class RealRuntimeSmokeTest {
         }
 
     @Test(timeout = 900_000)
-    fun verifiedRootfsRunsNetworkRawPtyCancelAndRestart() = runBlocking {
+    fun verifiedRootfsRunsNetworkRawPtyCancelAndRestart(): Unit {
+      runBlocking {
         val inputs = File(context.filesDir, "sdk-smoke-input")
+        val testAssets = InstrumentationRegistry.getInstrumentation().context.assets
+        if (testAssets.list("sdk-smoke-input")?.contains("rootfs-manifest.json") == true) {
+            inputs.deleteRecursively()
+            check(inputs.mkdirs())
+            for ((assetName, name) in listOf(
+                "rootfs-archive.bin" to "rootfs.tar.gz",
+                "rootfs-manifest.json" to "rootfs-manifest.json",
+                "rootfs.spdx.json" to "rootfs.spdx.json",
+            )) {
+                testAssets.open("sdk-smoke-input/$assetName").use { source ->
+                    File(inputs, name).outputStream().use { destination -> source.copyTo(destination) }
+                }
+            }
+        }
         val manifestFile = File(inputs, "rootfs-manifest.json")
         check(manifestFile.isFile) { "Stage real verified rootfs inputs into files/sdk-smoke-input before instrumentation" }
         val manifestText = manifestFile.readText()
@@ -242,10 +257,12 @@ class RealRuntimeSmokeTest {
             assertEquals(0, restarted.exitCode)
             assertEquals("SDK_RESTARTED", restarted.stdout)
             passed("shutdown-recreate-restart")
-            File(context.filesDir, "sdk-smoke-evidence.json").writeText(JSONObject().apply {
+            val evidence = JSONObject().apply {
                 put("deviceAbi", Build.SUPPORTED_ABIS.first()); put("sdkInt", Build.VERSION.SDK_INT)
                 put("rootfsSha256", archiveSha); put("checks", org.json.JSONArray(checks))
-            }.toString(2))
+            }
+            File(context.filesDir, "sdk-smoke-evidence.json").writeText(evidence.toString(2))
+            Log.i("MobileLinuxSdkSmoke", "SDK_SMOKE_EVIDENCE=" + evidence.toString())
         } catch (failure: Throwable) {
             primaryFailure = failure
             throw failure
@@ -262,5 +279,6 @@ class RealRuntimeSmokeTest {
                 runtime.handle.destroy()
             }
         }
+      }
     }
 }

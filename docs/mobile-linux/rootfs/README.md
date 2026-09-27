@@ -12,10 +12,11 @@ read-only; all mutable staging and compilation happen in explicit external paths
 Every APK is hash-checked before offline installation. Node is built from its
 pinned source; matching cache provenance may reuse compiled output. The build
 runs actual Node, TypeScript CLI and LSP probes before producing release evidence.
-The x86 historical blocked closure can be tested only with the explicit
-`--verify-blocked-closure` candidate mode. Default release acceptance stays closed
-until successful native build evidence is recorded; candidate mode never changes
-source pins automatically.
+The x86 closure was promoted after native Ubuntu run `36329480255` verified the
+offline APK installation and source-built Node toolchain. Its exact producer
+receipt and archive digest are committed under `docs/mobile-linux/releases/3.24.2/x86_64`.
+The historical `--verify-blocked-closure` option remains for auditing an older
+blocked pin set; it never changes source pins automatically.
 
 Archives include interactive package tools, Git, OpenSSH, Python, CA certificates
 and the pinned Node/npm/pnpm/TypeScript toolchains. Optional dependency bundles

@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
     inputs:
       verify_blocked_closure:
-        description: "Build-only verification of the historically blocked x86 closure; never promotes release pins"
+        description: "Rebuild the x86 rootfs; enable only to audit a historical blocked pin set"
         required: true
-        default: true
+        default: false
         type: boolean
 jobs:
   x86-rootfs:
