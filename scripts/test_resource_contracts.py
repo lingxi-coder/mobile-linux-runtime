@@ -135,6 +135,7 @@ class ResourceContracts(unittest.TestCase):
         self.assertTrue(android, "CI must actually build Android SDK")
         self.assertEqual(set(android), {"26"})
         self.assertEqual(ios, ["18.0", "18.0"], "Rust and native iOS jobs must explicitly use iOS18")
+        self.assertEqual(workflow.count("DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer"), 3)
         self.assertIn("--android-api 26", workflow)
         self.assertNotIn("--kind sdk", workflow)
         self.assertIn("scripts/build-ffi.py --platform ios --release", workflow)

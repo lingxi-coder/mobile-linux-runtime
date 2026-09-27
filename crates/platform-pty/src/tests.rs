@@ -374,8 +374,13 @@ async fn rejects_zero_terminal_dimensions() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conpty_raw_interaction_and_wait_are_lossless() -> anyhow::Result<()> {
     assert!(crate::conpty_supported(), "CI host must provide ConPTY");
+    // Windows PowerShell uses .NET Framework: UTF-8 InputEncoding selects
+    // ReadFile's legacy cooked-codepage path. Unicode selects ReadConsoleW;
+    // ConPTY still receives UTF-8 bytes from the terminal side below.
+    // https://github.com/microsoft/referencesource/blob/main/mscorlib/system/console.cs
     let mut spawned = spawn_powershell(
-        "$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); \
+        "[Console]::InputEncoding = [Text.Encoding]::Unicode; \
+         $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); \
          Write-Output '__READY__'; \
          $line = [Console]::In.ReadLine(); \
          Write-Output ('__GOT__' + $line)",
@@ -384,10 +389,10 @@ async fn conpty_raw_interaction_and_wait_are_lossless() -> anyhow::Result<()> {
     .await?;
     read_until(&mut spawned.stdout_rx, b"__READY__").await?;
 
-    spawned
-        .session
-        .write("你好, Windows ConPTY\n".as_bytes().to_vec())
-        .await?;
+    let input = "你好, Windows ConPTY\n".as_bytes();
+    // Split inside a UTF-8 character to exercise transport chunk boundaries.
+    spawned.session.write(input[..2].to_vec()).await?;
+    spawned.session.write(input[2..].to_vec()).await?;
     let marker = "__GOT__你好, Windows ConPTY";
     let output = read_until(&mut spawned.stdout_rx, marker.as_bytes()).await?;
     assert!(terminal_text(&output).contains(marker));

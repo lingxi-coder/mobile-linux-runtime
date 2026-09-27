@@ -6,6 +6,13 @@ import MobileLinuxRuntimeBindings
 struct SDKDeviceSmoke {
     struct Failure: Error { let message: String }
     private func require(_ condition: Bool, _ message: String) throws { if !condition { throw Failure(message: message) } }
+    private func archiveDigest(in manifest: [String: Any]) throws -> String {
+        guard let digest = manifest["rootfs_zip_sha256"] as? String,
+              digest.count == 64, digest.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+            throw Failure(message: "missing or invalid rootfs digest")
+        }
+        return digest
+    }
     private func command(_ script: String, network: NetworkPolicyFfi = .disabled, memory: UInt32? = nil, timeout: UInt64? = 10_000) -> MobileLinuxCommandRequestFfi {
         MobileLinuxCommandRequestFfi(command: "/bin/sh", args: ["-c", script], cwd: nil, env: [], stdin: nil,
             timeoutMs: timeout, network: network,
@@ -17,8 +24,9 @@ struct SDKDeviceSmoke {
         throw Failure(message: "Real embedded iSH execution requires an arm64 physical device")
         #else
         let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: resources.appendingPathComponent("manifest.json"))) as! [String: Any]
+        let archiveHash = try archiveDigest(in: manifest)
         let files = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("sdk-device-validation")
+            .appendingPathComponent("sdk-device-validation-" + String(archiveHash.prefix(16)))
         let workspace = files.appendingPathComponent("workspace-one")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         var config = RuntimeConfig(platform: .ios, managedRoot: files.appendingPathComponent("runtime").path,
