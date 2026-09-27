@@ -9,3 +9,8 @@
 **/.build/
 **/build/
 /local.properties
+/ios/Artifacts/
+**/__pycache__/
+*.pyc
+/examples/ios/*.xcodeproj/
+/examples/ios/*.xcworkspace/

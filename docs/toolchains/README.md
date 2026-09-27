@@ -6,4 +6,4 @@ Build a rootfs with `scripts/mobile-linux/build-rootfs.sh --arch aarch64 --outpu
 
 Optional JavaScript dependencies are caller-owned. Use `build-node-modules.sh --arch aarch64 --rootfs /external/rootfs/aarch64/rootfs.tar.gz --bundle-dir /caller/dependency-bundle --lock-sha256 <SHA256> --output-dir /external/modules --cache-dir /external/dependency-cache`. The bundle contains package.json, pnpm-lock.yaml and any workspace inputs; it must not contain symlinks. This generic producer does not choose a template, renderer, plugin or Local App profile. The caller retains those checks.
 
-Installed guest paths and provenance schemas remain compatible with existing rootfs images; extraction does not rename `/opt/lingxi` paths or change rootfs bytes.
+Installed guest paths and provenance schemas remain compatible with existing rootfs images; extraction does not rename `/opt/lingxi` paths. Original caches and source archives remain unchanged. New release staging normalizes only the two documented interpreter aliases to same-byte hardlinks and records the transformation; the resulting archive has its own verified SHA256.

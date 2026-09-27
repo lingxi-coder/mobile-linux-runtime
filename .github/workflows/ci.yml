@@ -1,0 +1,186 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main, "codex/**"]
+  workflow_dispatch:
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  script-gates:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Snapshot immutable source
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+      - name: Execute every SDK gate
+        run: bash scripts/check-all.sh
+      - name: Artifact provenance rejection tests
+        run: python3 scripts/test_artifact_identity.py
+      - name: Verify real gate trigger chain
+        run: python3 scripts/test_gate_triggers.py
+      - name: Verify source remained unchanged
+        if: always()
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+
+  core-and-pty:
+    name: Core and PTY (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../sdk-target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - name: Core behavior and real PTY lifecycle
+        run: cargo test --locked -p mobile-linux-api -p mobile-linux-core -p platform-pty --no-fail-fast
+      - name: Android and iOS backend behavior on Unix hosts
+        if: runner.os != 'Windows'
+        run: cargo test --locked -p mobile-linux-android -p mobile-linux-ios --no-fail-fast
+
+  ffi-features:
+    name: FFI features (${{ matrix.features }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["--no-default-features", "--all-features"]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../sdk-ffi-target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - name: SDK FFI without any product host
+        run: cargo test --locked -p mobile-linux-ffi ${{ matrix.features }} --no-fail-fast
+
+  android:
+    name: Android native and SDK (${{ matrix.abi }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+          - abi: x86_64
+            target: x86_64-linux-android
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../sdk-android-target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Pinned Android toolchain
+        run: |
+          sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          cargo install cargo-ndk --locked --version '=4.1.2'
+      - name: Snapshot immutable source
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+      - name: Build standalone native-support helpers
+        env:
+          SDK_ABI: ${{ matrix.abi }}
+        run: bash scripts/build-android-native.sh --ndk "$ANDROID_NDK_HOME" --output-dir "$RUNNER_TEMP/android-native" --cache-dir "$RUNNER_TEMP/android-cache" --abi "$SDK_ABI" --android-api 26
+      - name: Build SDK shared library against Android NDK
+        env:
+          SDK_ABI: ${{ matrix.abi }}
+        run: cargo ndk -t "$SDK_ABI" --platform 26 build --locked -p mobile-linux-ffi --all-features
+      - name: Verify source remained unchanged
+        if: always()
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+
+  ios-rust:
+    name: iOS SDK Rust (${{ matrix.target }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-ios]
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../sdk-ios-target
+      IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build standalone SDK slice
+        run: cargo build --locked -p mobile-linux-ffi --all-features --target ${{ matrix.target }}
+
+  ios-native:
+    name: iOS native-support and SDK FFI XCFrameworks
+    runs-on: macos-14
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../sdk-ios-native-target
+      IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+      - name: Snapshot immutable source
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+      - name: Build separate native-support and SDK FFI distributions
+        run: |
+          bash scripts/build-ios-xcframework.sh --output "$RUNNER_TEMP/ios-native-support" --cache "$RUNNER_TEMP/ios-cache" --kind native-support
+          python3 scripts/build-ffi.py --platform ios --release --output-dir "$RUNNER_TEMP/ios-ffi" --target-dir "$CARGO_TARGET_DIR"
+      - name: Verify source remained unchanged
+        if: always()
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+
+  android-installer-tests:
+    name: Android installer behavior
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-37
+      - name: Snapshot immutable source
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+      - name: Existing Kotlin installer tests
+        run: ./android/gradlew --project-dir android --project-cache-dir "$RUNNER_TEMP/sdk-gradle-cache" -PsdkBuildDir="$RUNNER_TEMP/sdk-gradle" -Pkotlin.project.persistent.dir="$RUNNER_TEMP/sdk-kotlin" --no-daemon :installer:testDebugUnitTest
+      - name: Verify source remained unchanged
+        if: always()
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+
+  ios-native-tests:
+    name: Swift native lifecycle regression tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test generator
+        run: brew install xcodegen
+      - name: Snapshot immutable source
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+      - name: Stage native test project outside checkout
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk-native-tests"
+          cp -R ios/NativeSupport ios/Tests "$RUNNER_TEMP/sdk-native-tests/"
+          xcodegen generate --spec "$RUNNER_TEMP/sdk-native-tests/Tests/project.yml"
+      - name: Existing Swift native regression tests
+        run: |
+          simulator="$(xcrun simctl list devices available --json | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(x["udid"] for runtime,devices in d["devices"].items() if "iOS-" in runtime and int(runtime.split("iOS-")[1].split("-")[0]) >= 18 for x in devices if x["name"].startswith("iPhone")))')"
+          xcodebuild test -project "$RUNNER_TEMP/sdk-native-tests/Tests/MobileLinuxNativeTests.xcodeproj" -scheme MobileLinuxNativeTests -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath "$RUNNER_TEMP/sdk-native-tests/derived-data" CODE_SIGNING_ALLOWED=NO
+      - name: Verify source remained unchanged
+        if: always()
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
