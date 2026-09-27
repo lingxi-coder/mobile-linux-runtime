@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -25,7 +26,12 @@ def main():
     args = parser.parse_args()
     rootfs = args.rootfs_dir.resolve()
     report = args.report_dir.resolve()
+    if report == SDK or report.is_relative_to(SDK):
+        raise SystemExit("report-dir must be outside the SDK source checkout")
     report.mkdir(parents=True, exist_ok=True)
+    project = report / "project"
+    shutil.copytree(EXAMPLE, project, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("build", ".gradle", ".kotlin", "__pycache__"))
     manifest_path = rootfs / "evidence/rootfs-manifest.json"
     manifest = json.loads(manifest_path.read_text())
     archive = rootfs / "rootfs.tar.gz"
@@ -33,13 +39,14 @@ def main():
     if manifest["archive"]["sha256"] != actual_sha or manifest["platform"] != "android":
         raise SystemExit("rootfs archive bytes or platform differ from verified Android manifest")
     with (report / "build.log").open("w") as log:
-        run([SDK / "android/gradlew", "-p", EXAMPLE,
+        run([SDK / "android/gradlew", "-p", project, "--project-cache-dir", report / "gradle-cache",
+             f"-Pkotlin.project.persistent.dir={report / 'kotlin'}",
              f"-PsdkMavenRepo={args.maven_repo.resolve()}", "--refresh-dependencies",
              ":app:assembleDebug", ":app:assembleDebugAndroidTest", "--console=plain"],
-            cwd=EXAMPLE, stdout=log, stderr=subprocess.STDOUT)
+            cwd=project, stdout=log, stderr=subprocess.STDOUT)
     adb = [str(args.adb), "-s", args.serial]
     for apk in ("debug/app-debug.apk", "androidTest/debug/app-debug-androidTest.apk"):
-        run([*adb, "install", "-r", EXAMPLE / "app/build/outputs/apk" / apk])
+        run([*adb, "install", "-r", project / "app/build/outputs/apk" / apk])
     run([*adb, "shell", "run-as", PACKAGE, "mkdir", "-p", "files/sdk-smoke-input"])
     for source, name in [(archive, "rootfs.tar.gz"), (manifest_path, "rootfs-manifest.json"),
                          (rootfs / "evidence/rootfs.spdx.json", "rootfs.spdx.json")]:

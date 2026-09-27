@@ -189,6 +189,36 @@ impl Drop for CallerCancellation {
     }
 }
 
+#[derive(Clone)]
+struct StreamDelivery {
+    task: Arc<TaskControl>,
+    stopped: tokio::sync::watch::Receiver<bool>,
+    deadline: tokio::time::Instant,
+    timed_out: Arc<AtomicBool>,
+}
+
+impl StreamDelivery {
+    async fn deliver(
+        &mut self,
+        callback: impl std::future::Future<Output = Result<(), mobile_linux_api::ProcessError>>,
+    ) -> Result<(), MobileLinuxError> {
+        tokio::select! {
+            biased;
+            () = async {
+                while !self.task.cancel_requested.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => Ok(()),
+            _ = wait_raw_stop(&mut self.stopped) => Ok(()),
+            () = tokio::time::sleep_until(self.deadline) => {
+                self.timed_out.store(true, Ordering::Release);
+                Ok(())
+            }
+            result = callback => result.map_err(MobileLinuxError::from),
+        }
+    }
+}
+
 struct SnapshotCleanup(Option<PathBuf>);
 
 impl Drop for SnapshotCleanup {
@@ -429,6 +459,8 @@ struct RuntimeState {
     next_id: AtomicU64,
     next_sequence: AtomicU64,
     booted: AtomicBool,
+    #[cfg(test)]
+    receipt_start_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
 }
 
 #[derive(Clone)]
@@ -462,6 +494,8 @@ impl AndroidProotRuntime {
                 next_id: AtomicU64::new(1),
                 next_sequence: AtomicU64::new(1),
                 booted: AtomicBool::new(false),
+                #[cfg(test)]
+                receipt_start_barrier: Mutex::new(None),
             }),
         }
     }
@@ -719,6 +753,13 @@ impl AndroidProotRuntime {
             }
         };
         let network_policy_enforced = if let Some(path) = receipt_path.as_deref() {
+            #[cfg(test)]
+            {
+                let barrier = self.state.receipt_start_barrier.lock().unwrap().clone();
+                if let Some(barrier) = barrier {
+                    barrier.wait().await;
+                }
+            }
             match wait_for_network_policy_receipt(
                 &mut child,
                 path,
@@ -1020,7 +1061,7 @@ impl AndroidProotRuntime {
         sink: Option<Arc<dyn ProcessStreamSink>>,
         mount_mode: ForegroundMountMode,
         mounts: Vec<MountSpec>,
-        task: (&str, &TaskControl),
+        task: (&str, &Arc<TaskControl>),
         mut stopped: tokio::sync::watch::Receiver<bool>,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
         let (id, task) = task;
@@ -1063,6 +1104,17 @@ impl AndroidProotRuntime {
             .stderr
             .take()
             .ok_or_else(|| MobileLinuxError::Io("PRoot stderr unavailable".to_string()))?;
+        let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+        let deadline = tokio::time::Instant::now() + timeout;
+        let stream_timed_out = Arc::new(AtomicBool::new(false));
+        let (stop_delivery, delivery_stopped) = tokio::sync::watch::channel(false);
+        let delivery = StreamDelivery {
+            task: task.clone(),
+            stopped: delivery_stopped,
+            deadline,
+            timed_out: stream_timed_out.clone(),
+        };
+        let stdout_delivery = delivery.clone();
         let stdout_runtime = self.clone();
         let stdout_id = id.to_owned();
         let stdout_sink = sink.clone();
@@ -1073,11 +1125,10 @@ impl AndroidProotRuntime {
                     MobileLinuxEventKind::StdoutLine { line: line.clone() },
                 );
                 let sink = stdout_sink.clone();
+                let mut delivery = stdout_delivery.clone();
                 async move {
                     if let Some(sink) = sink {
-                        sink.stdout_line(line)
-                            .await
-                            .map_err(MobileLinuxError::from)?;
+                        delivery.deliver(sink.stdout_line(line)).await?;
                     }
                     Ok(())
                 }
@@ -1095,11 +1146,10 @@ impl AndroidProotRuntime {
                     },
                 );
                 let sink = sink.clone();
+                let mut delivery = delivery.clone();
                 async move {
                     if let Some(sink) = sink {
-                        sink.stderr_chunk(chunk)
-                            .await
-                            .map_err(MobileLinuxError::from)?;
+                        delivery.deliver(sink.stderr_chunk(chunk)).await?;
                     }
                     Ok(())
                 }
@@ -1109,7 +1159,6 @@ impl AndroidProotRuntime {
         // Both output drains are live before input can fill either pipe. The
         // writer runs concurrently with timeout and resident-memory enforcement.
         let stdin_writer = StdinWriter::start(child.stdin.take(), request.stdin);
-        let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
         let waited = if task.cancel_requested.load(Ordering::Acquire) {
             terminate_and_reap(&mut child, pid)
                 .await
@@ -1120,11 +1169,19 @@ impl AndroidProotRuntime {
                 _ = wait_raw_stop(&mut stopped) => {
                     terminate_and_reap(&mut child, pid).await.map(ChildWaitOutcome::Exited)
                 }
-                result = wait_for_child(&mut child, pid, Some(timeout), memory_limit_bytes) => result,
+                result = wait_for_child(&mut child, pid, Some(deadline.saturating_duration_since(tokio::time::Instant::now())), memory_limit_bytes) => result,
             }
         };
+        // Interrupted execution must not wait for foreign callbacks to return.
+        // Readers continue capturing/draining bytes after delivery is cancelled.
+        // A normal child exit does not truncate a slow, still-valid sink.
+        if task.cancel_requested.load(Ordering::Acquire)
+            || !matches!(&waited, Ok(ChildWaitOutcome::Exited(_)))
+        {
+            stop_delivery.send_replace(true);
+        }
         let stdin_result = stdin_writer.finish().await;
-        let (exit_code, timed_out, memory_limit_exceeded) = match waited {
+        let (exit_code, mut timed_out, memory_limit_exceeded) = match waited {
             Ok(ChildWaitOutcome::Exited(status)) => (status.code().unwrap_or(-1), false, None),
             Ok(ChildWaitOutcome::TimedOut) => (-1, true, None),
             Ok(ChildWaitOutcome::MemoryLimitExceeded(diagnostic)) => (-1, false, Some(diagnostic)),
@@ -1146,6 +1203,7 @@ impl AndroidProotRuntime {
         };
         let stdout = join_reader(stdout_task, "stdout").await?;
         let stderr = join_reader(stderr_task, "stderr").await?;
+        timed_out |= stream_timed_out.load(Ordering::Acquire);
         let cancelled = task.cancel_requested.load(Ordering::Acquire);
         if exit_code == 0 && !cancelled && !timed_out {
             if let Err(error) = stdin_result {
@@ -3508,13 +3566,66 @@ mod tests {
             .expect("shutdown after cancelled caller");
     }
 
+    fn install_receipt_startup_barrier(runtime: &AndroidProotRuntime) -> Arc<tokio::sync::Barrier> {
+        let launcher = runtime
+            .state
+            .config
+            .managed_root
+            .join("bin/libmobile_linux_policy_launcher.so");
+        fs::write(&launcher, b"#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$LINGXI_ENFORCEMENT_RECEIPT_PATH\"\nshift\nexec \"$@\"\n").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        *runtime.state.receipt_start_barrier.lock().unwrap() = Some(barrier.clone());
+        barrier
+    }
+
+    async fn wait_for_pending_receipt(runtime: &AndroidProotRuntime) -> Arc<TaskControl> {
+        io_test_timeout(async {
+            loop {
+                let task = runtime.state.tasks.lock().unwrap().values().next().cloned();
+                let receipt_ready = fs::read_dir(runtime.state.config.managed_root.join("tmp"))
+                    .is_ok_and(|entries| {
+                        entries.flatten().any(|entry| {
+                            fs::read(entry.path()).is_ok_and(|bytes| bytes == b"disabled\n")
+                        })
+                    });
+                if let Some(task) = task.filter(|_| receipt_ready) {
+                    assert_eq!(
+                        task.pid.load(Ordering::Acquire),
+                        0,
+                        "owner must be paused before receipt acceptance"
+                    );
+                    return task;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+    }
+
+    async fn shutdown_through_receipt_barrier(
+        runtime: &AndroidProotRuntime,
+        task: &TaskControl,
+        barrier: &tokio::sync::Barrier,
+    ) {
+        let stopping = runtime.clone();
+        let shutdown = tokio::spawn(async move { stopping.shutdown().await });
+        io_test_timeout(async {
+            while !task.cancel_requested.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        barrier.wait().await;
+        io_test_timeout(shutdown)
+            .await
+            .unwrap()
+            .expect("shutdown must own pending startup");
+    }
+
     async fn cancel_pending_foreground_startup(shutdown: bool) {
         let (temp, runtime) = runtime();
-        let launcher = temp
-            .path()
-            .join("runtime/bin/libmobile_linux_policy_launcher.so");
-        fs::write(&launcher, b"#!/bin/sh\nsleep 0.2\nprintf '%s\\n' \"$1\" > \"$LINGXI_ENFORCEMENT_RECEIPT_PATH\"\nshift\nexec \"$@\"\n").unwrap();
-        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        let barrier = install_receipt_startup_barrier(&runtime);
         let mut request = request();
         request.command = "/bin/sh".into();
         request.args = vec!["-c".into(), "sleep 30".into()];
@@ -3522,29 +3633,14 @@ mod tests {
         request.stdin = Some("x".repeat(2 * 1024 * 1024));
         let execution_runtime = runtime.clone();
         let caller = tokio::spawn(async move { execution_runtime.run(request).await });
-        let task = io_test_timeout(async {
-            loop {
-                let task = runtime.state.tasks.lock().unwrap().values().next().cloned();
-                if let Some(task) = task {
-                    assert_eq!(
-                        task.pid.load(Ordering::Acquire),
-                        0,
-                        "exercise receipt startup"
-                    );
-                    break task;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
+        let task = wait_for_pending_receipt(&runtime).await;
         if shutdown {
-            io_test_timeout(runtime.shutdown())
-                .await
-                .expect("shutdown must own pending startup");
+            shutdown_through_receipt_barrier(&runtime, &task, &barrier).await;
             assert!(io_test_timeout(caller).await.unwrap().unwrap().cancelled);
         } else {
             caller.abort();
             assert!(caller.await.unwrap_err().is_cancelled());
+            barrier.wait().await;
         }
         io_test_timeout(async {
             while !task.terminal_emitted.load(Ordering::Acquire) {
@@ -3619,11 +3715,7 @@ mod tests {
 
     async fn cancel_pending_handle_startup(raw: bool, shutdown: bool) {
         let (temp, runtime) = runtime();
-        let launcher = temp
-            .path()
-            .join("runtime/bin/libmobile_linux_policy_launcher.so");
-        fs::write(&launcher, b"#!/bin/sh\nsleep 0.2\nprintf '%s\\n' \"$1\" > \"$LINGXI_ENFORCEMENT_RECEIPT_PATH\"\nshift\nexec \"$@\"\n").unwrap();
-        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        let barrier = install_receipt_startup_barrier(&runtime);
         let source = temp.path().join("workspace");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("sample"), b"private snapshot").unwrap();
@@ -3651,21 +3743,7 @@ mod tests {
                     .map(|_| ())
             }
         });
-        let task = io_test_timeout(async {
-            loop {
-                let task = runtime.state.tasks.lock().unwrap().values().next().cloned();
-                // Wait until the receipt file exists: the real child is alive,
-                // but neither API has published a PID/handle to its caller yet.
-                let receipt_exists = fs::read_dir(temp.path().join("runtime/tmp"))
-                    .is_ok_and(|mut entries| entries.next().is_some());
-                if let Some(task) = task.filter(|_| receipt_exists) {
-                    assert_eq!(task.pid.load(Ordering::Acquire), 0);
-                    break task;
-                }
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-        })
-        .await;
+        let task = wait_for_pending_receipt(&runtime).await;
         if raw {
             assert!(temp
                 .path()
@@ -3675,13 +3753,12 @@ mod tests {
                 .is_file());
         }
         if shutdown {
-            io_test_timeout(runtime.shutdown())
-                .await
-                .expect("shutdown during handle startup");
+            shutdown_through_receipt_barrier(&runtime, &task, &barrier).await;
             assert!(io_test_timeout(caller).await.unwrap().is_err());
         } else {
             caller.abort();
             assert!(caller.await.unwrap_err().is_cancelled());
+            barrier.wait().await;
         }
         wait_cancelled_startup(&runtime, &task).await;
         assert_eq!(
@@ -3834,6 +3911,240 @@ mod tests {
     #[tokio::test]
     async fn raw_unaccepted_handle_is_cancelled_and_reaped() {
         cancel_unaccepted_handle(true).await;
+    }
+
+    struct PendingStreamSink {
+        entered: tokio::sync::Notify,
+        block_stdout: bool,
+    }
+
+    #[async_trait]
+    impl ProcessStreamSink for PendingStreamSink {
+        async fn stdout_line(&self, _: String) -> Result<(), mobile_linux_api::ProcessError> {
+            if self.block_stdout {
+                self.entered.notify_one();
+                std::future::pending().await
+            } else {
+                Ok(())
+            }
+        }
+        async fn stderr_chunk(&self, _: Vec<u8>) -> Result<(), mobile_linux_api::ProcessError> {
+            if !self.block_stdout {
+                self.entered.notify_one();
+                std::future::pending().await
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    async fn interrupt_pending_stream_sink(mode: &str) {
+        let (temp, runtime) = runtime();
+        let barrier = install_receipt_startup_barrier(&runtime);
+        let ready = temp.path().join("stream-fixture-ready");
+        let sink = Arc::new(PendingStreamSink {
+            entered: tokio::sync::Notify::new(),
+            block_stdout: mode != "shutdown",
+        });
+        let mut request = request();
+        request.command = "/bin/sh".into();
+        request.args = vec!["-c".into(), format!(
+            "printf 'first\\nsecond\\n'; printf 'err\\000\\377' >&2; : > \"$SDK_TEST_STREAM_READY\"; {}",
+            if mode == "shutdown" { "exit 0" } else { "sleep 30" }
+        )];
+        request.network = NetworkPolicy::Disabled;
+        request.env.insert(
+            "SDK_TEST_STREAM_READY".into(),
+            ready.to_string_lossy().into_owned(),
+        );
+        if mode == "timeout" {
+            request.timeout_ms = Some(2000);
+        }
+        let running = runtime.clone();
+        let stream = sink.clone();
+        let caller = tokio::spawn(async move { running.run_streaming(request, stream).await });
+        // The owner pauses before its real execution deadline. Prepare both
+        // pipe payloads first, so this is a callback-timeout test rather than a
+        // race against process scheduling under a busy parallel test suite.
+        io_test_timeout(async {
+            while !ready.is_file() {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+        barrier.wait().await;
+        io_test_timeout(sink.entered.notified()).await;
+        // Both writes must have happened before cancellation, so tail retention
+        // is tested independently of how quickly the shell gets scheduled.
+        io_test_timeout(async {
+            loop {
+                if runtime
+                    .state
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|event| matches!(event.kind, MobileLinuxEventKind::StderrChunk { .. }))
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        let task = runtime
+            .state
+            .tasks
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let pid = task.pid.load(Ordering::Acquire) as i32;
+        let result = match mode {
+            "caller" => {
+                caller.abort();
+                assert!(caller.await.unwrap_err().is_cancelled());
+                io_test_timeout(runtime.shutdown())
+                    .await
+                    .expect("cancelled sink cannot block shutdown");
+                None
+            }
+            "shutdown" => {
+                // Also cover cancellation after child.wait completed, while the
+                // only thing keeping the owner alive is a pending foreign sink.
+                io_test_timeout(async {
+                    while kill(Pid::from_raw(pid), None).is_ok() {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await;
+                io_test_timeout(runtime.shutdown())
+                    .await
+                    .expect("shutdown interrupts pending sink");
+                Some(io_test_timeout(caller).await.unwrap().unwrap())
+            }
+            "timeout" => Some(io_test_timeout(caller).await.unwrap().unwrap()),
+            _ => unreachable!(),
+        };
+        if let Some(result) = result {
+            assert_eq!(result.stdout, "first\nsecond\n");
+            assert_eq!(result.stderr, String::from_utf8_lossy(b"err\x00\xff"));
+            assert_eq!(result.cancelled, mode == "shutdown");
+            assert_eq!(result.timed_out, mode == "timeout");
+        }
+        assert_eq!(
+            task.snapshot.lock().unwrap().status,
+            if mode == "timeout" {
+                MobileLinuxTaskStatus::TimedOut
+            } else {
+                MobileLinuxTaskStatus::Cancelled
+            }
+        );
+        assert!(
+            kill(Pid::from_raw(pid), None).is_err(),
+            "child must be reaped before terminal state"
+        );
+        let events = runtime.state.events.lock().unwrap();
+        let lines: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                MobileLinuxEventKind::StdoutLine { line } => Some(line.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            ["first", "second"],
+            "cancelled delivery must still drain stdout in order"
+        );
+        let stderr: Vec<_> = events
+            .iter()
+            .flat_map(|event| match &event.kind {
+                MobileLinuxEventKind::StderrChunk { chunk } => chunk.as_slice(),
+                _ => &[],
+            })
+            .copied()
+            .collect();
+        assert_eq!(stderr, b"err\x00\xff", "stderr events retain exact bytes");
+    }
+
+    #[tokio::test]
+    async fn streaming_caller_abort_interrupts_pending_sink_and_drains() {
+        interrupt_pending_stream_sink("caller").await;
+    }
+
+    #[tokio::test]
+    async fn streaming_shutdown_after_child_exit_interrupts_pending_sink() {
+        interrupt_pending_stream_sink("shutdown").await;
+    }
+
+    #[tokio::test]
+    async fn streaming_timeout_interrupts_pending_sink_and_retains_capture() {
+        interrupt_pending_stream_sink("timeout").await;
+    }
+
+    struct SlowStreamSink {
+        lines: Mutex<Vec<String>>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl ProcessStreamSink for SlowStreamSink {
+        async fn stdout_line(&self, line: String) -> Result<(), mobile_linux_api::ProcessError> {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if self.fail {
+                return Err(mobile_linux_api::ProcessError::Io(
+                    "typed sink failure".into(),
+                ));
+            }
+            self.lines.lock().unwrap().push(line);
+            Ok(())
+        }
+        async fn stderr_chunk(&self, _: Vec<u8>) -> Result<(), mobile_linux_api::ProcessError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn normal_child_exit_preserves_slow_sink_order_and_delivery() {
+        let (_temp, runtime) = runtime();
+        let sink = Arc::new(SlowStreamSink {
+            lines: Mutex::new(Vec::new()),
+            fail: false,
+        });
+        let mut request = request();
+        request.command = "/bin/sh".into();
+        request.args = vec!["-c".into(), "printf 'first\\nsecond\\n'".into()];
+        let result = io_test_timeout(runtime.run_streaming(request, sink.clone()))
+            .await
+            .unwrap();
+        assert_eq!(result.stdout, "first\nsecond\n");
+        assert_eq!(*sink.lines.lock().unwrap(), ["first", "second"]);
+        assert!(!result.timed_out && !result.cancelled);
+    }
+
+    #[tokio::test]
+    async fn normal_stream_sink_failure_remains_a_typed_error() {
+        let (_temp, runtime) = runtime();
+        let sink = Arc::new(SlowStreamSink {
+            lines: Mutex::new(Vec::new()),
+            fail: true,
+        });
+        let mut request = request();
+        request.command = "/bin/sh".into();
+        request.args = vec!["-c".into(), "printf 'first\\n'".into()];
+        let error = io_test_timeout(runtime.run_streaming(request, sink))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, MobileLinuxError::Io(detail) if detail.contains("typed sink failure"))
+        );
+        assert_eq!(
+            runtime.list_tasks().await.unwrap()[0].status,
+            MobileLinuxTaskStatus::Failed
+        );
     }
 
     async fn close_blocked_raw_writer(shutdown: bool) {

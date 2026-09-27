@@ -180,18 +180,34 @@ class RealRuntimeSmokeTest {
             passed("blocked-stdin-timeout-and-reap")
 
             val memorySession = runtime.handle.openRawStdio(command(
-                "import time; allocation=bytearray(128*1024*1024); print('ALLOCATED',flush=True); time.sleep(60)",
+                "import os,time; print(os.getpid(),flush=True); time.sleep(0.3); allocation=bytearray(128*1024*1024); time.sleep(60)",
                 python = true, raw = true,
             ).copy(resourceLimits = ResourceLimitsFfi(null, 32u, null, null)))
             assertTrue("raw memory receipt must reflect an active watchdog", memorySession.enforcement.memoryLimitEnforced)
+            val memoryOutput = ByteArrayOutputStream()
             withTimeout(15_000) {
                 while (true) {
-                    val chunk = runtime.handle.readRawStdio(memorySession.id, 64u)
-                    if (chunk.closed) { assertNotEquals("memory overrun must terminate the process", 0, chunk.exitCode); break }
+                    try {
+                        val chunk = runtime.handle.readRawStdio(memorySession.id, 64u)
+                        memoryOutput.write(chunk.stdout)
+                        assertFalse("memory overrun must return a typed limit error", chunk.closed)
+                    } catch (limit: MobileLinuxApiErrorFfi.ResourceLimitExceeded) {
+                        assertTrue(limit.detail.contains("resident-memory limit"))
+                        break
+                    }
                     delay(25)
                 }
             }
-            runtime.handle.closeRawStdio(memorySession.id)
+            val memoryPid = memoryOutput.toString(Charsets.UTF_8.name()).trim().toInt()
+            try {
+                runtime.handle.closeRawStdio(memorySession.id)
+                fail("close must preserve the typed resource limit result")
+            } catch (limit: MobileLinuxApiErrorFfi.ResourceLimitExceeded) {
+                assertTrue(limit.detail.contains("resident-memory limit"))
+            }
+            assertEquals(MobileLinuxTaskStateFfi.FAILED, runtime.handle.taskStatus(memorySession.id)?.status)
+            val memoryReaped = runtime.execute(command("test ! -e /proc/$memoryPid"))
+            assertEquals("memory-limited guest must be reaped: " + memoryReaped.stderr, 0, memoryReaped.exitCode)
             passed("raw-memory-watchdog-terminates-overrun")
 
             val pty = runtime.handle.openPty(MobileLinuxPtyOpenRequestFfi(
