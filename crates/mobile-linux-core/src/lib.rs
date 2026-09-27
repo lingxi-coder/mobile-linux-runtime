@@ -989,18 +989,23 @@ pub fn path_is_within_guest_path(path: &str, candidate_parent: &str) -> bool {
 
 pub fn normalized_guest_path(path: &str) -> Result<String, RootfsManifestError> {
     validate_guest_path(path)?;
-    let mut normalized = PathBuf::from("/");
+    // Manifest paths name the Linux guest, never the host filesystem. Native
+    // PathBuf::push inserts Windows separators and breaks containment checks.
+    let mut normalized = String::new();
     for component in Path::new(path).components() {
         match component {
             Component::RootDir => {}
-            Component::Normal(segment) => normalized.push(segment),
+            Component::Normal(segment) => {
+                normalized.push('/');
+                normalized.push_str(&segment.to_string_lossy());
+            }
             Component::CurDir => {}
             Component::ParentDir | Component::Prefix(_) => {
                 return Err(RootfsManifestError::InvalidGuestPath(path.to_string()));
             }
         }
     }
-    Ok(normalized.to_string_lossy().into_owned())
+    Ok(normalized)
 }
 
 fn secure_guest_host_path(active_root: &Path, guest_path: &str) -> Result<PathBuf, PathBuf> {
@@ -1528,6 +1533,26 @@ mod tests {
     }
 
     #[test]
+    fn guest_containment_uses_linux_separators_on_every_host() {
+        assert_eq!(
+            normalized_guest_path("/workspace/bin/python3").unwrap(),
+            "/workspace/bin/python3"
+        );
+        assert!(path_is_within_guest_path(
+            "/workspace/bin/python3",
+            "/workspace"
+        ));
+        assert!(!path_is_within_guest_path(
+            "/workspace-other/bin/python3",
+            "/workspace"
+        ));
+        assert!(!path_is_within_guest_path(
+            "/workspace/../usr/bin/python3",
+            "/workspace"
+        ));
+    }
+
+    #[test]
     fn manifest_rejects_executables_in_writable_paths() {
         let mut manifest = manifest();
         manifest.executable_allowlist[0].path = "/workspace/bin/python3".to_string();
@@ -1698,13 +1723,11 @@ mod tests {
             .verify_active_root(&expected)
             .expect("tampered report");
         assert!(!tampered.ok);
-        assert!(
-            tampered
-                .issues
-                .iter()
-                .any(|issue| issue.path == "/usr/lib/python3.12/site.py"
-                    && issue.reason.contains("hash mismatch"))
-        );
+        assert!(tampered
+            .issues
+            .iter()
+            .any(|issue| issue.path == "/usr/lib/python3.12/site.py"
+                && issue.reason.contains("hash mismatch")));
 
         fs::write(&stdlib, b"trusted").expect("restore stdlib");
         fs::write(
@@ -1716,13 +1739,11 @@ mod tests {
             .verify_active_root(&expected)
             .expect("unlisted report");
         assert!(!unlisted.ok);
-        assert!(
-            unlisted
-                .issues
-                .iter()
-                .any(|issue| issue.path == "/usr/lib/python3.12/injected.py"
-                    && issue.reason.contains("absent from immutable inventory"))
-        );
+        assert!(unlisted
+            .issues
+            .iter()
+            .any(|issue| issue.path == "/usr/lib/python3.12/injected.py"
+                && issue.reason.contains("absent from immutable inventory")));
     }
 
     #[test]
@@ -1833,12 +1854,10 @@ mod tests {
             .expect("scratch reset");
         assert!(!store.active_root().join("tmp/delete.txt").exists());
         assert!(store.active_root().join("root/.ssh/id_ed25519").exists());
-        assert!(
-            store
-                .active_root()
-                .join("workspace/project/keep.txt")
-                .exists()
-        );
+        assert!(store
+            .active_root()
+            .join("workspace/project/keep.txt")
+            .exists());
     }
 
     #[cfg(unix)]
@@ -1869,12 +1888,10 @@ mod tests {
             "239f59ed55e737c77147cf55ad0c1b03b8c4fa0193f6c82b53f6ba356b4a8044".to_string();
         let report = store.verify_active_root(&manifest).expect("report");
         assert!(!report.ok);
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|issue| issue.reason.contains("symlink"))
-        );
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.reason.contains("symlink")));
     }
 
     #[cfg(unix)]
@@ -1899,12 +1916,10 @@ mod tests {
 
         let report = store.verify_active_root(&manifest()).expect("report");
         assert!(!report.ok);
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|issue| issue.reason.contains("symlink"))
-        );
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.reason.contains("symlink")));
         assert!(matches!(
             store.authorize_manifest_file("/usr/bin/python3", &manifest()),
             Err(RootfsStoreError::ExecutionDenied { .. })

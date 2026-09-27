@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use tokio::sync::mpsc;
 
 use crate::spawn_pty_process;
@@ -28,28 +29,160 @@ async fn spawn_shell(script: &str, size: TerminalSize) -> anyhow::Result<Spawned
     .await
 }
 
+// ConPTY output is a terminal presentation stream, so even a first marker
+// can be preceded by CSI cursor/erase sequences or an OSC window title.
+fn terminal_text(bytes: &[u8]) -> String {
+    let mut visible = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != 0x1b {
+            visible.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        match bytes.get(index) {
+            Some(b'[') => {
+                index += 1;
+                while index < bytes.len() {
+                    let final_byte = (0x40..=0x7e).contains(&bytes[index]);
+                    index += 1;
+                    if final_byte {
+                        break;
+                    }
+                }
+            }
+            Some(b']') => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == 7 {
+                        index += 1;
+                        break;
+                    }
+                    if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            Some(_) => index += 1,
+            None => {}
+        }
+    }
+    String::from_utf8_lossy(&visible).replace('\r', "")
+}
+
+fn numeric_marker(output: &[u8], marker: &str) -> anyhow::Result<u32> {
+    let text = terminal_text(output);
+    let digits = text
+        .split_once(marker)
+        .map(|(_, value)| {
+            value
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .ok_or_else(|| anyhow::anyhow!("missing marker {marker:?} in {text:?}"))?;
+    digits
+        .parse()
+        .with_context(|| format!("invalid numeric marker {marker:?} in {text:?}"))
+}
+
+fn output_diagnostic(collected: &[u8]) -> String {
+    let tail = &collected[collected.len().saturating_sub(4096)..];
+    format!(
+        "received {} bytes; raw tail={:?}; visible tail={:?}",
+        collected.len(),
+        String::from_utf8_lossy(tail),
+        terminal_text(tail)
+    )
+}
+
+async fn read_until_with_timeout(
+    output: &mut mpsc::Receiver<Vec<u8>>,
+    marker: &[u8],
+    timeout: Duration,
+) -> anyhow::Result<Vec<u8>> {
+    let mut collected = Vec::new();
+    let marker_text = String::from_utf8_lossy(marker);
+    let found = tokio::time::timeout(timeout, async {
+        while let Some(chunk) = output.recv().await {
+            collected.extend_from_slice(&chunk);
+            if terminal_text(&collected).contains(marker_text.as_ref()) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    match found {
+        Ok(true) => Ok(collected),
+        Ok(false) => anyhow::bail!(
+            "PTY output closed before marker {marker_text:?}; {}",
+            output_diagnostic(&collected)
+        ),
+        Err(_) => anyhow::bail!(
+            "timed out after {timeout:?} waiting for PTY marker {marker_text:?}; {}",
+            output_diagnostic(&collected)
+        ),
+    }
+}
+
 async fn read_until(
     output: &mut mpsc::Receiver<Vec<u8>>,
     marker: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
-    let mut collected = Vec::new();
-    tokio::time::timeout(Duration::from_secs(15), async {
-        while let Some(chunk) = output.recv().await {
-            collected.extend_from_slice(&chunk);
-            if collected
-                .windows(marker.len())
-                .any(|window| window == marker)
-            {
-                return Ok(());
+    read_until_with_timeout(output, marker, Duration::from_secs(15)).await
+}
+
+#[test]
+fn numeric_marker_accepts_conpty_csi_and_osc_prefixes() {
+    let observed =
+        b"\x1b[2J\x1b[m\x1b[H\x1b]0;Administrator: powershell.exe\x07\x1b[?25h__CHILD__4452\r\n";
+    assert_eq!(numeric_marker(observed, "__CHILD__").unwrap(), 4452);
+    let title_has_fake_marker = b"\x1b]0;__CHILD__99\x1b\\__CHILD__4452__PID_END__\r\n";
+    assert_eq!(
+        numeric_marker(title_has_fake_marker, "__CHILD__").unwrap(),
+        4452
+    );
+    assert!(numeric_marker(b"__CHILD__invalid\n", "__CHILD__").is_err());
+}
+
+#[tokio::test]
+async fn marker_timeout_reports_captured_bytes_and_expected_marker() {
+    let (sender, mut receiver) = mpsc::channel(2);
+    sender.send(b"\x1b[2J__GOT__??".to_vec()).await.unwrap();
+    let error = read_until_with_timeout(
+        &mut receiver,
+        "__GOT__你好".as_bytes(),
+        Duration::from_millis(10),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("__GOT__你好"), "{error}");
+    assert!(error.contains("__GOT__??"), "{error}");
+    assert!(error.contains("received 13 bytes"), "{error}");
+}
+
+#[cfg(windows)]
+async fn wait_for_exit(spawned: &mut SpawnedProcess, phase: &str) -> anyhow::Result<i32> {
+    match tokio::time::timeout(Duration::from_secs(15), &mut spawned.exit_rx).await {
+        Ok(result) => result.with_context(|| format!("{phase}: PTY exit notification disappeared")),
+        Err(_) => {
+            let mut pending = Vec::new();
+            while let Ok(chunk) = spawned.stdout_rx.try_recv() {
+                pending.extend(chunk);
             }
+            anyhow::bail!(
+                "{phase}: child {:?} did not exit, observed status {:?}; {}",
+                spawned.session.process_id(),
+                spawned.session.exit_code(),
+                output_diagnostic(&pending)
+            )
         }
-        anyhow::bail!(
-            "PTY output closed before marker {:?}",
-            String::from_utf8_lossy(marker)
-        )
-    })
-    .await??;
-    Ok(collected)
+    }
 }
 
 #[cfg(windows)]
@@ -242,7 +375,7 @@ async fn rejects_zero_terminal_dimensions() -> anyhow::Result<()> {
 async fn conpty_raw_interaction_and_wait_are_lossless() -> anyhow::Result<()> {
     assert!(crate::conpty_supported(), "CI host must provide ConPTY");
     let mut spawned = spawn_powershell(
-        "$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); \
+        "$OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); \
          Write-Output '__READY__'; \
          $line = [Console]::In.ReadLine(); \
          Write-Output ('__GOT__' + $line)",
@@ -257,8 +390,8 @@ async fn conpty_raw_interaction_and_wait_are_lossless() -> anyhow::Result<()> {
         .await?;
     let marker = "__GOT__你好, Windows ConPTY";
     let output = read_until(&mut spawned.stdout_rx, marker.as_bytes()).await?;
-    assert!(String::from_utf8_lossy(&output).contains(marker));
-    assert_eq!(spawned.exit_rx.await?, 0);
+    assert!(terminal_text(&output).contains(marker));
+    assert_eq!(wait_for_exit(&mut spawned, "command completion").await?, 0);
     assert_eq!(spawned.session.wait().await, 0);
     Ok(())
 }
@@ -272,9 +405,9 @@ async fn conpty_output_tail_remains_readable_after_exit() -> anyhow::Result<()> 
     )
     .await?;
 
-    assert_eq!(spawned.exit_rx.await?, 0);
+    assert_eq!(wait_for_exit(&mut spawned, "command completion").await?, 0);
     let output = read_until(&mut spawned.stdout_rx, b"__TAIL_AFTER_WAIT__").await?;
-    assert!(String::from_utf8_lossy(&output).contains("__TAIL_AFTER_WAIT__"));
+    assert!(terminal_text(&output).contains("__TAIL_AFTER_WAIT__"));
     Ok(())
 }
 
@@ -297,8 +430,8 @@ async fn conpty_resize_reaches_the_child_terminal() -> anyhow::Result<()> {
     })?;
     spawned.session.write(b"continue\n".to_vec()).await?;
     let output = read_until(&mut spawned.stdout_rx, b"__SIZE__47 133").await?;
-    assert!(String::from_utf8_lossy(&output).contains("__SIZE__47 133"));
-    assert_eq!(spawned.exit_rx.await?, 0);
+    assert!(terminal_text(&output).contains("__SIZE__47 133"));
+    assert_eq!(wait_for_exit(&mut spawned, "command completion").await?, 0);
     Ok(())
 }
 
@@ -309,22 +442,17 @@ async fn conpty_job_object_termination_kills_descendants() -> anyhow::Result<()>
         "$child = Start-Process powershell.exe \
              -ArgumentList '-NoLogo','-NoProfile','-Command','Start-Sleep -Seconds 1000' \
              -PassThru; \
-         Write-Output ('__CHILD__' + $child.Id); \
+         Write-Output ('__CHILD__' + $child.Id + '__PID_END__'); \
          Wait-Process -Id $child.Id",
         TerminalSize::default(),
     )
     .await?;
-    let output = read_until(&mut spawned.stdout_rx, b"\n").await?;
-    let text = String::from_utf8_lossy(&output).replace('\r', "");
-    let child_pid: u32 = text
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("__CHILD__"))
-        .ok_or_else(|| anyhow::anyhow!("missing child PID in {text:?}"))?
-        .parse()?;
+    let output = read_until(&mut spawned.stdout_rx, b"__PID_END__").await?;
+    let child_pid = numeric_marker(&output, "__CHILD__")?;
     assert!(windows_process_is_running(child_pid));
 
     spawned.session.request_terminate();
-    let exit_code = tokio::time::timeout(Duration::from_secs(15), spawned.exit_rx).await??;
+    let exit_code = wait_for_exit(&mut spawned, "Job Object termination").await?;
     assert_ne!(exit_code, 0);
 
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -351,22 +479,23 @@ async fn conpty_close_stdin_delivers_eof() -> anyhow::Result<()> {
 
     spawned.session.close_stdin();
     let output = read_until(&mut spawned.stdout_rx, b"__EOF__").await?;
-    assert!(String::from_utf8_lossy(&output).contains("__EOF__"));
-    assert_eq!(spawned.exit_rx.await?, 0);
+    assert!(terminal_text(&output).contains("__EOF__"));
+    assert_eq!(wait_for_exit(&mut spawned, "command completion").await?, 0);
     Ok(())
 }
 
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conpty_reports_unsupported_interactive_interrupt() -> anyhow::Result<()> {
-    let spawned = spawn_powershell("Start-Sleep -Seconds 1000", TerminalSize::default()).await?;
+    let mut spawned =
+        spawn_powershell("Start-Sleep -Seconds 1000", TerminalSize::default()).await?;
     let error = spawned
         .session
         .signal(ProcessSignal::Interrupt)
         .expect_err("Windows ConPTY cannot synthesize a Unix SIGINT");
     assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
     spawned.session.terminate();
-    assert_ne!(spawned.exit_rx.await?, 0);
+    assert_ne!(wait_for_exit(&mut spawned, "forced termination").await?, 0);
     Ok(())
 }
 

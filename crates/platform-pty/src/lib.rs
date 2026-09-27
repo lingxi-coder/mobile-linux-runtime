@@ -16,7 +16,7 @@ mod unix_command;
 mod win;
 #[cfg(windows)]
 mod windows_file;
-#[cfg(windows)]
+#[cfg(any(windows, test))]
 mod windows_input;
 #[cfg(windows)]
 mod windows_pipe;

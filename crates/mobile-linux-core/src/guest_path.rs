@@ -1,5 +1,5 @@
 //! Pure guest-to-host path translation, independent of a host filesystem trait.
-use mobile_linux_api::{MountSpec, find_guest_mount};
+use mobile_linux_api::{find_guest_mount, MountSpec};
 use std::path::PathBuf;
 
 /// A guest path cannot be accessed through its host filesystem mapping.

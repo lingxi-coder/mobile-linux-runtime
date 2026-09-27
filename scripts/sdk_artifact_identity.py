@@ -1,9 +1,19 @@
 """Strict source and exact file-set validation for previously built SDK artifacts."""
-import hashlib, json, pathlib, subprocess
+import hashlib, json, pathlib, stat, subprocess
 
 def source_identity(root):
     revision=subprocess.check_output(["git","-C",str(root),"rev-parse","HEAD"],text=True).strip()
-    dirty=bool(subprocess.check_output(["git","-C",str(root),"status","--porcelain","--untracked-files=normal"]))
+    entries=subprocess.check_output(["git","-C",str(root),"status","--porcelain=v1","-z","--untracked-files=all"]).split(b"\0")
+    dirty=False
+    for entry in entries:
+        if not entry:continue
+        if entry==b"?? .cargo-ok":
+            # Cargo places this empty completion marker in otherwise clean Git
+            # checkouts. A tracked, symlinked, nonempty, or nested marker is source dirt.
+            try:marker=(pathlib.Path(root)/".cargo-ok").lstat()
+            except OSError:marker=None
+            if marker is not None and stat.S_ISREG(marker.st_mode) and marker.st_size==0:continue
+        dirty=True
     return revision,dirty
 
 def file_hashes(directory,exclude):

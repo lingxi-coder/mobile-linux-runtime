@@ -14,7 +14,7 @@ from unittest import mock
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parent / "mobile-linux"))
 from source_contract import external_output, SOURCE_ROOT
-from check_dependencies import validate
+from check_dependencies import validate, validate_metadata
 
 
 def load(name, file):
@@ -138,8 +138,24 @@ class ResourceContracts(unittest.TestCase):
         self.assertIn("--android-api 26", workflow)
         self.assertNotIn("--kind sdk", workflow)
         self.assertIn("scripts/build-ffi.py --platform ios --release", workflow)
-        for command in ("-p mobile-linux-android", "-p mobile-linux-ios", "scripts/test_artifact_identity.py", ":installer:testDebugUnitTest", "xcodebuild test", "MobileLinuxNativeTests"):
+        for command in ("-p mobile-linux-android", "-p mobile-linux-ios", "scripts/test_artifact_identity.py", ":installer:testDebugUnitTest", "xcodebuild test", "MobileLinuxNativeTests", "scripts/test_maven_bundle.py", "scripts/test_release_notices.py", "scripts/test_source_identity.py", "--resolved", "cargo fmt --all --check"):
             self.assertIn(command, workflow, f"missing existing test ownership: {command}")
+
+    def test_resolved_dependency_graph_rejects_transitive_edges(self):
+        owned = {"id":"sdk", "name":"mobile-linux-api", "source":None, "manifest_path":str(self.root/"Cargo.toml"), "dependencies":[]}
+        registry = {"id":"registry", "name":"innocent", "source":"registry+https://github.com/rust-lang/crates.io-index", "manifest_path":"/registry/innocent/Cargo.toml", "dependencies":[]}
+        original = {"packages":[owned,registry],"workspace_members":["sdk"],"resolve":{"nodes":[{"id":"sdk","deps":[{"pkg":"registry"}]},{"id":"registry","deps":[]}]}}
+        with contextlib.redirect_stdout(io.StringIO()): validate_metadata(original,self.root)
+        for mode in ("package", "git", "path", "build", "dev", "conditional", "conditional_path", "missing_identity"):
+            data=json.loads(json.dumps(original));package=data["packages"][1]
+            if mode == "package": package["name"]="harness-runtime"
+            if mode == "git": package["source"]="git+https://github.com/lingxi-coder/harness-runtime.git#abc"
+            if mode == "path": package["source"]=None
+            if mode in ("build","dev","conditional"):
+                package["dependencies"]=[{"name":"harness-runtime","kind":mode if mode != "conditional" else None,"target":"cfg(target_os = \"none\")" if mode == "conditional" else None}]
+            if mode == "conditional_path": package["dependencies"]=[{"name":"innocent", "path":"/outside/source", "target":"cfg(any())"}]
+            if mode == "missing_identity": data["resolve"]["nodes"][0]["deps"][0]["pkg"]="missing"
+            with self.subTest(mode=mode), self.assertRaises(ValueError): validate_metadata(data,self.root)
 
     def test_explicit_bundle_positive(self):
         self.verify_bundle()

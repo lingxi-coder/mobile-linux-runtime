@@ -330,6 +330,16 @@ fn spawn_writer_task(
                 break;
             }
         }
+        #[cfg(windows)]
+        {
+            // A ConPTY input pipe transports key events; its closure is not
+            // EOF on the hosted application's console input handle. Match
+            // the cooked-console EOF gesture without terminating the child:
+            // https://learn.microsoft.com/dotnet/api/system.console.readline
+            let mut writer = writer.lock().await;
+            let _ = writer.write_all(windows_input.eof_sequence());
+            let _ = writer.flush();
+        }
     })
 }
 

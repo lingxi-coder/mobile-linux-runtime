@@ -19,8 +19,12 @@ jobs:
         run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
       - name: Execute every SDK gate
         run: bash scripts/check-all.sh
-      - name: Artifact provenance rejection tests
-        run: python3 scripts/test_artifact_identity.py
+      - name: Artifact provenance and packaging rejection tests
+        run: |
+          python3 scripts/test_artifact_identity.py
+          python3 scripts/test_maven_bundle.py
+          python3 scripts/test_release_notices.py
+          python3 scripts/test_source_identity.py
       - name: Verify real gate trigger chain
         run: python3 scripts/test_gate_triggers.py
       - name: Verify source remained unchanged
@@ -39,6 +43,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
+      - name: Complete resolved SDK dependency graph
+        run: python3 scripts/check_dependencies.py --resolved
       - name: Core behavior and real PTY lifecycle
         run: cargo test --locked -p mobile-linux-api -p mobile-linux-core -p platform-pty --no-fail-fast
       - name: Android and iOS backend behavior on Unix hosts
@@ -120,7 +126,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Build standalone SDK slice
-        run: cargo build --locked -p mobile-linux-ffi --all-features --target ${{ matrix.target }}
+        run: cargo rustc --locked -p mobile-linux-ffi --lib --crate-type staticlib --all-features --target ${{ matrix.target }}
 
   ios-native:
     name: iOS native-support and SDK FFI XCFrameworks
@@ -135,6 +141,8 @@ jobs:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
       - name: Snapshot immutable source
         run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+      - name: Native build tools
+        run: brew install meson ninja
       - name: Build separate native-support and SDK FFI distributions
         run: |
           bash scripts/build-ios-xcframework.sh --output "$RUNNER_TEMP/ios-native-support" --cache "$RUNNER_TEMP/ios-cache" --kind native-support
@@ -154,7 +162,8 @@ jobs:
           java-version: "17"
       - uses: android-actions/setup-android@v3
         with:
-          packages: platform-tools platforms;android-37
+          cmdline-tools-version: "16111833"
+          packages: platform-tools platforms;android-37.0
       - name: Snapshot immutable source
         run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
       - name: Existing Kotlin installer tests
@@ -184,3 +193,13 @@ jobs:
       - name: Verify source remained unchanged
         if: always()
         run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+
+  rust-format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: rustfmt
+      - name: Rust formatting contract
+        run: cargo fmt --all --check

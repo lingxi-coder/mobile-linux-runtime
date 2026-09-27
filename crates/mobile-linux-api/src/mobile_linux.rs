@@ -384,16 +384,23 @@ impl From<ProcessError> for MobileLinuxError {
 mod map_guest_path_tests {
     use super::*;
 
+    fn host_path(relative: &str) -> PathBuf {
+        // Native absolute paths have a drive prefix on Windows. Guest paths
+        // below remain Linux paths on every host.
+        let root = if cfg!(windows) { r"C:\host" } else { "/host" };
+        PathBuf::from(root).join(relative)
+    }
+
     fn mounts() -> Vec<MountSpec> {
         vec![
             MountSpec {
-                host_path: PathBuf::from("/host/ws"),
+                host_path: host_path("ws"),
                 guest_path: "/workspace/abc".into(),
                 read_only: false,
                 purpose: MountPurpose::Workspace,
             },
             MountSpec {
-                host_path: PathBuf::from("/host/ext"),
+                host_path: host_path("ext"),
                 guest_path: "/workspace/abc/ext".into(),
                 read_only: false,
                 purpose: MountPurpose::External,
@@ -406,15 +413,15 @@ mod map_guest_path_tests {
         let m = mounts();
         assert_eq!(
             map_guest_path_to_host("/workspace/abc/src/a.rs", &m),
-            Some(PathBuf::from("/host/ws/src/a.rs"))
+            Some(host_path("ws/src/a.rs"))
         );
         assert_eq!(
             map_guest_path_to_host("/workspace/abc", &m),
-            Some(PathBuf::from("/host/ws"))
+            Some(host_path("ws"))
         );
         assert_eq!(
             map_guest_path_to_host("/workspace/abc/ext/d.txt", &m),
-            Some(PathBuf::from("/host/ext/d.txt"))
+            Some(host_path("ext/d.txt"))
         );
         assert_eq!(map_guest_path_to_host("/workspace/other/x", &m), None);
         assert_eq!(map_guest_path_to_host("/workspace/abc/../abc/x", &m), None);
@@ -426,21 +433,15 @@ mod map_guest_path_tests {
     fn maps_host_paths_back_to_the_longest_guest_mount() {
         let m = mounts();
         assert_eq!(
-            map_host_path_to_guest(std::path::Path::new("/host/ws/src/a.rs"), &m).as_deref(),
+            map_host_path_to_guest(&host_path("ws/src/a.rs"), &m).as_deref(),
             Some("/workspace/abc/src/a.rs")
         );
         assert_eq!(
-            map_host_path_to_guest(std::path::Path::new("/host/ext/d.txt"), &m).as_deref(),
+            map_host_path_to_guest(&host_path("ext/d.txt"), &m).as_deref(),
             Some("/workspace/abc/ext/d.txt")
         );
-        assert_eq!(
-            map_host_path_to_guest(std::path::Path::new("/host/other"), &m),
-            None
-        );
-        assert_eq!(
-            map_host_path_to_guest(std::path::Path::new("/host/ws/../escape"), &m),
-            None
-        );
+        assert_eq!(map_host_path_to_guest(&host_path("other"), &m), None);
+        assert_eq!(map_host_path_to_guest(&host_path("ws/../escape"), &m), None);
     }
 }
 
@@ -466,9 +467,12 @@ pub fn map_host_path_to_guest(path: &std::path::Path, mounts: &[MountSpec]) -> O
     use std::path::Component;
 
     if !path.is_absolute()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::RootDir | Component::Normal(_)))
+        || path.components().any(|component| {
+            !matches!(
+                component,
+                Component::Prefix(_) | Component::RootDir | Component::Normal(_)
+            )
+        })
     {
         return None;
     }
@@ -480,17 +484,21 @@ pub fn map_host_path_to_guest(path: &std::path::Path, mounts: &[MountSpec]) -> O
         })
         .max_by_key(|mount| mount.host_path.components().count())?;
     let relative = path.strip_prefix(&mount.host_path).ok()?;
-    let mut guest = std::path::PathBuf::from(&mount.guest_path);
+    // A guest coordinate always uses Linux separators, including when its
+    // backing host path is a Windows drive or UNC path.
+    let mut guest = mount.guest_path.trim_end_matches('/').to_owned();
     for component in relative.components() {
         match component {
-            Component::Normal(segment) => guest.push(segment),
+            Component::Normal(segment) => {
+                guest.push('/');
+                guest.push_str(segment.to_str()?);
+            }
             Component::CurDir => {}
             _ => return None,
         }
     }
-    let guest = guest.to_str()?;
-    find_guest_mount(guest, mounts)?;
-    Some(guest.to_owned())
+    find_guest_mount(&guest, mounts)?;
+    Some(guest)
 }
 
 /// Like [`map_guest_path_to_host`], but also returns WHICH mount matched —

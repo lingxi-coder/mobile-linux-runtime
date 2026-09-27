@@ -16,8 +16,11 @@ kill-on-close Job Object so descendants cannot outlive the PTY session.
 ## API
 
 - `spawn_pty_process` starts a command under a controlling PTY.
-- `ProcessHandle::write` sends raw, unmodified bytes.
+- `ProcessHandle::write` sends PTY bytes; Windows normalizes Enter/Backspace keys while preserving UTF-8.
 - `ProcessHandle::resize` updates the terminal dimensions.
+- `ProcessHandle::close_stdin` drains pending writes and closes input without
+  killing the child. Windows sends the cooked-console Ctrl+Z/Enter EOF gesture;
+  raw-mode applications control how they interpret those input bytes.
 - `ProcessHandle::signal`, `request_terminate`, and `terminate` control the
   complete child process group/tree.
 - `ProcessHandle::wait` and `SpawnedProcess::exit_rx` observe exit without

@@ -5,6 +5,7 @@ extensions.configure<com.android.build.api.dsl.LibraryExtension> {
     defaultConfig { minSdk = 26 }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     publishing { singleVariant("release") { withSourcesJar() } }
+    sourceSets.getByName("main").assets.srcDir(providers.gradleProperty("ffiArtifacts").map { "$it/licenses" }.getOrElse("build/missing/licenses"))
     sourceSets.getByName("main").jniLibs.srcDir(providers.gradleProperty("ffiArtifacts").map { "$it/jniLibs" }.getOrElse("build/missing/jniLibs"))
     sourceSets.getByName("main").java.srcDir(providers.gradleProperty("ffiArtifacts").map { "$it/kotlin" }.getOrElse("build/missing/kotlin"))
 }

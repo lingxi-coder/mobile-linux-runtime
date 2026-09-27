@@ -3,7 +3,8 @@
 import argparse, hashlib, json, pathlib, shutil, subprocess, zipfile
 import sys
 sys.dont_write_bytecode = True
-from sdk_artifact_identity import validate_artifacts, validate_ios_native, validate_swift_binding
+from sdk_artifact_identity import validate_artifacts, validate_ios_native, validate_swift_binding, source_identity
+from release_notices import verify as verify_notices
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def archive(tree,destination,prefix="",extras=()):
@@ -25,11 +26,12 @@ def main():
     p.add_argument("--write-root-package",action="store_true",help="Write release-only root SwiftPM manifest and matching Swift bindings after source binaries are validated")
     a=p.parse_args();revision=subprocess.check_output(["git","-C",str(ROOT),"rev-parse","HEAD"],text=True).strip()
     if a.source_revision!=revision:raise ValueError("source revision must be the checkout used to build this SDK")
-    dirty=bool(subprocess.check_output(["git","-C",str(ROOT),"status","--porcelain","--untracked-files=normal"]))
+    _,dirty=source_identity(ROOT)
     if dirty and not a.allow_dirty_validation:raise ValueError("release requires a clean committed source checkout")
     for xc in [a.ios_ffi,a.ios_native]:
         if not (xc/"Info.plist").is_file():raise ValueError(f"missing real XCFramework {xc}")
     ffi_manifest=validate_artifacts(a.ios_ffi.parent,"ffi-build.json",revision,a.allow_dirty_validation,{"platform":"ios","namespace":"mobile_linux_runtime","native_support_embedded":False,"abi_metadata_verified":True})
+    verify_notices(ROOT,a.ios_ffi.parent/"licenses")
     native_manifest=validate_ios_native(a.ios_native.parent,a.ios_native,revision,a.allow_dirty_validation,ROOT)
     if not a.allow_dirty_validation and (ffi_manifest.get("profile")!="release" or native_manifest.get("configuration")!="Release"):
         raise ValueError("Release packaging requires release-profile iOS artifacts")
@@ -40,10 +42,11 @@ def main():
     if maven_manifest.get("validation_only") is not False and not a.allow_dirty_validation:raise ValueError("Development-only Maven publication cannot be released")
     out=a.output_dir.resolve();out.mkdir(parents=True,exist_ok=True)
     names={"ffi":f"MobileLinuxRuntimeFFI-{a.version}.xcframework.zip","native":f"MobileLinuxNativeSupport-{a.version}.xcframework.zip","maven":f"mobile-linux-maven-{a.version}.zip"}
-    archive(a.ios_ffi,out/names["ffi"],"MobileLinuxRuntimeFFI.xcframework")
+    archive(a.ios_ffi,out/names["ffi"],"MobileLinuxRuntimeFFI.xcframework",[a.ios_ffi.parent/"licenses",a.ios_ffi.parent/"ffi-build.json"])
     archive(a.ios_native,out/names["native"],"MobileLinuxNativeSupport.xcframework",[a.ios_native.parent/"licenses",a.ios_native.parent/"source-provenance",a.ios_native.parent/"native-support-manifest.json"])
     archive(a.android_maven,out/names["maven"])
     package=out/"swift-package";package.mkdir(exist_ok=True)
+    shutil.copytree(a.ios_ffi.parent/"licenses",package/"licenses",dirs_exist_ok=True)
     shutil.copytree(ROOT/"ios/SDK",package/"ios/SDK",dirs_exist_ok=True)
     shutil.copytree(ROOT/"ios/NativeSupportLink",package/"ios/NativeSupportLink",dirs_exist_ok=True)
     (package/"ios/Bindings").mkdir(parents=True,exist_ok=True);shutil.copy2(bindings,package/"ios/Bindings"/bindings.name)

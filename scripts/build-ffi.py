@@ -4,10 +4,12 @@ import argparse, hashlib, json, os, pathlib, shutil, subprocess, tempfile, tomll
 import sys
 sys.dont_write_bytecode = True
 from sdk_artifact_identity import source_identity
+from release_notices import stage as stage_notices, FILES as NOTICE_FILES
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 def run(args, env): subprocess.run(args, cwd=ROOT, env=env, check=True)
 def source_inputs():
     paths=[*ROOT.joinpath("crates").rglob("*.rs"),*ROOT.joinpath("crates").rglob("Cargo.toml"),ROOT/"Cargo.toml",ROOT/"Cargo.lock",ROOT/"rust-toolchain.toml",ROOT/"crates/mobile-linux-ffi/uniffi.toml",pathlib.Path(__file__).resolve()]
+    paths += [ROOT / source for source in NOTICE_FILES.values()]
     return {str(path.relative_to(ROOT)):hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -61,6 +63,7 @@ def main():
         run(["xcodebuild","-create-xcframework","-library",str(target/triples[0]/profile/"libmobile_linux_runtime.a"),"-headers",str(headers),"-library",str(simulator),"-headers",str(headers),"-output",str(xc)],env)
     if source_identity(ROOT)!=(source_revision,source_dirty):raise ValueError("SDK source identity changed while building FFI")
     if source_inputs()!=source_file_sha256:raise ValueError("SDK source inputs changed while building FFI")
+    stage_notices(ROOT,out/"licenses")
     artifacts={str(f.relative_to(out)):hashlib.sha256(f.read_bytes()).hexdigest() for f in out.rglob("*") if f.is_file() and f.name!="ffi-build.json"}
     (out/"ffi-build.json").write_text(json.dumps({"schema_version":1,"platform":a.platform,"namespace":"mobile_linux_runtime","profile":profile,"toolchain":toolchain,"native_support_embedded":False,"source_revision":source_revision,"source_dirty":source_dirty,"abi_metadata_verified":True,"source_file_sha256":source_file_sha256,"files":artifacts},indent=2)+"\n")
 

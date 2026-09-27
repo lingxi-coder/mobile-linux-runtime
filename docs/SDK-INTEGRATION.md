@@ -51,7 +51,29 @@ cargo test --locked -p mobile-linux-core --test producer_manifest \
   published_archive_stages_verifies_and_activates_real_tree -- --ignored
 ```
 
-## Android: build and consume AARs
+## Android: install a precompiled release
+
+When a release provides `mobile-linux-maven-<version>.zip`, install it with its
+published SHA-256 and full binary-source commit. Set `SDK_MAVEN_ARCHIVE`,
+`SDK_MAVEN_SHA256`, `SDK_VERSION` and `SDK_SOURCE_REVISION` to those exact release
+values; keep `SDK_BUILD_DIR` outside the source checkout.
+
+```sh
+python3 scripts/install-maven-bundle.py \
+  --archive "$SDK_MAVEN_ARCHIVE" --sha256 "$SDK_MAVEN_SHA256" \
+  --version "$SDK_VERSION" --source-revision "$SDK_SOURCE_REVISION" \
+  --cache-dir "$SDK_BUILD_DIR/download-cache" \
+  --output-dir "$SDK_BUILD_DIR/maven"
+```
+
+Use `--url "$SDK_MAVEN_URL"` instead of `--archive` for an explicit HTTPS release
+URL. The installer checks clean release identity and every file against the
+recorded inventory, rejects unsafe ZIP paths, and keeps the installed directory
+immutable. A validation-only bundle is intentionally rejected. This path needs
+Python and the published assets, not a Rust/NDK rebuild. Then configure the
+consumer's Gradle repositories and dependencies below.
+
+## Android: build AARs from source
 
 Set `ANDROID_NDK_HOME` to the pinned NDK installation, and install the Rust
 Android targets and `cargo-ndk`. Build both supported ABIs:
@@ -78,6 +100,8 @@ Publication requires a clean committed checkout. For local development only,
 version above is the local build coordinate, not a claim that Maven Central has
 a published release. Rust embeddings omit the FFI build and pass `--native-only`
 to publication.
+
+## Android: configure and run the consumer
 
 Add your Maven directory or published Maven URL to both `pluginManagement` and
 `dependencyResolutionManagement` repositories in the consumer's
