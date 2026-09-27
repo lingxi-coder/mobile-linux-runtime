@@ -1,0 +1,11 @@
+/target/
+/build/
+/.cache/
+/dist/
+/.DS_Store
+/.cargo/config.toml
+**/.DS_Store
+**/.gradle/
+**/.build/
+**/build/
+/local.properties
