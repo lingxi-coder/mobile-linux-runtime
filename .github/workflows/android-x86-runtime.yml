@@ -1,0 +1,136 @@
+name: android-x86-runtime
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      rootfs_run_id:
+        description: Successful rootfs-build run in this repository
+        type: string
+        required: true
+      rootfs_sha256:
+        description: Exact verified x86_64 rootfs archive SHA256
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+jobs:
+  actual-x86-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      ROOTFS_RUN_ID: ${{ inputs.rootfs_run_id }}
+      ROOTFS_SHA256: ${{ inputs.rootfs_sha256 }}
+      GH_TOKEN: ${{ github.token }}
+      ANDROID_AVD_HOME: ${{ github.workspace }}/../sdk-emulator-avd
+    steps:
+      - uses: actions/checkout@v4
+      - name: Snapshot immutable SDK source
+        run: |
+          python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+          mkdir -p "$RUNNER_TEMP/smoke-report"
+      - name: Resolve explicit dispatch or exact committed PR candidate identity
+        run: |
+          python3 - <<'PYTHON'
+          import json,os,pathlib,re
+          if os.environ['GITHUB_EVENT_NAME']=='pull_request':
+              receipt=json.loads(pathlib.Path('docs/mobile-linux/releases/3.24.2/x86_64/producer-run.json').read_text())
+              if receipt['schema_version']!=1 or receipt['repository']!=os.environ['GITHUB_REPOSITORY'] or receipt['architecture']!='x86_64':
+                  raise SystemExit('committed rootfs producer identity is invalid')
+              values={'ROOTFS_RUN_ID':str(receipt['run_id']),'ROOTFS_SHA256':receipt['archive_sha256'],'ROOTFS_PRODUCER_REVISION':receipt['producer_revision']}
+              if not re.fullmatch(r'[0-9]+',values['ROOTFS_RUN_ID']) or not re.fullmatch(r'[0-9a-f]{64}',values['ROOTFS_SHA256']) or not re.fullmatch(r'[0-9a-f]{40}',values['ROOTFS_PRODUCER_REVISION']):
+                  raise SystemExit('committed rootfs producer identity has malformed values')
+              with open(os.environ['GITHUB_ENV'],'a') as env:
+                  for key,value in values.items():env.write(key+'='+value+'\n')
+          elif os.environ['GITHUB_EVENT_NAME']!='workflow_dispatch':
+              raise SystemExit('unsupported event; no implicit latest-artifact fallback')
+          PYTHON
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: "16111833"
+          packages: platform-tools emulator platforms;android-37.0 system-images;android-35;google_apis;x86_64
+      - name: Install pinned native build toolchain
+        run: |
+          sdkmanager --install "ndk;27.2.12479018" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          cargo install cargo-ndk --locked --version '=4.1.2'
+      - name: Download the explicitly identified successful rootfs candidate
+        run: |
+          [[ "$ROOTFS_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$ROOTFS_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ROOTFS_RUN_ID" > "$RUNNER_TEMP/rootfs-run.json"
+          python3 - <<'PY'
+          import json,os,pathlib
+          run=json.loads((pathlib.Path(os.environ['RUNNER_TEMP'])/'rootfs-run.json').read_text())
+          if run['status']!='completed' or run['conclusion']!='success' or run['name']!='rootfs-build':
+              raise SystemExit('required successful rootfs-build candidate is unavailable')
+          expected=os.environ.get('ROOTFS_PRODUCER_REVISION')
+          if expected and run['head_sha']!=expected: raise SystemExit('committed producer revision does not match selected run')
+          PY
+          gh run download "$ROOTFS_RUN_ID" --repo "$GITHUB_REPOSITORY" --name verified-x86_64-rootfs-candidate --dir "$RUNNER_TEMP/rootfs-download"
+      - name: Verify actual archive bytes and complete rootfs evidence
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,shutil
+          temp=pathlib.Path(os.environ['RUNNER_TEMP']);download=temp/'rootfs-download'
+          archives=list(download.rglob('rootfs.tar.gz'));manifests=list(download.rglob('rootfs-manifest.json'))
+          if len(archives)!=1 or len(manifests)!=1: raise SystemExit('candidate needs exactly one archive and manifest')
+          archive,manifest=archives[0],manifests[0];data=json.loads(manifest.read_text())
+          with archive.open('rb') as stream: digest=hashlib.file_digest(stream,'sha256').hexdigest()
+          if digest!=os.environ['ROOTFS_SHA256'] or data['archive']['sha256']!=digest or data['abi']!='x86_64' or data['platform']!='android':
+              raise SystemExit('candidate identity, ABI or archive SHA256 mismatch')
+          output=temp/'x86_64-release';output.mkdir();shutil.copy2(archive,output/'rootfs.tar.gz');shutil.copytree(manifest.parent,output/'evidence')
+          run=json.loads((temp/'rootfs-run.json').read_text())
+          (temp/'smoke-report/rootfs-input.json').write_text(json.dumps({'rootfs_run_id':run['id'],'rootfs_producer_revision':run['head_sha'],'archive_sha256':digest,'sdk_source_revision':os.environ['GITHUB_SHA']},indent=2)+'\n')
+          PY
+          bash scripts/mobile-linux/check-rootfs-manifest.sh "$RUNNER_TEMP/x86_64-release/evidence/rootfs-manifest.json"
+          python3 scripts/mobile-linux/verify-evidence.py --evidence-dir "$RUNNER_TEMP/x86_64-release/evidence" --archive "$RUNNER_TEMP/x86_64-release/rootfs.tar.gz"
+          python3 scripts/mobile-linux/verify-rootfs-profile.py --profile toolchain --arch x86_64 --sha256 "$ROOTFS_SHA256" --archive "$RUNNER_TEMP/x86_64-release/rootfs.tar.gz" --receipt "$RUNNER_TEMP/smoke-report/archive-inventory.json"
+      - name: Build standalone native support and release FFI for Maven publication
+        run: |
+          bash scripts/build-android-native.sh --ndk "$ANDROID_NDK_HOME" --abi all --android-api 26 --output-dir "$RUNNER_TEMP/artifacts/native" --cache-dir "$RUNNER_TEMP/native-cache"
+          python3 scripts/build-ffi.py --platform android --release --output-dir "$RUNNER_TEMP/artifacts/ffi" --target-dir "$RUNNER_TEMP/ffi-target"
+          python3 scripts/publish-android.py --native-artifacts "$RUNNER_TEMP/artifacts/native" --ffi-artifacts "$RUNNER_TEMP/artifacts/ffi" --maven-dir "$RUNNER_TEMP/artifacts/maven" --build-dir "$RUNNER_TEMP/gradle-build" --version 0.1.0
+          cp "$RUNNER_TEMP/artifacts/native/native-manifest.json" "$RUNNER_TEMP/artifacts/ffi/ffi-build.json" "$RUNNER_TEMP/artifacts/maven/sdk-artifacts.json" "$RUNNER_TEMP/smoke-report/"
+      - name: Boot hardware-accelerated API35 x86_64 emulator
+        run: |
+          test -e /dev/kvm
+          sudo chown "$USER" /dev/kvm
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd --force --name sdk_x86_64 --package "system-images;android-35;google_apis;x86_64" --device pixel_6
+          "$ANDROID_SDK_ROOT/emulator/emulator" -avd sdk_x86_64 -port 5554 -no-window -no-audio -no-snapshot -no-boot-anim -gpu swiftshader_indirect -accel on -memory 3072 > "$RUNNER_TEMP/smoke-report/emulator.log" 2>&1 &
+          timeout 180 adb -s emulator-5554 wait-for-device
+          for attempt in {1..150}; do
+            booted="$(adb -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r')"
+            if [[ "$booted" == "1" ]]; then break; fi
+            if (( attempt % 30 == 0 )); then echo "Waiting for Android boot ($attempt/150)"; fi
+            sleep 2
+          done
+          test "$booted" = 1
+          test "$(adb -s emulator-5554 shell getprop ro.product.cpu.abi | tr -d '\r')" = x86_64
+          test "$(adb -s emulator-5554 shell getprop ro.build.version.sdk | tr -d '\r')" = 35
+          adb -s emulator-5554 shell getprop > "$RUNNER_TEMP/smoke-report/emulator-properties.txt"
+      - name: Install Maven-only example and execute real runtime acceptance
+        run: python3 examples/android/run-device-smoke.py --adb "$ANDROID_SDK_ROOT/platform-tools/adb" --serial emulator-5554 --maven-repo "$RUNNER_TEMP/artifacts/maven" --rootfs-dir "$RUNNER_TEMP/x86_64-release" --report-dir "$RUNNER_TEMP/smoke-report"
+      - name: Verify SDK source remained unchanged
+        if: always()
+        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+      - name: Stop emulator
+        if: always()
+        run: adb -s emulator-5554 emu kill || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: actual-x86-android-runtime-evidence
+          path: ${{ runner.temp }}/smoke-report
+          if-no-files-found: error

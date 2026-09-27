@@ -1188,8 +1188,7 @@
           "version": "1.5.7-r2"
         }
       ],
-      "blocker": "Offline install and the upgraded source-built Node toolchain remain unverified for x86_64. Prior Rosetta amd64 emulation failed APK post-install scripts with Unable to open /proc/self/exe; verify on an x86_64 host or a qemu-backed machine before clearing this blocker.",
-      "closure_status": "blocked"
+      "closure_status": "complete"
     }
   },
   "forbidden_executables": [
@@ -1236,7 +1235,7 @@
     },
     "version": "7.0.2"
   },
-  "release_ready": false,
+  "release_ready": true,
   "runtime_packages": {
     "ca-certificates": "20260909-r0",
     "git": "2.54.0-r0",

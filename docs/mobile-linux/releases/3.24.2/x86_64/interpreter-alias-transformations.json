@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "scope": [
+    "/bin/sh",
+    "/usr/bin/python3"
+  ],
+  "transformations": [
+    {
+      "path": "/bin/sh",
+      "previous_symlink": "busybox",
+      "target": "/bin/busybox",
+      "transformation": "symlink-to-ELF-hardlink",
+      "before_sha256": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045",
+      "after_sha256": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045"
+    },
+    {
+      "path": "/usr/bin/python3",
+      "previous_symlink": "python3.14",
+      "target": "/usr/bin/python3.14",
+      "transformation": "symlink-to-ELF-hardlink",
+      "before_sha256": "16c8377b7e809985cf46d64559df85bda416264f63b06c84536d3acbe549e23b",
+      "after_sha256": "16c8377b7e809985cf46d64559df85bda416264f63b06c84536d3acbe549e23b"
+    }
+  ]
+}
