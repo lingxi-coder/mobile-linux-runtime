@@ -2,6 +2,8 @@
 import json,pathlib,tempfile,unittest
 import sys
 sys.dont_write_bytecode = True
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/lib"))
 from sdk_artifact_identity import file_hashes,validate_artifacts,validate_ios_native,validate_swift_binding
 class ArtifactIdentityTests(unittest.TestCase):
     def setUp(self):

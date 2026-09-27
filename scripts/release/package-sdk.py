@@ -3,9 +3,11 @@
 import argparse, hashlib, json, pathlib, shutil, subprocess, zipfile
 import sys
 sys.dont_write_bytecode = True
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/lib"))
 from sdk_artifact_identity import validate_artifacts, validate_ios_native, validate_swift_binding, source_identity
 from release_notices import verify as verify_notices
-ROOT=pathlib.Path(__file__).resolve().parents[1]
+ROOT=pathlib.Path(__file__).resolve().parents[2]
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
 def archive(tree,destination,prefix="",extras=()):
     with zipfile.ZipFile(destination,"w",zipfile.ZIP_DEFLATED) as out:
@@ -35,7 +37,7 @@ def main():
     native_manifest=validate_ios_native(a.ios_native.parent,a.ios_native,revision,a.allow_dirty_validation,ROOT)
     if not a.allow_dirty_validation and (ffi_manifest.get("profile")!="release" or native_manifest.get("configuration")!="Release"):
         raise ValueError("Release packaging requires release-profile iOS artifacts")
-    subprocess.run(["python3",str(ROOT/"scripts/verify-ios-native.py"),"--artifact-dir",str(a.ios_native.parent)],check=True)
+    subprocess.run(["python3",str(ROOT/"scripts/checks/verify-ios-native.py"),"--artifact-dir",str(a.ios_native.parent)],check=True)
     bindings=a.swift_bindings/"MobileLinuxRuntimeBindings.swift"
     validate_swift_binding(bindings,ffi_manifest)
     maven_manifest=validate_artifacts(a.android_maven,"sdk-artifacts.json",revision,a.allow_dirty_validation,{"version":a.version,"native_support_only":False})

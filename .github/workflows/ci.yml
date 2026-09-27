@@ -16,20 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Snapshot immutable source
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
       - name: Execute every SDK gate
         run: bash scripts/check-all.sh
       - name: Artifact provenance and packaging rejection tests
         run: |
-          python3 scripts/test_artifact_identity.py
-          python3 scripts/test_maven_bundle.py
-          python3 scripts/test_release_notices.py
-          python3 scripts/test_source_identity.py
+          python3 scripts/tests/test_artifact_identity.py
+          python3 scripts/tests/test_maven_bundle.py
+          python3 scripts/tests/test_release_notices.py
+          python3 scripts/tests/test_source_identity.py
       - name: Verify real gate trigger chain
-        run: python3 scripts/test_gate_triggers.py
+        run: python3 scripts/tests/test_gate_triggers.py
       - name: Verify source remained unchanged
         if: always()
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
 
   core-and-pty:
     name: Core and PTY (${{ matrix.os }})
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.94.0
       - name: Complete resolved SDK dependency graph
-        run: python3 scripts/check_dependencies.py --resolved
+        run: python3 scripts/checks/check_dependencies.py --resolved
       - name: Core behavior and real PTY lifecycle
         run: cargo test --locked -p mobile-linux-api -p mobile-linux-core -p platform-pty --no-fail-fast
       - name: Android and iOS backend behavior on Unix hosts
@@ -97,18 +97,18 @@ jobs:
           echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/27.2.12479018" >> "$GITHUB_ENV"
           cargo install cargo-ndk --locked --version '=4.1.2'
       - name: Snapshot immutable source
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
       - name: Build standalone native-support helpers
         env:
           SDK_ABI: ${{ matrix.abi }}
-        run: bash scripts/build-android-native.sh --ndk "$ANDROID_NDK_HOME" --output-dir "$RUNNER_TEMP/android-native" --cache-dir "$RUNNER_TEMP/android-cache" --abi "$SDK_ABI" --android-api 26
+        run: bash scripts/build/build-android-native.sh --ndk "$ANDROID_NDK_HOME" --output-dir "$RUNNER_TEMP/android-native" --cache-dir "$RUNNER_TEMP/android-cache" --abi "$SDK_ABI" --android-api 26
       - name: Build SDK shared library against Android NDK
         env:
           SDK_ABI: ${{ matrix.abi }}
         run: cargo ndk -t "$SDK_ABI" --platform 26 build --locked -p mobile-linux-ffi --all-features
       - name: Verify source remained unchanged
         if: always()
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
 
   ios-rust:
     name: iOS SDK Rust (${{ matrix.target }})
@@ -152,7 +152,7 @@ jobs:
         with:
           targets: aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
       - name: Snapshot immutable source
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
       - name: Native build tools
         run: |
           brew install meson ninja lld
@@ -160,11 +160,11 @@ jobs:
           ld.lld --version
       - name: Build separate native-support and SDK FFI distributions
         run: |
-          bash scripts/build-ios-xcframework.sh --output "$RUNNER_TEMP/ios-native-support" --cache "$RUNNER_TEMP/ios-cache" --kind native-support
-          python3 scripts/build-ffi.py --platform ios --release --output-dir "$RUNNER_TEMP/ios-ffi" --target-dir "$CARGO_TARGET_DIR"
+          bash scripts/build/build-ios-xcframework.sh --output "$RUNNER_TEMP/ios-native-support" --cache "$RUNNER_TEMP/ios-cache" --kind native-support
+          python3 scripts/build/build-ffi.py --platform ios --release --output-dir "$RUNNER_TEMP/ios-ffi" --target-dir "$CARGO_TARGET_DIR"
       - name: Verify source remained unchanged
         if: always()
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
 
   android-installer-tests:
     name: Android installer behavior
@@ -180,12 +180,12 @@ jobs:
           cmdline-tools-version: "16111833"
           packages: platform-tools platforms;android-37.0
       - name: Snapshot immutable source
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
       - name: Existing Kotlin installer tests
         run: ./android/gradlew --project-dir android --project-cache-dir "$RUNNER_TEMP/sdk-gradle-cache" -PsdkBuildDir="$RUNNER_TEMP/sdk-gradle" -Pkotlin.project.persistent.dir="$RUNNER_TEMP/sdk-kotlin" --no-daemon :installer:testDebugUnitTest
       - name: Verify source remained unchanged
         if: always()
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
 
   ios-native-tests:
     name: Swift native lifecycle regression tests
@@ -202,7 +202,7 @@ jobs:
       - name: Test generator
         run: brew install xcodegen
       - name: Snapshot immutable source
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
       - name: Stage native test project outside checkout
         run: |
           mkdir -p "$RUNNER_TEMP/sdk-native-tests"
@@ -214,7 +214,7 @@ jobs:
           xcodebuild test -project "$RUNNER_TEMP/sdk-native-tests/Tests/MobileLinuxNativeTests.xcodeproj" -scheme MobileLinuxNativeTests -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath "$RUNNER_TEMP/sdk-native-tests/derived-data" CODE_SIGNING_ALLOWED=NO
       - name: Verify source remained unchanged
         if: always()
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
 
   rust-format:
     runs-on: ubuntu-24.04

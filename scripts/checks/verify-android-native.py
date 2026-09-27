@@ -8,9 +8,10 @@ import struct
 import sys
 
 sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/lib"))
 from sdk_artifact_identity import source_identity, validate_artifacts
 
-SDK = Path(__file__).resolve().parents[1]
+SDK = Path(__file__).resolve().parents[2]
 
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 def fail(message): raise SystemExit(message)

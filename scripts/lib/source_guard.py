@@ -21,7 +21,7 @@ def snapshot(root):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()

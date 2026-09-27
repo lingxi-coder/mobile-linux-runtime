@@ -4,7 +4,7 @@ import argparse, hashlib, json, os, pathlib, plistlib, shutil, subprocess, sys, 
 sys.dont_write_bytecode = True
 from sdk_artifact_identity import source_identity
 P=pathlib.Path
-SDK=P(__file__).resolve().parents[1]
+SDK=P(__file__).resolve().parents[2]
 PINS=SDK/'native/ios/sources.json'
 def run(args, **kwargs):
     print('+', ' '.join(map(str,args)),flush=True)
@@ -74,7 +74,7 @@ def native(output,cache,configuration):
 
 def native_input_hashes():
     hashes={str(p.relative_to(SDK)):sha(p) for base in [SDK/'ios/NativeSupport',SDK/'native/ios'] for p in base.rglob('*') if p.is_file()}
-    for name in ['ios_native_build.py','sdk_artifact_identity.py','build-ios-native.sh','build-ios-xcframework.sh']:
+    for name in ['lib/ios_native_build.py','lib/sdk_artifact_identity.py','build/build-ios-native.sh','build/build-ios-xcframework.sh']:
         hashes['scripts/'+name]=sha(SDK/'scripts'/name)
     return hashes
 
@@ -131,7 +131,7 @@ def framework(output,cache,configuration,simulator_only):
 
 def rootfs(archive,output,cache,native_output,profile,expected_sha256):
     output.mkdir(parents=True,exist_ok=True)
-    run(['python3',SDK/'scripts/mobile-linux/verify-rootfs-profile.py','--archive',archive,'--arch','aarch64','--profile',profile,'--sha256',expected_sha256,'--receipt',output/'archive-verification.json'])
+    run(['python3',SDK/'scripts/rootfs/verify-rootfs-profile.py','--archive',archive,'--arch','aarch64','--profile',profile,'--sha256',expected_sha256,'--receipt',output/'archive-verification.json'])
     work,ish,glue=prepare(cache);build=work/'build-host';env=os.environ.copy();env.pop('IPHONEOS_DEPLOYMENT_TARGET',None);env['LC_ALL']='en_US.UTF-8'
     if not (build/'build.ninja').exists():run(['meson','setup',build,ish,'--buildtype=release','-Dlog=','-Dkernel=ish','-Dengine=asbestos','-Dguest_arch=arm64'],env=env)
     run(['ninja','-C',build,'tools/fakefsify'],env=env)

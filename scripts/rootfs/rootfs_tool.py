@@ -656,7 +656,7 @@ def generate_spdx(args: argparse.Namespace) -> None:
         "documentNamespace": f"https://crates/mobile-linux/spdx/{args.name}/{namespace_hash}",
         "creationInfo": {
             "created": created,
-            "creators": ["Tool: scripts/mobile-linux/rootfs_tool.py"],
+            "creators": ["Tool: scripts/rootfs/rootfs_tool.py"],
         },
         "packages": [
             {

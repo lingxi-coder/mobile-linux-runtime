@@ -20,7 +20,7 @@ def main():
     parser.add_argument('--artifact-dir', type=Path, required=True)
     args = parser.parse_args()
     artifact = args.artifact_dir.resolve()
-    sdk = Path(__file__).resolve().parents[1]
+    sdk = Path(__file__).resolve().parents[2]
     manifest = json.loads((artifact / 'native-support-manifest.json').read_text())
     require(manifest['source_manifest_sha256'] == digest(sdk / 'native/ios/sources.json'), 'native source pins changed')
     require(manifest['kind'] == 'native-support' and manifest['contains_rust'] is False, 'expected a native-support artifact without a Rust core')

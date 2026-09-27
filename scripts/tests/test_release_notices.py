@@ -8,9 +8,10 @@ import unittest
 import zipfile
 import sys
 sys.dont_write_bytecode=True
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/lib"))
 from release_notices import FILES,registry_files,stage,verify
-ROOT=Path(__file__).resolve().parents[1]
-spec=importlib.util.spec_from_file_location('package_sdk',Path(__file__).with_name('package-sdk.py'))
+ROOT=Path(__file__).resolve().parents[2]
+spec=importlib.util.spec_from_file_location('package_sdk',Path(__file__).resolve().parents[1] / 'release/package-sdk.py')
 package=importlib.util.module_from_spec(spec);spec.loader.exec_module(package)
 class NoticeTests(unittest.TestCase):
     def test_original_notices_survive_binary_and_swift_zip(self):
@@ -24,7 +25,7 @@ class NoticeTests(unittest.TestCase):
     def test_both_sdk_licenses_are_hashed_build_inputs(self):
         self.assertEqual(FILES['SDK-LICENSE'], 'LICENSE')
         self.assertEqual(FILES['SDK-LICENSE-APACHE'], 'LICENSE-APACHE')
-        spec = importlib.util.spec_from_file_location('build_ffi', Path(__file__).with_name('build-ffi.py'))
+        spec = importlib.util.spec_from_file_location('build_ffi', Path(__file__).resolve().parents[1] / 'build/build-ffi.py')
         builder = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(builder)
         inputs = builder.source_inputs()

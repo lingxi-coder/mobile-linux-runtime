@@ -17,7 +17,7 @@ when the caller builds with an older NDK 27 revision. `PtyBridge.kt` retains its
 It belongs to the optional legacy host-shell API; the PRoot guest backend uses
 the independent Rust `platform-pty` implementation.
 
-Run `scripts/build-android-native.sh --ndk <ndk> --output-dir <output>
+Run `scripts/build/build-android-native.sh --ndk <ndk> --output-dir <output>
 --cache-dir <cache>`. An optional `--proot-source <checkout>` must name an
 independent checkout at the pinned commit. Otherwise the builder fetches that
 commit into its external cache. Both `arm64-v8a` and `x86_64` are built by default;
@@ -29,7 +29,7 @@ Output is `jniLibs/<abi>/*.so` plus `native-manifest.json`. These are native
 support artifacts only: **no Rust runtime core or FFI cdylib is included**.
 A full SDK AAR adds its one SDK cdylib; Rust hosts embed the SDK crates into their
 existing library instead and consume only this support bundle. Verify with
-`scripts/verify-android-native.py --artifact-dir <output>`. Source verification
+`scripts/checks/verify-android-native.py --artifact-dir <output>`. Source verification
 uses `--source-only` and does not require an OpenMinis checkout.
 
 The Rust backend takes an explicit `native_library_dir`; it does not infer an

@@ -3,9 +3,11 @@
 import argparse, hashlib, json, os, pathlib, shutil, subprocess, tempfile, tomllib
 import sys
 sys.dont_write_bytecode = True
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/lib"))
 from sdk_artifact_identity import source_identity
 from release_notices import stage as stage_notices, FILES as NOTICE_FILES
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 def run(args, env): subprocess.run(args, cwd=ROOT, env=env, check=True)
 def source_inputs():
     paths=[*ROOT.joinpath("crates").rglob("*.rs"),*ROOT.joinpath("crates").rglob("Cargo.toml"),ROOT/"Cargo.toml",ROOT/"Cargo.lock",ROOT/"rust-toolchain.toml",ROOT/"crates/mobile-linux-ffi/uniffi.toml",pathlib.Path(__file__).resolve()]

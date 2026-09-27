@@ -17,15 +17,18 @@ import tempfile
 SDK = Path(__file__).resolve().parents[2]
 NATIVE = SDK / "native/android"
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(SDK / "scripts"))
+sys.path.insert(0, str(SDK / "scripts/lib"))
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/lib"))
 from sdk_artifact_identity import source_identity, file_hashes
 
 
 def source_input_hashes():
     inputs = {}
     roots = [SDK / name for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
-        "docs/android/native-pins.json", "native/android", "scripts/build-android-native.sh",
-        "scripts/verify-android-native.py", "scripts/sdk_artifact_identity.py",
+        "docs/android/native-pins.json", "native/android", "scripts/build/build-android-native.sh",
+        "scripts/checks/verify-android-native.py", "scripts/lib/sdk_artifact_identity.py",
         "crates/platform-android-minijail", "crates/platform-android-libcap",
         "crates/platform-android-shellbin", "third_party/minijail", "third_party/libcap",
         "third_party/mksh", "third_party/toybox")]
@@ -174,7 +177,7 @@ def main():
         "source_inputs": source_inputs, "files": file_hashes(output, "native-manifest.json"),
         "schema_version": 1, "kind": "native-support-only", "contains_rust_core": False, "android_api": args.android_api, "legacy_shell_android_api": 29 if not args.without_legacy_shell else None, "legacy_host_shell": not args.without_legacy_shell, "proot_revision": pin["commit"], "source_pins_sha256": digest(SDK / "docs/android/native-pins.json"), "artifacts": artifacts, "licenses": license_records}
     (output / "native-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    run([sys.executable, SDK / "scripts/verify-android-native.py", "--artifact-dir", output])
+    run([sys.executable, SDK / "scripts/checks/verify-android-native.py", "--artifact-dir", output])
     print("Android native support verified: " + str(output), flush=True)
 
 if __name__ == "__main__": main()

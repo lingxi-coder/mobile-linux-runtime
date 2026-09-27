@@ -7,7 +7,7 @@ repo_root="$(cd "${script_dir}/../.." && pwd)"
 schema_path="${repo_root}/docs/mobile-linux/rootfs/rootfs-manifest.schema.json"
 sample_path="${repo_root}/docs/mobile-linux/rootfs/rootfs-manifest.sample.json"
 target_path="${1:-${sample_path}}"
-tool_path="${repo_root}/scripts/mobile-linux/rootfs_tool.py"
+tool_path="${repo_root}/scripts/rootfs/rootfs_tool.py"
 pins_path="${repo_root}/docs/toolchains/runtime-pins.json"
 enabled="${LINGXI_MOBILE_LINUX_ENABLED:-0}"
 

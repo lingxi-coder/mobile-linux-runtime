@@ -5,7 +5,7 @@ import shutil
 import json
 import tomllib
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_MANIFEST = 'docs/licenses/rust/registry-manifest.json'
 FILES = {'SDK-LICENSE': 'LICENSE', 'SDK-LICENSE-APACHE': 'LICENSE-APACHE', 'platform-pty-NOTICE': 'crates/platform-pty/NOTICE',
          'platform-pty-LICENSE-APACHE': 'crates/platform-pty/LICENSE-APACHE',

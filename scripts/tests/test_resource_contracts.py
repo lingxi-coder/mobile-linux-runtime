@@ -12,13 +12,14 @@ import tarfile
 import unittest
 from unittest import mock
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).parent / "mobile-linux"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rootfs"))
 from source_contract import external_output, SOURCE_ROOT
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "checks"))
 from check_dependencies import validate, validate_metadata
 
 
 def load(name, file):
-    spec = importlib.util.spec_from_file_location(name, Path(__file__).parent / "mobile-linux" / file)
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parents[1] / "rootfs" / file)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -138,8 +139,8 @@ class ResourceContracts(unittest.TestCase):
         self.assertEqual(workflow.count("DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer"), 3)
         self.assertIn("--android-api 26", workflow)
         self.assertNotIn("--kind sdk", workflow)
-        self.assertIn("scripts/build-ffi.py --platform ios --release", workflow)
-        for command in ("-p mobile-linux-android", "-p mobile-linux-ios", "scripts/test_artifact_identity.py", ":installer:testDebugUnitTest", "xcodebuild test", "MobileLinuxNativeTests", "scripts/test_maven_bundle.py", "scripts/test_release_notices.py", "scripts/test_source_identity.py", "--resolved", "cargo fmt --all --check"):
+        self.assertIn("scripts/build/build-ffi.py --platform ios --release", workflow)
+        for command in ("-p mobile-linux-android", "-p mobile-linux-ios", "scripts/tests/test_artifact_identity.py", ":installer:testDebugUnitTest", "xcodebuild test", "MobileLinuxNativeTests", "scripts/tests/test_maven_bundle.py", "scripts/tests/test_release_notices.py", "scripts/tests/test_source_identity.py", "--resolved", "cargo fmt --all --check"):
             self.assertIn(command, workflow, f"missing existing test ownership: {command}")
 
     def test_resolved_dependency_graph_rejects_transitive_edges(self):

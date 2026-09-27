@@ -3,43 +3,43 @@
   "source_revision": "fe876d368a6bd06988f936064f9a6e00edbe55a3",
   "files": [
     {
-      "source": "scripts/mobile-linux/rootfs_tool.py",
-      "destination": "scripts/mobile-linux/rootfs_tool.py",
+      "source": "scripts/rootfs/rootfs_tool.py",
+      "destination": "scripts/rootfs/rootfs_tool.py",
       "source_sha256": "d7f3b6613179afca21e021925cf728b449bbc91c65fee928aef734d83d8f11ec"
     },
     {
-      "source": "scripts/mobile-linux/rootfs-build-inner.sh",
-      "destination": "scripts/mobile-linux/rootfs-build-inner.sh",
+      "source": "scripts/rootfs/rootfs-build-inner.sh",
+      "destination": "scripts/rootfs/rootfs-build-inner.sh",
       "source_sha256": "76c1fb5a3acfa5e5870b2de1bd98e749782a353cbe10276f7aa4ac0fa3796c15"
     },
     {
-      "source": "scripts/mobile-linux/install-local-app-toolchains.py",
-      "destination": "scripts/mobile-linux/install-local-app-toolchains.py",
+      "source": "scripts/rootfs/install-local-app-toolchains.py",
+      "destination": "scripts/rootfs/install-local-app-toolchains.py",
       "source_sha256": "5ddc1173b1313f30302a3a712696348faaba188928917f4c8444597fc42f9ccd"
     },
     {
-      "source": "scripts/mobile-linux/update-local-app-pins.py",
-      "destination": "scripts/mobile-linux/update-local-app-pins.py",
+      "source": "scripts/rootfs/update-local-app-pins.py",
+      "destination": "scripts/rootfs/update-local-app-pins.py",
       "source_sha256": "70c00e0e8b0ecfe27a106cea4ade8b195fb7f214385737682b1212372f5e27fc"
     },
     {
-      "source": "scripts/mobile-linux/package-rootfs-release.sh",
-      "destination": "scripts/mobile-linux/package-rootfs-release.sh",
+      "source": "scripts/rootfs/package-rootfs-release.sh",
+      "destination": "scripts/rootfs/package-rootfs-release.sh",
       "source_sha256": "a366bdef6ee176ef7ab9391991b92d2b98074970c6166d2ce98e6398d7d99d8a"
     },
     {
-      "source": "scripts/mobile-linux/check-rootfs-manifest.sh",
-      "destination": "scripts/mobile-linux/check-rootfs-manifest.sh",
+      "source": "scripts/rootfs/check-rootfs-manifest.sh",
+      "destination": "scripts/rootfs/check-rootfs-manifest.sh",
       "source_sha256": "2019277e4812b276f3d1307aae8008ac5c16ad5e66a0c7794c8c1ea038e964b0"
     },
     {
-      "source": "scripts/mobile-linux/test-rootfs-tooling.sh",
-      "destination": "scripts/mobile-linux/test-rootfs-tooling.sh",
+      "source": "scripts/rootfs/test-rootfs-tooling.sh",
+      "destination": "scripts/rootfs/test-rootfs-tooling.sh",
       "source_sha256": "c30afd33d6a68c80b342b10348c594d9832f96659bcb53189d8580dac2fe7351"
     },
     {
-      "source": "scripts/mobile-linux/build-local-app-rootfs.sh",
-      "destination": "scripts/mobile-linux/build-local-app-rootfs.sh",
+      "source": "scripts/rootfs/build-local-app-rootfs.sh",
+      "destination": "scripts/rootfs/build-local-app-rootfs.sh",
       "source_sha256": "94c3ca0edb5101cdb80928fddb3119762dd868e2a1c09ef3972706869317fa10"
     }
   ],

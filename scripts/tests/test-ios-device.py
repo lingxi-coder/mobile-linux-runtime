@@ -2,7 +2,7 @@
 """Stage only built SDK artifacts and run the independent iOS device contract suite."""
 import argparse, hashlib, json, pathlib, shutil, subprocess
 P = pathlib.Path
-SDK = P(__file__).resolve().parents[1]
+SDK = P(__file__).resolve().parents[2]
 p = argparse.ArgumentParser(description=__doc__)
 for name in ['native-artifact','ffi-artifact','rootfs-artifact','output']:
     p.add_argument('--'+name, type=P, required=True)
@@ -10,7 +10,7 @@ p.add_argument('--device', required=True)
 p.add_argument('--team', required=True)
 p.add_argument('--mode', choices=['app','xctest'], default='xctest')
 a = p.parse_args()
-subprocess.run(['python3', str(SDK/'scripts/verify-ios-native.py'), '--artifact-dir', str(a.native_artifact)], check=True)
+subprocess.run(['python3', str(SDK/'scripts/checks/verify-ios-native.py'), '--artifact-dir', str(a.native_artifact)], check=True)
 ffi = json.loads((a.ffi_artifact/'ffi-build.json').read_text())
 if ffi['platform'] != 'ios' or ffi['native_support_embedded'] or not ffi['abi_metadata_verified']:
     raise SystemExit('expected verified iOS FFI artifact without embedded native support')

@@ -333,13 +333,13 @@ pathlib.Path(out_path).write_text(
 print(f"   {len(artifacts)} pinned artifacts")
 PY
 
-python3 /sdk/scripts/mobile-linux/normalize-interpreter-aliases.py --root "${TARGET}" --record "${OUT}/interpreter-alias-transformations.json"
+python3 /sdk/scripts/rootfs/normalize-interpreter-aliases.py --root "${TARGET}" --record "${OUT}/interpreter-alias-transformations.json"
 echo "[rootfs:${ARCH}] packing rootfs tarball"
-python3 /sdk/scripts/mobile-linux/rootfs_tool.py build-archive --root "${TARGET}" --output "${OUT}/rootfs.tar" --source-date-epoch 0
+python3 /sdk/scripts/rootfs/rootfs_tool.py build-archive --root "${TARGET}" --output "${OUT}/rootfs.tar" --source-date-epoch 0
 gzip -n -9 -c "${OUT}/rootfs.tar" > "${OUT}/rootfs.tar.gz"
 rm "${OUT}/rootfs.tar"
 case "${ARCH}" in aarch64) ABI=arm64-v8a ;; x86_64) ABI=x86_64 ;; esac
-python3 /sdk/scripts/mobile-linux/publish-rootfs-evidence.py --root "${TARGET}" --archive "${OUT}/rootfs.tar.gz" --closure "${OUT}/closure.json" --abi "${ABI}" --output-dir "/out/release-evidence/${ABI}"
+python3 /sdk/scripts/rootfs/publish-rootfs-evidence.py --root "${TARGET}" --archive "${OUT}/rootfs.tar.gz" --closure "${OUT}/closure.json" --abi "${ABI}" --output-dir "/out/release-evidence/${ABI}"
 cp "${OUT}/interpreter-alias-transformations.json" "/out/release-evidence/${ABI}/"
 
 sha256sum "${OUT}/rootfs.tar.gz" | awk '{print "[rootfs] tarball sha256="$1}'

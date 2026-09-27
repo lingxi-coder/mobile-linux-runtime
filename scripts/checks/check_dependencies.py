@@ -81,7 +81,7 @@ def validate_metadata(metadata, root):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[2])
     parser.add_argument("--resolved", action="store_true", help="inspect cargo metadata --locked --all-features including transitive packages")
     args = parser.parse_args()
     validate(args.root)

@@ -3,9 +3,11 @@
 import argparse, hashlib, json, os, pathlib, subprocess, zipfile
 import sys
 sys.dont_write_bytecode = True
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/lib"))
 from sdk_artifact_identity import source_identity, validate_artifacts
 from release_notices import verify as verify_notices, FILES as NOTICE_FILES
-ROOT=pathlib.Path(__file__).resolve().parents[1]
+ROOT=pathlib.Path(__file__).resolve().parents[2]
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--native-artifacts",type=pathlib.Path,required=True)
@@ -29,7 +31,7 @@ def main():
         for abi in ("arm64-v8a","x86_64"):
             if f"jniLibs/{abi}/libmobile_linux_runtime.so" not in ffi_manifest["files"]:raise ValueError(f"missing FFI ABI {abi}")
         if not any(name.endswith(".kt") for name in ffi_manifest["files"]):raise ValueError("missing generated Kotlin metadata")
-    subprocess.run(["python3",str(ROOT/"scripts/verify-android-native.py"),"--artifact-dir",str(a.native_artifacts.resolve())],check=True)
+    subprocess.run(["python3",str(ROOT/"scripts/checks/verify-android-native.py"),"--artifact-dir",str(a.native_artifacts.resolve())],check=True)
     build=a.build_dir.resolve();build.mkdir(parents=True,exist_ok=True);maven=a.maven_dir.resolve();maven.mkdir(parents=True,exist_ok=True)
     tasks=[":installer:publishReleasePublicationToMavenRepository",":native-support:publishReleasePublicationToMavenRepository",":gradle-plugin:publish"]
     if not a.native_only:tasks.append(":runtime:publishReleasePublicationToMavenRepository")

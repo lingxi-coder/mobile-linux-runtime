@@ -34,7 +34,7 @@ WHAT WOULD MAKE THIS TEST LIE TO YOU, AND WHY IT DOESN'T:
     would report an unconditional exit=0 and gets caught the moment the
     independent standalone run disagrees.
 
-Run directly: `python3 scripts/test_gate_triggers.py` from anywhere (paths
+Run directly: `python3 scripts/tests/test_gate_triggers.py` from anywhere (paths
 are resolved from this file's own location, not the caller's cwd).
 """
 from __future__ import annotations
@@ -44,8 +44,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCRIPTS_DIR = Path(__file__).resolve().parent  # crates/scripts
-LINGXI_CODE = SCRIPTS_DIR.parent  # crates/
+SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "checks"
+LINGXI_CODE = SCRIPTS_DIR.parents[1]
 REPO_ROOT = LINGXI_CODE
 GATE_NAME_RE = re.compile(r"^(check-.*\.sh|.*-gate\.sh)$")
 SELF = "check-all.sh"
@@ -102,7 +102,7 @@ def run_standalone(gate: str) -> tuple:
     real (exit_code, combined_output). This is the independent reference
     each gate's recorded behaviour inside check-all.sh is checked against,
     both by exit code AND by the actual text it printed."""
-    argv = ["./scripts/" + gate] + ARGV_OVERRIDES.get(gate, [])
+    argv = ["./scripts/checks/" + gate] + ARGV_OVERRIDES.get(gate, [])
     proc = subprocess.run(argv, cwd=str(LINGXI_CODE), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     return proc.returncode, proc.stdout
 
@@ -219,8 +219,8 @@ def every_checked_in_gate_has_an_execution_trigger() -> list:
     ]
     if not any("scripts/check-all.sh" in line for line in executable_lines):
         failures.append("ci.yml does not execute scripts/check-all.sh")
-    if not any("scripts/test_gate_triggers.py" in line for line in executable_lines):
-        failures.append("ci.yml does not execute scripts/test_gate_triggers.py")
+    if not any("scripts/tests/test_gate_triggers.py" in line for line in executable_lines):
+        failures.append("ci.yml does not execute scripts/tests/test_gate_triggers.py")
 
     return failures
 
