@@ -12,7 +12,7 @@ dependencies {  }
 afterEvaluate { publishing { publications { create<MavenPublication>("release") {
     from(components["release"])
     artifactId = "mobile-linux-native-support"
-    pom { name.set("Mobile Linux native-support"); description.set("Standalone mobile Linux SDK native-support"); url.set("https://github.com/lingxi-coder/mobile-linux-runtime"); licenses { license { name.set("GPL-3.0 (OpenMinis); GPL-2.0-or-later (PRoot); LGPL-3.0-or-later (talloc); MIT (SDK wrapper)") } } }
+    pom { name.set("Mobile Linux native-support"); description.set("Standalone mobile Linux SDK native-support"); url.set("https://github.com/lingxi-coder/mobile-linux-runtime"); licenses { license { name.set("GPL-3.0 (OpenMinis); GPL-2.0-or-later (PRoot); LGPL-3.0-or-later (talloc); MIT OR Apache-2.0 (SDK wrapper)") } } }
 } }; repositories { maven { url = uri(providers.gradleProperty("sdkMavenRepo").getOrElse(rootProject.layout.buildDirectory.dir("maven").get().asFile.absolutePath)) } } } }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach { compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }

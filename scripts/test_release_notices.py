@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -19,12 +20,23 @@ class NoticeTests(unittest.TestCase):
                 target=root/name;package.archive(binary,target,'payload',[licenses])
                 with zipfile.ZipFile(target) as archive:
                     for license_name,source in FILES.items():self.assertEqual(archive.read('licenses/'+license_name),(ROOT/source).read_bytes())
+    def test_both_sdk_licenses_are_hashed_build_inputs(self):
+        self.assertEqual(FILES['SDK-LICENSE'], 'LICENSE')
+        self.assertEqual(FILES['SDK-LICENSE-APACHE'], 'LICENSE-APACHE')
+        spec = importlib.util.spec_from_file_location('build_ffi', Path(__file__).with_name('build-ffi.py'))
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        inputs = builder.source_inputs()
+        for name in ['LICENSE', 'LICENSE-APACHE']:
+            self.assertEqual(inputs[name], hashlib.sha256((ROOT / name).read_bytes()).hexdigest())
+
     def test_missing_notice_fails(self):
         with tempfile.TemporaryDirectory() as temporary:
             target=Path(temporary);stage(ROOT,target);(target/'platform-pty-NOTICE').unlink()
             with self.assertRaisesRegex(ValueError,'notice'):verify(ROOT,target)
     def test_changed_license_fails(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            target=Path(temporary);stage(ROOT,target);(target/'SDK-LICENSE').write_bytes(b'changed')
-            with self.assertRaisesRegex(ValueError,'license'):verify(ROOT,target)
+        for name in ['SDK-LICENSE', 'SDK-LICENSE-APACHE']:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                target=Path(temporary);stage(ROOT,target);(target/name).write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError,'license'):verify(ROOT,target)
 if __name__=='__main__':unittest.main()

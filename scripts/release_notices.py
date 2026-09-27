@@ -2,7 +2,7 @@
 from pathlib import Path
 import hashlib
 import shutil
-FILES = {'SDK-LICENSE': 'LICENSE', 'platform-pty-NOTICE': 'crates/platform-pty/NOTICE',
+FILES = {'SDK-LICENSE': 'LICENSE', 'SDK-LICENSE-APACHE': 'LICENSE-APACHE', 'platform-pty-NOTICE': 'crates/platform-pty/NOTICE',
          'platform-pty-LICENSE-APACHE': 'crates/platform-pty/LICENSE-APACHE',
          'COMPONENT-NOTICE.md': 'docs/mobile-linux/LICENSES/NOTICE.md'}
 

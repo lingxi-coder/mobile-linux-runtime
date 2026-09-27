@@ -11,7 +11,7 @@ dependencies { implementation("org.apache.commons:commons-compress:1.27.1")
 afterEvaluate { publishing { publications { create<MavenPublication>("release") {
     from(components["release"])
     artifactId = "mobile-linux-installer"
-    pom { name.set("Mobile Linux installer"); description.set("Standalone mobile Linux SDK installer"); url.set("https://github.com/lingxi-coder/mobile-linux-runtime"); licenses { license { name.set("MIT") } } }
+    pom { name.set("Mobile Linux installer"); description.set("Standalone mobile Linux SDK installer"); url.set("https://github.com/lingxi-coder/mobile-linux-runtime"); licenses { license { name.set("MIT OR Apache-2.0") } } }
 } }; repositories { maven { url = uri(providers.gradleProperty("sdkMavenRepo").getOrElse(rootProject.layout.buildDirectory.dir("maven").get().asFile.absolutePath)) } } } }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach { compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }

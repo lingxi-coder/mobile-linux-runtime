@@ -232,9 +232,11 @@ B. Record the binary source revision and later package revision separately.
 Archive presence, simulator linking and host tests do not establish real-device
 acceptance; attach the corresponding device evidence to each release.
 
-The root MIT license covers original SDK source only. Full Android distributions
-include OpenMinis, PRoot and talloc under their separate GPL/LGPL terms; iOS
-includes the GPL-3.0-only Rust backend and the pinned native sources. Preserve
+SDK Rust source retains its original MIT OR Apache-2.0 license choice, including
+the iOS Rust adapter; imported PTY files keep their distinct Apache/MIT notices.
+Full Android distributions include OpenMinis, PRoot and talloc under their
+separate GPL/LGPL terms. The iOS native-support distribution includes the pinned
+OpenMinis/iSH native sources under their original terms. Preserve
 the applicable license/notice files, source revisions and patch provenance.
 [Component attribution](mobile-linux/LICENSES/NOTICE.md) identifies these inputs;
 rootfs SBOMs carry their own package licenses. The SDK's independence from an
