@@ -98,6 +98,7 @@ class RealRuntimeSmokeTest {
             protectedHostRoots = emptyList(), allowedMountRoots = emptyList(), allowedGuestRoots = emptyList(),
         )
         var runtime = MobileLinuxRuntime.create(config)
+        var primaryFailure: Throwable? = null
         try {
             assertEquals(MobileLinuxRootfsStateFfi.READY, runtime.handle.repairRootfs().state)
             assertEquals(MobileLinuxRootfsStateFfi.READY, runtime.boot().state)
@@ -229,10 +230,21 @@ class RealRuntimeSmokeTest {
                 put("deviceAbi", Build.SUPPORTED_ABIS.first()); put("sdkInt", Build.VERSION.SDK_INT)
                 put("rootfsSha256", archiveSha); put("checks", org.json.JSONArray(checks))
             }.toString(2))
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
         } finally {
-            // Preserve the original assertion/timeout when cleanup also fails.
-            runCatching { runtime.shutdown() }.onFailure { Log.e("MobileLinuxSdkSmoke", "cleanup shutdown failed", it) }
-            runtime.handle.destroy()
+            // Keep the first failure; cleanup failures still fail an otherwise successful test.
+            try {
+                runtime.shutdown()
+            } catch (cleanupFailure: Throwable) {
+                val original = primaryFailure
+                if (original == null) throw cleanupFailure
+                original.addSuppressed(cleanupFailure)
+                Log.e("MobileLinuxSdkSmoke", "cleanup shutdown failed", cleanupFailure)
+            } finally {
+                runtime.handle.destroy()
+            }
         }
     }
 }

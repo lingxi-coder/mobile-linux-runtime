@@ -11,6 +11,13 @@ p.add_argument('--team', required=True)
 p.add_argument('--mode', choices=['app','xctest'], default='xctest')
 a = p.parse_args()
 subprocess.run(['python3', str(SDK/'scripts/verify-ios-native.py'), '--artifact-dir', str(a.native_artifact)], check=True)
+ffi = json.loads((a.ffi_artifact/'ffi-build.json').read_text())
+if ffi['platform'] != 'ios' or ffi['native_support_embedded'] or not ffi['abi_metadata_verified']:
+    raise SystemExit('expected verified iOS FFI artifact without embedded native support')
+for name, expected in ffi['files'].items():
+    path = a.ffi_artifact/name
+    if not path.resolve().is_relative_to(a.ffi_artifact.resolve()) or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+        raise SystemExit('FFI artifact hash mismatch: '+name)
 manifest = json.loads((a.rootfs_artifact/'manifest.json').read_text())
 archive = a.rootfs_artifact/'resources/alpine-rootfs.zip'
 if hashlib.sha256(archive.read_bytes()).hexdigest() != manifest['rootfs_zip_sha256']:

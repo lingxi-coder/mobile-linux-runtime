@@ -42,11 +42,23 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertFalse(LXISHRawOutputChunk.drain(stdout: &output, stderr: &error, terminal: false, maxBytes: 3).closed)
     }
 
-    func testRawTerminalResourceFailureUsesStructuredBridgeError() {
+    func testRawTerminalResourceFailureUsesStructuredBridgeError() throws {
         let payload = LXISHRawOutputChunk.failurePayload("buffer limit") as? [String: String]
         XCTAssertEqual(payload?["code"], "resource_limit_exceeded")
         XCTAssertEqual(payload?["message"], "buffer limit")
         XCTAssertTrue(LXISHRawOutputChunk.failurePayload(nil) is NSNull)
+        let envelope = encodeEnvelope(ok: true, payload: ["closed": true, "error": LXISHRawOutputChunk.failurePayload("buffer limit")])
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(envelope.utf8)) as? [String: Any])
+        let encodedError = try XCTUnwrap(object["error"] as? [String: String])
+        XCTAssertEqual(encodedError["code"], "resource_limit_exceeded")
+        XCTAssertEqual(encodedError["message"], "buffer limit")
+    }
+
+    func testExplicitCallerHomeAndBrowserSurviveDefaultEnvironment() {
+        let environment = LXISHGuestEnvironment.merged(requestEnvironment: ["HOME": "/tmp/sdk-home", "BROWSER": "/tmp/caller-browser"], cwd: nil, stableWorkspaceId: "one")
+        XCTAssertEqual(environment["HOME"], "/tmp/sdk-home")
+        XCTAssertEqual(environment["BROWSER"], "/tmp/caller-browser")
+        XCTAssertNil(LXISHGuestEnvironment.merged(requestEnvironment: [:], cwd: nil, stableWorkspaceId: "one")["BROWSER"])
     }
 
     private var temporaryRoot: URL!

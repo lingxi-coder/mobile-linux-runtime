@@ -34,7 +34,7 @@ def validate(root):
             if isinstance(item, dict):
                 walk(item, directory)
     for path in manifests:
-        data = tomllib.loads(path.read_text())
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
         walk(data, path.parent)
     print(f"SDK dependency boundary verified: {len(manifests)} manifests")
 
@@ -86,5 +86,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     validate(args.root)
     if args.resolved:
-        output = subprocess.check_output(["cargo", "metadata", "--locked", "--all-features", "--format-version=1"],cwd=args.root,text=True)
+        output = subprocess.check_output(["cargo", "metadata", "--locked", "--all-features", "--format-version=1"],cwd=args.root,text=True,encoding="utf-8")
         validate_metadata(json.loads(output),args.root)

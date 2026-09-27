@@ -27,17 +27,6 @@ const MAX_STREAM_CAPTURE_BYTES: usize = 256 * 1024;
 const PTY_IDLE_POLL: Duration = Duration::from_millis(25);
 const BACKGROUND_IDLE_POLL: Duration = Duration::from_millis(25);
 const BACKGROUND_REAP_BUDGET: Duration = Duration::from_secs(3);
-// Temporary bounded device-stage diagnostics: no commands, paths or payloads.
-fn trace_foreground(stage: &str) {
-    static EMITTED: AtomicU64 = AtomicU64::new(0);
-    if EMITTED.fetch_add(1, Ordering::Relaxed) < 96 {
-        eprintln!(
-            "MLR_IOS_FOREGROUND stage={stage} thread={:?}",
-            std::thread::current().id()
-        );
-    }
-}
-
 #[derive(Clone, Copy)]
 enum ForegroundMountMode {
     Merged,
@@ -208,6 +197,7 @@ struct RuntimeState {
     next_id: AtomicU64,
     next_sequence: AtomicU64,
     booted: AtomicBool,
+    rootfs_status_cache: Mutex<Option<RootfsStatus>>,
     kernel_started: Arc<AtomicBool>,
     closed: AtomicBool,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
@@ -330,6 +320,7 @@ impl IosIshRuntime {
                 next_id: AtomicU64::new(1),
                 next_sequence: AtomicU64::new(1),
                 booted: AtomicBool::new(false),
+                rootfs_status_cache: Mutex::new(None),
                 kernel_started: Arc::new(AtomicBool::new(false)),
                 closed: AtomicBool::new(false),
                 lifecycle: Arc::new(tokio::sync::Mutex::new(())),
@@ -531,6 +522,29 @@ impl IosIshRuntime {
         self.rootfs_snapshot_with_error(None, None)
     }
 
+    async fn refresh_rootfs_snapshot(&self) -> Result<RootfsStatus, MobileLinuxError> {
+        // A rootfs contains tens of thousands of entries. Never enumerate it on
+        // the foreign executor's poll thread (which may be the UI main actor).
+        let runtime = self.clone();
+        let snapshot = spawn_blocking(move || runtime.rootfs_snapshot())
+            .await
+            .map_err(|error| MobileLinuxError::Io(format!("join rootfs status scan: {error}")))?;
+        *self
+            .state
+            .rootfs_status_cache
+            .lock()
+            .expect("ios-ish rootfs status cache") = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    fn invalidate_rootfs_snapshot(&self) {
+        *self
+            .state
+            .rootfs_status_cache
+            .lock()
+            .expect("ios-ish rootfs status cache") = None;
+    }
+
     fn native_config_json(&self) -> Result<String, MobileLinuxError> {
         serde_json::to_string(&self.state.config.native_payload())
             .map_err(|error| MobileLinuxError::Io(format!("serialize native config: {error}")))
@@ -581,22 +595,15 @@ impl IosIshRuntime {
         if self.state.test_transport.is_some() {
             return Ok(());
         }
-        trace_foreground("mounts.availability.begin");
         self.ensure_native_available()?;
-        trace_foreground("mounts.availability.end");
         let config_json = self.native_config_json()?;
         let payload = MountConfigPayload::from_mounts(mounts);
         let json = serde_json::to_string(&payload)
             .map_err(|error| MobileLinuxError::Io(format!("serialize mounts json: {error}")))?;
         let native_lock = self.state.native_lock.clone();
-        trace_foreground("mounts.blocking.queue");
         let response = spawn_blocking(move || {
-            trace_foreground("mounts.native_lock.wait");
             let _guard = native_lock.lock().expect("ios-ish native lock");
-            trace_foreground("mounts.native_lock.acquired");
-            let response = native::configure_mounts_json(&config_json, &json);
-            trace_foreground("mounts.native.end");
-            response
+            native::configure_mounts_json(&config_json, &json)
         })
         .await
         .map_err(|error| MobileLinuxError::Io(format!("join configure_mounts_json: {error}")))?
@@ -624,14 +631,9 @@ impl IosIshRuntime {
             MobileLinuxError::Io(format!("serialize background request: {error}"))
         })?;
         let native_lock = self.state.native_lock.clone();
-        trace_foreground("spawn.blocking.queue");
         let response = spawn_blocking(move || {
-            trace_foreground("spawn.native_lock.wait");
             let _guard = native_lock.lock().expect("ios-ish native lock");
-            trace_foreground("spawn.native_lock.acquired");
-            let response = native::spawn_background_json(&config_json, &request_json);
-            trace_foreground("spawn.native.end");
-            response
+            native::spawn_background_json(&config_json, &request_json)
         })
         .await
         .map_err(|error| MobileLinuxError::Io(format!("join spawn_background: {error}")))?
@@ -814,27 +816,20 @@ impl IosIshRuntime {
         mount_mode: ForegroundMountMode,
         sink: Option<Arc<dyn ProcessStreamSink>>,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        trace_foreground("run.enter");
         self.ensure_session_open()?;
         validate_request(&request)?;
-        trace_foreground("run.boot.begin");
         self.boot().await?;
-        trace_foreground("run.boot.end");
         // Shutdown cannot snapshot tasks until native startup has published its
         // handle. Move this guard into the owner, so dropping the caller while
         // spawn_blocking is pending cannot release the lifecycle too early.
-        trace_foreground("run.lifecycle.wait");
         let startup = self.state.lifecycle.clone().lock_owned().await;
-        trace_foreground("run.lifecycle.acquired");
         self.ensure_session_open()?;
         let mounts = match mount_mode {
             ForegroundMountMode::Merged => self.merged_mounts(&request.mounts)?,
             ForegroundMountMode::RequestOnly => self.isolated_mounts(&request.mounts)?,
         };
         if matches!(mount_mode, ForegroundMountMode::Merged) {
-            trace_foreground("run.mounts.begin");
             self.apply_mounts(&mounts).await?;
-            trace_foreground("run.mounts.end");
         }
         let (task_id, task) = self.create_task(
             "task",
@@ -847,9 +842,7 @@ impl IosIshRuntime {
         };
         let runtime = self.clone();
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        trace_foreground("run.owner.queue");
         tokio::spawn(async move {
-            trace_foreground("owner.start");
             let started = runtime
                 .native_spawn_background(
                     &request,
@@ -857,7 +850,6 @@ impl IosIshRuntime {
                     matches!(mount_mode, ForegroundMountMode::Merged),
                 )
                 .await;
-            trace_foreground("owner.native_spawn.end");
             if let Ok(start) = &started {
                 *task
                     .native_handle
@@ -865,7 +857,6 @@ impl IosIshRuntime {
                     .expect("ios-ish native handle mutex") = Some(start.process_id.clone());
             }
             drop(startup);
-            trace_foreground("owner.startup.released");
             let result = match started {
                 Ok(start) if !start.process_id.trim().is_empty() => {
                     runtime
@@ -911,10 +902,8 @@ impl IosIshRuntime {
                     );
                 }
             }
-            trace_foreground("owner.result.send");
             let _ = sender.send(result);
         });
-        trace_foreground("run.result.wait");
         let result = receiver
             .await
             .map_err(|error| MobileLinuxError::Io(format!("foreground owner failed: {error}")))?;
@@ -1468,14 +1457,18 @@ impl MobileLinuxRuntime for IosIshRuntime {
     }
 
     async fn boot(&self) -> Result<RootfsStatus, MobileLinuxError> {
-        trace_foreground("boot.lifecycle.wait");
         let _lifecycle = self.state.lifecycle.lock().await;
-        trace_foreground("boot.lifecycle.acquired");
         if self.state.booted.load(Ordering::Acquire) {
-            trace_foreground("boot.cached_snapshot.begin");
-            let snapshot = self.rootfs_snapshot();
-            trace_foreground("boot.cached_snapshot.end");
-            return Ok(snapshot);
+            let cached = self
+                .state
+                .rootfs_status_cache
+                .lock()
+                .expect("ios-ish rootfs status cache")
+                .clone();
+            if let Some(snapshot) = cached {
+                return Ok(snapshot);
+            }
+            return self.refresh_rootfs_snapshot().await;
         }
         self.ensure_native_available()?;
         fs::create_dir_all(&self.state.config.managed_root).map_err(|error| {
@@ -1497,7 +1490,7 @@ impl MobileLinuxRuntime for IosIshRuntime {
         self.state.kernel_started.store(true, Ordering::Release);
         self.state.closed.store(false, Ordering::Release);
         self.state.booted.store(true, Ordering::Release);
-        Ok(self.rootfs_snapshot())
+        self.refresh_rootfs_snapshot().await
     }
 
     async fn shutdown(&self) -> Result<(), MobileLinuxError> {
@@ -1930,28 +1923,24 @@ impl MobileLinuxRuntime for IosIshRuntime {
     }
 
     async fn rootfs_status(&self) -> Result<RootfsStatus, MobileLinuxError> {
-        Ok(self.rootfs_snapshot())
+        self.refresh_rootfs_snapshot().await
     }
 
     async fn verify_rootfs(&self) -> Result<RootfsStatus, MobileLinuxError> {
-        let status = self.rootfs_snapshot();
-        if matches!(status.state, RootfsState::Ready) {
-            Ok(status)
-        } else {
-            Ok(self.rootfs_snapshot_with_error(
-                Some(match status.state {
-                    RootfsState::Missing => RootfsState::Missing,
-                    RootfsState::Unsupported => RootfsState::Unsupported,
-                    _ => RootfsState::Corrupt,
-                }),
-                status.last_error,
-            ))
+        let mut status = self.refresh_rootfs_snapshot().await?;
+        if !matches!(
+            status.state,
+            RootfsState::Ready | RootfsState::Missing | RootfsState::Unsupported
+        ) {
+            status.state = RootfsState::Corrupt;
         }
+        Ok(status)
     }
 
     async fn repair_rootfs(&self) -> Result<RootfsStatus, MobileLinuxError> {
         let _lifecycle = self.state.lifecycle.lock().await;
         self.ensure_rootfs_mutable()?;
+        self.invalidate_rootfs_snapshot();
         self.ensure_native_available()?;
         let config_json = self.native_config_json()?;
         let native_lock = self.state.native_lock.clone();
@@ -1963,14 +1952,15 @@ impl MobileLinuxRuntime for IosIshRuntime {
         .map_err(|error| MobileLinuxError::Io(format!("join repair_rootfs: {error}")))?
         .map_err(MobileLinuxError::Io)?;
         let _ = parse_native_ok(&response)?;
-        Ok(self.rootfs_snapshot())
+        self.refresh_rootfs_snapshot().await
     }
 
     async fn reset_rootfs(&self) -> Result<RootfsStatus, MobileLinuxError> {
         let _lifecycle = self.state.lifecycle.lock().await;
         self.ensure_rootfs_mutable()?;
+        self.invalidate_rootfs_snapshot();
         self.install_rootfs(true).await?;
-        Ok(self.rootfs_snapshot())
+        self.refresh_rootfs_snapshot().await
     }
 
     fn current_mounts(&self) -> Vec<MountSpec> {
@@ -3635,6 +3625,27 @@ mod tests {
             }
         })
         .await
+    }
+
+    #[tokio::test]
+    async fn idempotent_boot_reuses_status_until_an_explicit_refresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let (runtime, _) = process_test_runtime(&temp);
+        let initial = runtime.boot().await.unwrap();
+        assert_eq!(initial.installed_size_bytes, Some(0));
+        let root = runtime.state.config.active_root();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("new-rootfs-file"), b"changed").unwrap();
+        // A repeated boot is the hot path before every command/raw/PTY start.
+        assert_eq!(runtime.boot().await.unwrap().installed_size_bytes, Some(0));
+        assert_eq!(
+            runtime.rootfs_status().await.unwrap().installed_size_bytes,
+            Some(7)
+        );
+        assert_eq!(runtime.boot().await.unwrap().installed_size_bytes, Some(7));
+        runtime.invalidate_rootfs_snapshot();
+        fs::write(root.join("new-rootfs-file"), b"replacement").unwrap();
+        assert_eq!(runtime.boot().await.unwrap().installed_size_bytes, Some(11));
     }
 
     #[tokio::test]

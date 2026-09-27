@@ -59,15 +59,19 @@
     }
   },
   "patches": {
-    "openminis-raw-stdio.patch": "d0a04f2a485c2cb2c0892e40fd0526c72c5bafc9fa4f77bf297f2792fc88ba35",
+    "openminis-raw-stdio.patch": "04fe10dbf0965af4c2d44d49ef7a62fee6f6056ef8cef77f8e6ec5593fb50d1e",
     "ish-socket-network-policy.patch": "2122d7284c98fc88c6b8b72570c64297d299ab7a941a20f3a879c6465003834f",
     "openminis-explicit-overlay.patch": "379880442ad6e430f782bf6f8d6c792ff81531057ba870e5ac89e316f26dbd16",
     "openminis-explicit-host-state.patch": "7db605c45e3e583fb0a22ff9c853fc0f3fbcfdfc3547c985689d762868f4c8ba",
-    "ish-fakefs-utf8-locale.patch": "8fa48cbc617a843159ca568458fa03bce9681821c3e97c776010a6bfb8acc040"
+    "ish-fakefs-utf8-locale.patch": "8fa48cbc617a843159ca568458fa03bce9681821c3e97c776010a6bfb8acc040",
+    "ish-task-wakeup-signal.patch": "e81f40ee350d81f6db80f2a5f54145b7fc12c93f9fd11db1f160dfb7b4d9571d",
+    "openminis-generic-environment.patch": "8d1e6fbebe0f0351177ca2c71af01a93c2576334e4c3c4a872718cb7f83bab09"
   },
   "features": {
     "native_apple_offloads": false,
-    "process_kernel": "one immutable configuration; physical teardown unavailable",
-    "raw_stdio_patch": "byte-exact pipes, context-bound process-group cancellation, EOF-before-completion"
+    "process_kernel": "one immutable kernel identity with scoped workspace sessions; physical teardown unavailable",
+    "raw_stdio_patch": "byte-exact pipes, context-bound process-group cancellation, EOF-before-completion",
+    "guest_wakeup": "guest pthreads unblock only internal SIGUSR1 for cancellation from embedded hosts",
+    "environment": "caller values replace defaults; no product browser or Apple offloads"
   }
 }

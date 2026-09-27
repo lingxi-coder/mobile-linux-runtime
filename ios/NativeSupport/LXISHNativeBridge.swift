@@ -2618,12 +2618,14 @@ private struct DynamicCodingKey: CodingKey {
     }
 }
 
-private func encodeEnvelope(ok: Bool, payload: [String: Any]) -> String {
+func encodeEnvelope(ok: Bool, payload: [String: Any]) -> String {
     let converted = payload.reduce(into: [String: AnyEncodable]()) { result, item in
         switch item.value {
         case let value as AnyEncodable:
             result[item.key] = value
         case let value as String:
+            result[item.key] = AnyEncodable(value)
+        case let value as [String: String]:
             result[item.key] = AnyEncodable(value)
         case let value as Bool:
             result[item.key] = AnyEncodable(value)

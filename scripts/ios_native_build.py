@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Reproducible iSH native support. All mutable work is confined to explicit cache/output."""
-import argparse, hashlib, json, os, pathlib, plistlib, shutil, subprocess, tarfile, tempfile
+import argparse, hashlib, json, os, pathlib, plistlib, shutil, subprocess, sys, tarfile, tempfile
+sys.dont_write_bytecode = True
+from sdk_artifact_identity import source_identity
 P=pathlib.Path
 SDK=P(__file__).resolve().parents[1]
 PINS=SDK/'native/ios/sources.json'
@@ -38,7 +40,9 @@ def prepare(cache):
         copytree(SDK/'native/ios/upstream/openminis',glue)
         run(['git','apply','--unidiff-zero',SDK/'native/ios/patches/ish-socket-network-policy.patch'],cwd=ish)
         run(['git','apply',SDK/'native/ios/patches/ish-fakefs-utf8-locale.patch'],cwd=ish)
+        run(['git','apply',SDK/'native/ios/patches/ish-task-wakeup-signal.patch'],cwd=ish)
         run(['git','apply',SDK/'native/ios/patches/openminis-raw-stdio.patch'],cwd=glue)
+        run(['git','apply',SDK/'native/ios/patches/openminis-generic-environment.patch'],cwd=glue)
         run(['git','apply',SDK/'native/ios/patches/openminis-explicit-overlay.patch'],cwd=glue)
         run(['git','apply',SDK/'native/ios/patches/openminis-explicit-host-state.patch'],cwd=glue)
         (work/'prepared').write_text(sha(PINS))
@@ -68,16 +72,20 @@ def native(output,cache,configuration):
     (output/'source-manifest.json').write_text(json.dumps({'source_manifest_sha256':sha(PINS),'pins':json.loads(PINS.read_text()),'configuration':configuration},indent=2)+'\n')
     return work,ish,glue
 
+def native_input_hashes():
+    hashes={str(p.relative_to(SDK)):sha(p) for base in [SDK/'ios/NativeSupport',SDK/'native/ios'] for p in base.rglob('*') if p.is_file()}
+    for name in ['ios_native_build.py','sdk_artifact_identity.py','build-ios-native.sh','build-ios-xcframework.sh']:
+        hashes['scripts/'+name]=sha(SDK/'scripts'/name)
+    return hashes
+
 def framework(output,cache,configuration,simulator_only):
     output.mkdir(parents=True,exist_ok=True);cache.mkdir(parents=True,exist_ok=True)
+    revision,dirty=source_identity(SDK)
+    source_hashes=native_input_hashes()
     if simulator_only: work,ish,glue=prepare(cache)
     else: work,ish,glue=native(output/'native',cache,configuration)
     specs=[('iphonesimulator','arm64','arm64-apple-ios18.0-simulator'),('iphonesimulator','x86_64','x86_64-apple-ios18.0-simulator')]
     if not simulator_only:specs.insert(0,('iphoneos','arm64','arm64-apple-ios18.0'))
-    revision=tool(['git','-C',str(SDK),'rev-parse','HEAD'])
-    dirty=bool(tool(['git','-C',str(SDK),'status','--porcelain']))
-    source_hashes={str(p.relative_to(SDK)):sha(p) for base in [SDK/'ios/NativeSupport',SDK/'native/ios'] for p in base.rglob('*') if p.is_file()}
-    source_hashes['scripts/ios_native_build.py']=sha(P(__file__))
     libraries=[]
     for platform,arch,triple in specs:
         target=output/'slices'/triple;fw=target/'MobileLinuxNativeSupport.framework';headers=fw/'Headers';modules=fw/'Modules';objects=target/'objects'

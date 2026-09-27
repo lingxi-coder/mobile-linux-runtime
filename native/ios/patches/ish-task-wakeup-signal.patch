@@ -1,0 +1,18 @@
+--- a/kernel/task.c
++++ b/kernel/task.c
+@@ -212,6 +212,15 @@
+ 
+ static void *task_thread(void *vtask) {
+     current = vtask;
++    // Embedded hosts may launch tasks from dispatch/Tokio workers that block
++    // SIGUSR1. This private wakeup signal must interrupt guest host syscalls.
++    // Only change the new guest pthread's mask, never the embedding caller's.
++    sigset_t wakeup;
++    sigemptyset(&wakeup);
++    sigaddset(&wakeup, SIGUSR1);
++    int signal_error = pthread_sigmask(SIG_UNBLOCK, &wakeup, NULL);
++    if (signal_error != 0)
++        die("could not unblock guest wakeup signal");
+     update_thread_name();
+     task_run_current();
+     die("task_thread returned"); // above function call should never return

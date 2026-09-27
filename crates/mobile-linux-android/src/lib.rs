@@ -25,7 +25,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -174,6 +174,31 @@ struct RawStdioControl {
     snapshot_roots: Vec<PathBuf>,
 }
 
+struct CallerCancellation {
+    task: Arc<TaskControl>,
+    stop: tokio::sync::watch::Sender<bool>,
+    armed: bool,
+}
+
+impl Drop for CallerCancellation {
+    fn drop(&mut self) {
+        if self.armed {
+            self.task.cancel_requested.store(true, Ordering::Release);
+            self.stop.send_replace(true);
+        }
+    }
+}
+
+struct SnapshotCleanup(Option<PathBuf>);
+
+impl Drop for SnapshotCleanup {
+    fn drop(&mut self) {
+        if let Some(root) = &self.0 {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+}
+
 struct RawStdioWrite {
     input: Vec<u8>,
     reply: tokio::sync::oneshot::Sender<Result<(), MobileLinuxError>>,
@@ -225,7 +250,22 @@ struct SpawnedChild {
     memory_limit_bytes: Option<u64>,
 }
 
-fn copy_raw_stdio_snapshot(source: &Path, destination: &Path) -> Result<(), MobileLinuxError> {
+fn check_snapshot_cancelled(cancelled: &AtomicBool) -> Result<(), MobileLinuxError> {
+    if cancelled.load(Ordering::Acquire) {
+        Err(MobileLinuxError::InvalidRequest(
+            "raw stdio snapshot startup cancelled".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn copy_raw_stdio_snapshot(
+    source: &Path,
+    destination: &Path,
+    cancelled: &AtomicBool,
+) -> Result<(), MobileLinuxError> {
+    check_snapshot_cancelled(cancelled)?;
     let metadata = fs::symlink_metadata(source).map_err(|error| {
         MobileLinuxError::Io(format!(
             "inspect read-only LSP workspace {}: {error}",
@@ -258,7 +298,11 @@ fn copy_raw_stdio_snapshot(source: &Path, destination: &Path) -> Result<(), Mobi
             MobileLinuxError::Io(format!("read LSP workspace {}: {error}", source.display()))
         })? {
             let entry = entry.map_err(|error| MobileLinuxError::Io(error.to_string()))?;
-            copy_raw_stdio_snapshot(&entry.path(), &destination.join(entry.file_name()))?;
+            copy_raw_stdio_snapshot(
+                &entry.path(),
+                &destination.join(entry.file_name()),
+                cancelled,
+            )?;
         }
         fs::set_permissions(destination, metadata.permissions()).map_err(|error| {
             MobileLinuxError::Io(format!("preserve LSP snapshot permissions: {error}"))
@@ -266,7 +310,26 @@ fn copy_raw_stdio_snapshot(source: &Path, destination: &Path) -> Result<(), Mobi
         return Ok(());
     }
     if metadata.is_file() {
-        fs::copy(source, destination).map_err(|error| {
+        (|| -> std::io::Result<()> {
+            let mut input = fs::File::open(source)?;
+            let mut output = fs::File::create(destination)?;
+            let mut bytes = [0; 64 * 1024];
+            loop {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "snapshot cancelled",
+                    ));
+                }
+                let count = std::io::Read::read(&mut input, &mut bytes)?;
+                if count == 0 {
+                    break;
+                }
+                std::io::Write::write_all(&mut output, &bytes[..count])?;
+            }
+            Ok(())
+        })()
+        .map_err(|error| {
             MobileLinuxError::Io(format!(
                 "copy LSP workspace file {}: {error}",
                 source.display()
@@ -286,7 +349,9 @@ fn copy_raw_stdio_snapshot(source: &Path, destination: &Path) -> Result<(), Mobi
 fn snapshot_read_only_mounts(
     mounts: Vec<MountSpec>,
     snapshot_root: &Path,
+    cancelled: &AtomicBool,
 ) -> Result<(Vec<MountSpec>, Vec<PathBuf>), MobileLinuxError> {
+    check_snapshot_cancelled(cancelled)?;
     if snapshot_root.exists() {
         fs::remove_dir_all(snapshot_root).map_err(|error| {
             MobileLinuxError::Io(format!("clear stale LSP workspace snapshot: {error}"))
@@ -295,6 +360,7 @@ fn snapshot_read_only_mounts(
     let mut prepared = Vec::with_capacity(mounts.len());
     let mut roots = Vec::new();
     for (index, mut mount) in mounts.into_iter().enumerate() {
+        check_snapshot_cancelled(cancelled)?;
         if mount.read_only {
             let destination = snapshot_root.join(index.to_string());
             let node_modules = mount.host_path.join("node_modules");
@@ -315,10 +381,14 @@ fn snapshot_read_only_mounts(
                     if entry.file_name() == "node_modules" {
                         continue;
                     }
-                    copy_raw_stdio_snapshot(&entry.path(), &destination.join(entry.file_name()))?;
+                    copy_raw_stdio_snapshot(
+                        &entry.path(),
+                        &destination.join(entry.file_name()),
+                        cancelled,
+                    )?;
                 }
             } else {
-                copy_raw_stdio_snapshot(&mount.host_path, &destination)?;
+                copy_raw_stdio_snapshot(&mount.host_path, &destination, cancelled)?;
             }
             let guest_root = mount.guest_path.clone();
             mount.host_path = destination;
@@ -485,6 +555,14 @@ impl AndroidProotRuntime {
 
     fn readiness(&self) -> Result<(PathBuf, PathBuf), MobileLinuxError> {
         Ok((self.proot_binary()?, self.checked_active_root()?))
+    }
+
+    fn prepare_execution(&self) -> Result<(), MobileLinuxError> {
+        self.readiness()?;
+        fs::create_dir_all(self.state.config.managed_root.join("tmp"))
+            .map_err(|error| MobileLinuxError::Io(format!("create PRoot tmp: {error}")))?;
+        self.state.booted.store(true, Ordering::Release);
+        Ok(())
     }
 
     fn rootfs_store(&self) -> RootfsStore {
@@ -892,13 +970,60 @@ impl AndroidProotRuntime {
         sink: Option<Arc<dyn ProcessStreamSink>>,
         mount_mode: ForegroundMountMode,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.boot().await?;
+        self.prepare_execution()?;
         let mounts = self.execution_mounts(&request.mounts, mount_mode)?;
         let (id, task) = self.create_task(
             "task",
             display_command(&request.command, &request.args),
             MobileLinuxTaskStatus::Running,
         );
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        let mut cancellation = CallerCancellation {
+            task: task.clone(),
+            stop,
+            armed: true,
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        let runtime = self.clone();
+        // Foreign callers may cancel the future while input is blocked or while
+        // the policy launcher is starting. The owner must survive to reap every
+        // child and publish a terminal task instead of detaching its drains.
+        tokio::spawn(async move {
+            let result = runtime
+                .run_owned(request, sink, mount_mode, mounts, (&id, &task), stopped)
+                .await;
+            if let Err(error) = &result {
+                runtime.finish_task(
+                    &id,
+                    &task,
+                    if task.cancel_requested.load(Ordering::Acquire) {
+                        MobileLinuxTaskStatus::Cancelled
+                    } else {
+                        MobileLinuxTaskStatus::Failed
+                    },
+                    None,
+                    Some(error.to_string()),
+                );
+            }
+            let _ = reply.send(result);
+        });
+        let result = response.await.map_err(|error| {
+            MobileLinuxError::Io(format!("foreground process owner failed: {error}"))
+        })?;
+        cancellation.armed = false;
+        result
+    }
+
+    async fn run_owned(
+        &self,
+        request: LinuxCommandRequest,
+        sink: Option<Arc<dyn ProcessStreamSink>>,
+        mount_mode: ForegroundMountMode,
+        mounts: Vec<MountSpec>,
+        task: (&str, &TaskControl),
+        mut stopped: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<LinuxCommandResult, MobileLinuxError> {
+        let (id, task) = task;
         let isolated_local_app_build_mounts =
             matches!(mount_mode, ForegroundMountMode::RequestOnly).then_some(mounts.as_slice());
         let spawned = match self
@@ -908,9 +1033,13 @@ impl AndroidProotRuntime {
             Ok(spawned) => spawned,
             Err(error) => {
                 self.finish_task(
-                    &id,
-                    &task,
-                    MobileLinuxTaskStatus::Failed,
+                    id,
+                    task,
+                    if task.cancel_requested.load(Ordering::Acquire) {
+                        MobileLinuxTaskStatus::Cancelled
+                    } else {
+                        MobileLinuxTaskStatus::Failed
+                    },
                     None,
                     Some(error.to_string()),
                 );
@@ -935,7 +1064,7 @@ impl AndroidProotRuntime {
             .take()
             .ok_or_else(|| MobileLinuxError::Io("PRoot stderr unavailable".to_string()))?;
         let stdout_runtime = self.clone();
-        let stdout_id = id.clone();
+        let stdout_id = id.to_owned();
         let stdout_sink = sink.clone();
         let stdout_task = tokio::spawn(async move {
             read_stdout(stdout, move |line| {
@@ -956,7 +1085,7 @@ impl AndroidProotRuntime {
             .await
         });
         let stderr_runtime = self.clone();
-        let stderr_id = id.clone();
+        let stderr_id = id.to_owned();
         let stderr_task = tokio::spawn(async move {
             read_stderr(stderr, move |chunk| {
                 stderr_runtime.emit(
@@ -981,7 +1110,19 @@ impl AndroidProotRuntime {
         // writer runs concurrently with timeout and resident-memory enforcement.
         let stdin_writer = StdinWriter::start(child.stdin.take(), request.stdin);
         let timeout = Duration::from_millis(request.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
-        let waited = wait_for_child(&mut child, pid, Some(timeout), memory_limit_bytes).await;
+        let waited = if task.cancel_requested.load(Ordering::Acquire) {
+            terminate_and_reap(&mut child, pid)
+                .await
+                .map(ChildWaitOutcome::Exited)
+        } else {
+            tokio::select! {
+                biased;
+                _ = wait_raw_stop(&mut stopped) => {
+                    terminate_and_reap(&mut child, pid).await.map(ChildWaitOutcome::Exited)
+                }
+                result = wait_for_child(&mut child, pid, Some(timeout), memory_limit_bytes) => result,
+            }
+        };
         let stdin_result = stdin_writer.finish().await;
         let (exit_code, timed_out, memory_limit_exceeded) = match waited {
             Ok(ChildWaitOutcome::Exited(status)) => (status.code().unwrap_or(-1), false, None),
@@ -994,8 +1135,8 @@ impl AndroidProotRuntime {
                 stderr_task.abort();
                 let _ = tokio::join!(stdout_task, stderr_task);
                 self.finish_task(
-                    &id,
-                    &task,
+                    id,
+                    task,
                     MobileLinuxTaskStatus::Failed,
                     None,
                     Some(error.to_string()),
@@ -1009,8 +1150,8 @@ impl AndroidProotRuntime {
         if exit_code == 0 && !cancelled && !timed_out {
             if let Err(error) = stdin_result {
                 self.finish_task(
-                    &id,
-                    &task,
+                    id,
+                    task,
                     MobileLinuxTaskStatus::Failed,
                     Some(exit_code),
                     Some(error.to_string()),
@@ -1030,8 +1171,8 @@ impl AndroidProotRuntime {
             MobileLinuxTaskStatus::Failed
         };
         self.finish_task(
-            &id,
-            &task,
+            id,
+            task,
             status,
             (!timed_out && !cancelled).then_some(exit_code),
             if let Some(diagnostic) = &memory_limit_exceeded {
@@ -1057,199 +1198,23 @@ impl AndroidProotRuntime {
         })
     }
 
-    fn append_raw_stdio_bytes(queue: &mut VecDeque<u8>, chunk: &[u8]) -> bool {
-        if queue.len().saturating_add(chunk.len()) > MAX_RAW_STDIO_BUFFER_BYTES {
-            return false;
-        }
-        queue.extend(chunk.iter().copied());
-        true
-    }
-
-    fn drain_raw_stdio_bytes(queue: &mut VecDeque<u8>, max_bytes: usize) -> Vec<u8> {
-        queue.drain(..queue.len().min(max_bytes)).collect()
-    }
-
-    fn rootfs_snapshot(&self) -> RootfsStatus {
-        if let Ok(manifest) = self.load_rootfs_manifest() {
-            return self.rootfs_store().status(&manifest);
-        }
-        let active = self.state.config.active_root();
-        let staged = self.state.config.staged_root();
-        let root = self.checked_active_root();
-        let proot = self.proot_binary();
-        let (state, last_error) = match (&root, &proot) {
-            (Ok(_), Ok(_)) => (RootfsState::Ready, None),
-            (Err(error), _) if path_present(&active) => {
-                (RootfsState::Corrupt, Some(error.to_string()))
-            }
-            (Err(error), _) if path_present(&staged) => {
-                (RootfsState::Installing, Some(error.to_string()))
-            }
-            (Err(error), _) => (RootfsState::Missing, Some(error.to_string())),
-            (_, Err(error)) => (RootfsState::Unsupported, Some(error.to_string())),
-        };
-        RootfsStatus {
-            state,
-            backend: SandboxBackend::AndroidProot,
-            mode: MobileLinuxRuntimeMode::MobileLinux,
-            platform: "android".to_string(),
-            abi: self.state.config.abi.clone(),
-            version: Some(self.state.config.rootfs_version.clone()),
-            managed_root: Some(self.state.config.managed_root.clone()),
-            active_root: path_present(&active).then_some(active.clone()),
-            staged_root: path_present(&staged).then_some(staged),
-            archive_sha256: self.state.config.archive_sha256.clone(),
-            installed_size_bytes: directory_size(&active).ok(),
-            writable_guest_paths: vec![
-                "/root".to_string(),
-                "/tmp".to_string(),
-                "/var/tmp".to_string(),
-            ],
-            last_error,
-        }
-    }
-}
-
-#[async_trait]
-impl MobileLinuxRuntime for AndroidProotRuntime {
-    fn backend(&self) -> SandboxBackend {
-        SandboxBackend::AndroidProot
-    }
-
-    fn mode(&self) -> MobileLinuxRuntimeMode {
-        MobileLinuxRuntimeMode::MobileLinux
-    }
-
-    async fn probe_capability(&self) -> MobileLinuxCapability {
-        let readiness = self.readiness();
-        MobileLinuxCapability {
-            available: readiness.is_ok(),
-            backend: SandboxBackend::AndroidProot,
-            mode: MobileLinuxRuntimeMode::MobileLinux,
-            reason: readiness.err().map(|error| error.to_string()),
-            streaming_output: true,
-            background_processes: true,
-            pty: true,
-            bind_mounts: true,
-            rootfs_integrity: self.load_rootfs_manifest().is_ok(),
-        }
-    }
-
-    async fn boot(&self) -> Result<RootfsStatus, MobileLinuxError> {
-        self.readiness()?;
-        fs::create_dir_all(self.state.config.managed_root.join("tmp"))
-            .map_err(|error| MobileLinuxError::Io(format!("create PRoot tmp: {error}")))?;
-        self.state.booted.store(true, Ordering::Release);
-        Ok(self.rootfs_snapshot())
-    }
-
-    async fn shutdown(&self) -> Result<(), MobileLinuxError> {
-        let pty_ids: HashSet<_> = self
-            .state
-            .ptys
-            .lock()
-            .expect("mobile-linux PTY mutex")
-            .keys()
-            .cloned()
-            .collect();
-        let raw_stdio_ids: HashSet<_> = self
-            .state
-            .raw_stdio
-            .lock()
-            .expect("mobile-linux raw stdio mutex")
-            .keys()
-            .cloned()
-            .collect();
-        let task_ids: Vec<_> = self
-            .state
-            .tasks
-            .lock()
-            .expect("mobile-linux tasks mutex")
-            .keys()
-            .filter(|id| !pty_ids.contains(*id) && !raw_stdio_ids.contains(*id))
-            .cloned()
-            .collect();
-        let mut errors = Vec::new();
-        for id in pty_ids {
-            if let Err(error) = self.close_pty(&PtySessionHandle { id }).await {
-                errors.push(error.to_string());
-            }
-        }
-        for id in raw_stdio_ids {
-            if let Err(error) = self
-                .close_raw_stdio(&RawStdioSessionHandle {
-                    id,
-                    enforcement: LinuxEnforcementReceipt::default(),
-                })
-                .await
-            {
-                errors.push(error.to_string());
-            }
-        }
-        for id in task_ids {
-            if let Err(error) = self
-                .kill(&LinuxProcessHandle {
-                    id,
-                    enforcement: LinuxEnforcementReceipt::default(),
-                })
-                .await
-            {
-                errors.push(error.to_string());
-            }
-        }
-        self.state.booted.store(false, Ordering::Release);
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(MobileLinuxError::Io(format!(
-                "shutdown reaping failed: {}",
-                errors.join("; ")
-            )))
-        }
-    }
-
-    async fn run(
+    async fn spawn_background_owned(
         &self,
         request: LinuxCommandRequest,
-    ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.run_inner(request, None, ForegroundMountMode::Merged)
-            .await
-    }
-
-    async fn run_isolated(
-        &self,
-        request: LinuxCommandRequest,
-    ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.run_inner(request, None, ForegroundMountMode::RequestOnly)
-            .await
-    }
-
-    async fn run_streaming(
-        &self,
-        request: LinuxCommandRequest,
-        sink: Arc<dyn ProcessStreamSink>,
-    ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.run_inner(request, Some(sink), ForegroundMountMode::Merged)
-            .await
-    }
-
-    async fn spawn_background(
-        &self,
-        request: LinuxCommandRequest,
+        id: String,
+        task: Arc<TaskControl>,
     ) -> Result<LinuxProcessHandle, MobileLinuxError> {
-        self.boot().await?;
-        let (id, task) = self.create_task(
-            "bg",
-            display_command(&request.command, &request.args),
-            MobileLinuxTaskStatus::Backgrounded,
-        );
         let spawned = match self.spawn_child(&request).await {
             Ok(spawned) => spawned,
             Err(error) => {
                 self.finish_task(
                     &id,
                     &task,
-                    MobileLinuxTaskStatus::Failed,
+                    if task.cancel_requested.load(Ordering::Acquire) {
+                        MobileLinuxTaskStatus::Cancelled
+                    } else {
+                        MobileLinuxTaskStatus::Failed
+                    },
                     None,
                     Some(error.to_string()),
                 );
@@ -1265,6 +1230,12 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
             .id()
             .ok_or_else(|| MobileLinuxError::Io("PRoot child has no pid".to_string()))?;
         task.pid.store(u64::from(pid), Ordering::Release);
+        if task.cancel_requested.load(Ordering::Acquire) {
+            terminate_and_reap(&mut child, pid).await?;
+            return Err(MobileLinuxError::InvalidRequest(
+                "process startup cancelled".into(),
+            ));
+        }
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let runtime = self.clone();
@@ -1378,186 +1349,60 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         Ok(LinuxProcessHandle { id, enforcement })
     }
 
-    async fn kill(&self, handle: &LinuxProcessHandle) -> Result<(), MobileLinuxError> {
-        let task = self
-            .state
-            .tasks
-            .lock()
-            .expect("mobile-linux tasks mutex")
-            .get(&handle.id)
-            .cloned()
-            .ok_or_else(|| MobileLinuxError::InvalidRequest("unknown task handle".to_string()))?;
-        if task.terminal_emitted.load(Ordering::Acquire) {
-            return Ok(());
-        }
-        task.cancel_requested.store(true, Ordering::Release);
-        let pid = u32::try_from(task.pid.load(Ordering::Acquire))
-            .map_err(|_| MobileLinuxError::Io("invalid task pid".to_string()))?;
-        if pid == 0 {
-            return Err(MobileLinuxError::Io(
-                "task has not published its pid".to_string(),
-            ));
-        }
-        terminate_group(pid, Signal::SIGTERM);
-        let deadline = tokio::time::Instant::now() + REAP_BUDGET;
-        let hard_kill_at = tokio::time::Instant::now() + REAP_BUDGET / 2;
-        let mut sent_sigkill = false;
-        while !task.terminal_emitted.load(Ordering::Acquire) {
-            if !sent_sigkill && tokio::time::Instant::now() >= hard_kill_at {
-                terminate_group(pid, Signal::SIGKILL);
-                sent_sigkill = true;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(MobileLinuxError::Io(format!(
-                    "task {} did not reap within 2 seconds",
-                    handle.id
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        Ok(())
-    }
-
-    async fn open_pty(
-        &self,
-        request: PtyOpenRequest,
-    ) -> Result<PtySessionHandle, MobileLinuxError> {
-        self.boot().await?;
-        validate_pty_request(&request)?;
-        let mounts = self.execution_mounts(&request.mounts, ForegroundMountMode::Merged)?;
-        let (program, args, env) = self.build_pty_invocation(
-            &request.command,
-            &request.args,
-            request.cwd.as_deref(),
-            &request.env,
-            &mounts,
-        )?;
-        let (id, task) = self.create_task(
-            "pty",
-            display_command(&request.command, &request.args),
-            MobileLinuxTaskStatus::Running,
-        );
-        let spawned = platform_pty::spawn_pty_process(
-            &program,
-            &args,
-            &self.state.config.managed_root,
-            &env,
-            &None,
-            platform_pty::TerminalSize {
-                cols: request.size.cols,
-                rows: request.size.rows,
-            },
-            &[],
-        )
-        .await;
-        let spawned = match spawned {
-            Ok(spawned) => spawned,
-            Err(error) => {
-                let error = MobileLinuxError::Io(format!("spawn PRoot PTY: {error}"));
-                self.finish_task(
-                    &id,
-                    &task,
-                    MobileLinuxTaskStatus::Failed,
-                    None,
-                    Some(error.to_string()),
-                );
-                return Err(error);
-            }
-        };
-        let process = Arc::new(spawned.session);
-        if let Some(pid) = process.process_id() {
-            task.pid.store(u64::from(pid), Ordering::Release);
-        }
-        let control = Arc::new(PtyControl {
-            task: task.clone(),
-            process: process.clone(),
-        });
-        self.state
-            .ptys
-            .lock()
-            .expect("mobile-linux PTY mutex")
-            .insert(id.clone(), control);
-        let mut stdout = spawned.stdout_rx;
-        let exit = spawned.exit_rx;
-        let runtime = self.clone();
-        let reaper_id = id.clone();
-        tokio::spawn(async move {
-            let output_runtime = runtime.clone();
-            let output_id = reaper_id.clone();
-            let output_task = tokio::spawn(async move {
-                while let Some(data) = stdout.recv().await {
-                    output_runtime.emit(
-                        Some(output_id.clone()),
-                        MobileLinuxEventKind::PtyOutput {
-                            session_id: output_id.clone(),
-                            data,
-                        },
-                    );
-                }
-            });
-            let result = exit.await;
-            let _ = output_task.await;
-            let cancelled = task.cancel_requested.load(Ordering::Acquire);
-            let (status, code, detail) = match result {
-                Ok(code) => (
-                    if cancelled {
-                        MobileLinuxTaskStatus::Cancelled
-                    } else if code == 0 {
-                        MobileLinuxTaskStatus::Completed
-                    } else {
-                        MobileLinuxTaskStatus::Failed
-                    },
-                    Some(code),
-                    cancelled.then(|| "PTY closed".to_string()),
-                ),
-                Err(error) => (
-                    MobileLinuxTaskStatus::Failed,
-                    None,
-                    Some(format!("PTY exit channel closed: {error}")),
-                ),
-            };
-            runtime.finish_task(&reaper_id, &task, status, code, detail.clone());
-            runtime.emit(
-                Some(reaper_id.clone()),
-                MobileLinuxEventKind::PtyClosed {
-                    session_id: reaper_id.clone(),
-                    exit_code: code,
-                    detail,
-                },
-            );
-            runtime
-                .state
-                .ptys
-                .lock()
-                .expect("mobile-linux PTY mutex")
-                .remove(&reaper_id);
-        });
-        Ok(PtySessionHandle { id })
-    }
-
-    async fn open_raw_stdio(
+    async fn open_raw_stdio_owned(
         &self,
         request: RawStdioOpenRequest,
+        id: String,
+        task: Arc<TaskControl>,
     ) -> Result<RawStdioSessionHandle, MobileLinuxError> {
-        self.boot().await?;
-        let (id, task) = self.create_task(
-            "stdio",
-            display_command(&request.command, &request.args),
-            MobileLinuxTaskStatus::Running,
-        );
         let snapshot_root = self
             .state
             .config
             .app_sandbox_root
             .join("cache/raw-stdio-snapshots")
             .join(&id);
+        let mut snapshot_cleanup = SnapshotCleanup(Some(snapshot_root.clone()));
         let snapshot_root_for_copy = snapshot_root.clone();
+        let copy_task = task.clone();
         let request_mounts = request.mounts.clone();
-        let snapshot_result = tokio::task::spawn_blocking(move || {
-            snapshot_read_only_mounts(request_mounts, &snapshot_root_for_copy)
-        })
-        .await
-        .map_err(|error| MobileLinuxError::Io(format!("join LSP workspace snapshot: {error}")))?;
+        // 0 = queued, 1 = running, 2 = cancelled before admission. Tokio's
+        // blocking pool does not resolve even an aborted queued job until a
+        // worker becomes free, so its admission must be revocable separately.
+        let copy_phase = Arc::new(AtomicU8::new(0));
+        let worker_phase = copy_phase.clone();
+        let mut copy = tokio::task::spawn_blocking(move || {
+            if worker_phase
+                .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(MobileLinuxError::InvalidRequest(
+                    "snapshot cancelled before admission".into(),
+                ));
+            }
+            snapshot_read_only_mounts(
+                request_mounts,
+                &snapshot_root_for_copy,
+                &copy_task.cancel_requested,
+            )
+        });
+        let snapshot_result = tokio::select! {
+            result = &mut copy => result,
+            _ = async {
+                while !task.cancel_requested.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => {
+                if copy_phase.compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                    copy.abort();
+                    // The revoked closure cannot write even if the pool later
+                    // dequeues it. Releasing the owner and path guard is safe.
+                    Ok(Err(MobileLinuxError::InvalidRequest("snapshot cancelled before admission".into())))
+                } else {
+                    copy.abort();
+                    copy.await
+                }
+            }
+        }.map_err(|error| MobileLinuxError::Io(format!("join LSP workspace snapshot: {error}")))?;
         let (prepared_mounts, snapshot_roots) = match snapshot_result {
             Ok(value) => value,
             Err(error) => {
@@ -1565,13 +1410,18 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
                 self.finish_task(
                     &id,
                     &task,
-                    MobileLinuxTaskStatus::Failed,
+                    if task.cancel_requested.load(Ordering::Acquire) {
+                        MobileLinuxTaskStatus::Cancelled
+                    } else {
+                        MobileLinuxTaskStatus::Failed
+                    },
                     None,
                     Some(error.to_string()),
                 );
                 return Err(error);
             }
         };
+        check_snapshot_cancelled(&task.cancel_requested)?;
         let mounts =
             match self.execution_mounts(&prepared_mounts, ForegroundMountMode::ExplicitOnly) {
                 Ok(mounts) => mounts,
@@ -1582,7 +1432,11 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
                     self.finish_task(
                         &id,
                         &task,
-                        MobileLinuxTaskStatus::Failed,
+                        if task.cancel_requested.load(Ordering::Acquire) {
+                            MobileLinuxTaskStatus::Cancelled
+                        } else {
+                            MobileLinuxTaskStatus::Failed
+                        },
                         None,
                         Some(error.to_string()),
                     );
@@ -1612,7 +1466,11 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
                 self.finish_task(
                     &id,
                     &task,
-                    MobileLinuxTaskStatus::Failed,
+                    if task.cancel_requested.load(Ordering::Acquire) {
+                        MobileLinuxTaskStatus::Cancelled
+                    } else {
+                        MobileLinuxTaskStatus::Failed
+                    },
                     None,
                     Some(error.to_string()),
                 );
@@ -1628,6 +1486,12 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
             .id()
             .ok_or_else(|| MobileLinuxError::Io("PRoot child has no pid".to_string()))?;
         task.pid.store(u64::from(pid), Ordering::Release);
+        if task.cancel_requested.load(Ordering::Acquire) {
+            terminate_and_reap(&mut child, pid).await?;
+            return Err(MobileLinuxError::InvalidRequest(
+                "process startup cancelled".into(),
+            ));
+        }
         let stdin = child
             .stdin
             .take()
@@ -1763,7 +1627,514 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
             .lock()
             .expect("mobile-linux raw stdio mutex")
             .insert(id.clone(), control);
+        snapshot_cleanup.0 = None;
         Ok(RawStdioSessionHandle { id, enforcement })
+    }
+
+    async fn close_raw_stdio_if_present(&self, id: &str) -> Result<(), MobileLinuxError> {
+        let control = self
+            .state
+            .raw_stdio
+            .lock()
+            .expect("raw stdio mutex")
+            .remove(id);
+        if let Some(control) = control {
+            Self::dispose_raw_control(control).await?;
+        }
+        Ok(())
+    }
+
+    async fn dispose_raw_control(control: Arc<RawStdioControl>) -> Result<(), MobileLinuxError> {
+        // Never wait on a writer's pipe or mutex before signalling the child.
+        // The owner task cancels stdin, reaps the process and joins both drains.
+        control.task.cancel_requested.store(true, Ordering::Release);
+        if !control.task.terminal_emitted.load(Ordering::Acquire) {
+            let pid = control.task.pid.load(Ordering::Acquire) as u32;
+            terminate_group(pid, Signal::SIGTERM);
+        }
+        control.stop.send_replace(true);
+        let worker = control
+            .worker
+            .lock()
+            .expect("raw stdio worker mutex")
+            .take();
+        let result = match worker {
+            Some(worker) => worker.await.map_err(|error| {
+                MobileLinuxError::Io(format!("raw stdio owner failed: {error}"))
+            })?,
+            None => Ok(()),
+        };
+        for root in &control.snapshot_roots {
+            let _ = fs::remove_dir_all(root);
+        }
+        result
+    }
+
+    fn append_raw_stdio_bytes(queue: &mut VecDeque<u8>, chunk: &[u8]) -> bool {
+        if queue.len().saturating_add(chunk.len()) > MAX_RAW_STDIO_BUFFER_BYTES {
+            return false;
+        }
+        queue.extend(chunk.iter().copied());
+        true
+    }
+
+    fn drain_raw_stdio_bytes(queue: &mut VecDeque<u8>, max_bytes: usize) -> Vec<u8> {
+        queue.drain(..queue.len().min(max_bytes)).collect()
+    }
+
+    fn rootfs_snapshot(&self) -> RootfsStatus {
+        if let Ok(manifest) = self.load_rootfs_manifest() {
+            return self.rootfs_store().status(&manifest);
+        }
+        let active = self.state.config.active_root();
+        let staged = self.state.config.staged_root();
+        let root = self.checked_active_root();
+        let proot = self.proot_binary();
+        let (state, last_error) = match (&root, &proot) {
+            (Ok(_), Ok(_)) => (RootfsState::Ready, None),
+            (Err(error), _) if path_present(&active) => {
+                (RootfsState::Corrupt, Some(error.to_string()))
+            }
+            (Err(error), _) if path_present(&staged) => {
+                (RootfsState::Installing, Some(error.to_string()))
+            }
+            (Err(error), _) => (RootfsState::Missing, Some(error.to_string())),
+            (_, Err(error)) => (RootfsState::Unsupported, Some(error.to_string())),
+        };
+        RootfsStatus {
+            state,
+            backend: SandboxBackend::AndroidProot,
+            mode: MobileLinuxRuntimeMode::MobileLinux,
+            platform: "android".to_string(),
+            abi: self.state.config.abi.clone(),
+            version: Some(self.state.config.rootfs_version.clone()),
+            managed_root: Some(self.state.config.managed_root.clone()),
+            active_root: path_present(&active).then_some(active.clone()),
+            staged_root: path_present(&staged).then_some(staged),
+            archive_sha256: self.state.config.archive_sha256.clone(),
+            installed_size_bytes: directory_size(&active).ok(),
+            writable_guest_paths: vec![
+                "/root".to_string(),
+                "/tmp".to_string(),
+                "/var/tmp".to_string(),
+            ],
+            last_error,
+        }
+    }
+}
+
+#[async_trait]
+impl MobileLinuxRuntime for AndroidProotRuntime {
+    fn backend(&self) -> SandboxBackend {
+        SandboxBackend::AndroidProot
+    }
+
+    fn mode(&self) -> MobileLinuxRuntimeMode {
+        MobileLinuxRuntimeMode::MobileLinux
+    }
+
+    async fn probe_capability(&self) -> MobileLinuxCapability {
+        let readiness = self.readiness();
+        MobileLinuxCapability {
+            available: readiness.is_ok(),
+            backend: SandboxBackend::AndroidProot,
+            mode: MobileLinuxRuntimeMode::MobileLinux,
+            reason: readiness.err().map(|error| error.to_string()),
+            streaming_output: true,
+            background_processes: true,
+            pty: true,
+            bind_mounts: true,
+            rootfs_integrity: self.load_rootfs_manifest().is_ok(),
+        }
+    }
+
+    async fn boot(&self) -> Result<RootfsStatus, MobileLinuxError> {
+        self.prepare_execution()?;
+        Ok(self.rootfs_snapshot())
+    }
+
+    async fn shutdown(&self) -> Result<(), MobileLinuxError> {
+        let pty_ids: HashSet<_> = self
+            .state
+            .ptys
+            .lock()
+            .expect("mobile-linux PTY mutex")
+            .keys()
+            .cloned()
+            .collect();
+        let raw_stdio_ids: HashSet<_> = self
+            .state
+            .raw_stdio
+            .lock()
+            .expect("mobile-linux raw stdio mutex")
+            .keys()
+            .cloned()
+            .collect();
+        let task_ids: Vec<_> = self
+            .state
+            .tasks
+            .lock()
+            .expect("mobile-linux tasks mutex")
+            .keys()
+            .filter(|id| !pty_ids.contains(*id) && !raw_stdio_ids.contains(*id))
+            .cloned()
+            .collect();
+        let mut errors = Vec::new();
+        for id in pty_ids {
+            if let Err(error) = self.close_pty(&PtySessionHandle { id }).await {
+                errors.push(error.to_string());
+            }
+        }
+        for id in raw_stdio_ids {
+            if let Err(error) = self
+                .close_raw_stdio(&RawStdioSessionHandle {
+                    id,
+                    enforcement: LinuxEnforcementReceipt::default(),
+                })
+                .await
+            {
+                errors.push(error.to_string());
+            }
+        }
+        for id in task_ids {
+            if let Err(error) = self
+                .kill(&LinuxProcessHandle {
+                    id,
+                    enforcement: LinuxEnforcementReceipt::default(),
+                })
+                .await
+            {
+                errors.push(error.to_string());
+            }
+        }
+        self.state.booted.store(false, Ordering::Release);
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(MobileLinuxError::Io(format!(
+                "shutdown reaping failed: {}",
+                errors.join("; ")
+            )))
+        }
+    }
+
+    async fn run(
+        &self,
+        request: LinuxCommandRequest,
+    ) -> Result<LinuxCommandResult, MobileLinuxError> {
+        self.run_inner(request, None, ForegroundMountMode::Merged)
+            .await
+    }
+
+    async fn run_isolated(
+        &self,
+        request: LinuxCommandRequest,
+    ) -> Result<LinuxCommandResult, MobileLinuxError> {
+        self.run_inner(request, None, ForegroundMountMode::RequestOnly)
+            .await
+    }
+
+    async fn run_streaming(
+        &self,
+        request: LinuxCommandRequest,
+        sink: Arc<dyn ProcessStreamSink>,
+    ) -> Result<LinuxCommandResult, MobileLinuxError> {
+        self.run_inner(request, Some(sink), ForegroundMountMode::Merged)
+            .await
+    }
+
+    async fn spawn_background(
+        &self,
+        request: LinuxCommandRequest,
+    ) -> Result<LinuxProcessHandle, MobileLinuxError> {
+        self.prepare_execution()?;
+        let (id, task) = self.create_task(
+            "bg",
+            display_command(&request.command, &request.args),
+            MobileLinuxTaskStatus::Backgrounded,
+        );
+        let (stop, mut stopped) = tokio::sync::watch::channel(false);
+        let mut cancellation = CallerCancellation {
+            task: task.clone(),
+            stop,
+            armed: true,
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            let result = runtime
+                .spawn_background_owned(request, id.clone(), task.clone())
+                .await;
+            if let Err(error) = &result {
+                runtime.finish_task(
+                    &id,
+                    &task,
+                    if task.cancel_requested.load(Ordering::Acquire) {
+                        MobileLinuxTaskStatus::Cancelled
+                    } else {
+                        MobileLinuxTaskStatus::Failed
+                    },
+                    None,
+                    Some(error.to_string()),
+                );
+            }
+            let handle = result.as_ref().ok().cloned();
+            let delivered = reply.send(result).is_ok();
+            if let Some(handle) = handle {
+                // Sending the result is not acceptance: the caller can disappear
+                // before polling it. Its guard closes the channel on acceptance
+                // or publishes cancellation, leaving this owner to dispose it.
+                let abandoned = task.cancel_requested.load(Ordering::Acquire)
+                    || !delivered
+                    || stopped.wait_for(|cancelled| *cancelled).await.is_ok();
+                if abandoned || task.cancel_requested.load(Ordering::Acquire) {
+                    task.cancel_requested.store(true, Ordering::Release);
+                    if let Err(error) = runtime.kill(&handle).await {
+                        runtime.emit(
+                            Some(id),
+                            MobileLinuxEventKind::RuntimeError {
+                                detail: error.to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+        });
+        let result = response.await.map_err(|error| {
+            MobileLinuxError::Io(format!("process startup owner failed: {error}"))
+        })?;
+        cancellation.armed = false;
+        result
+    }
+
+    async fn kill(&self, handle: &LinuxProcessHandle) -> Result<(), MobileLinuxError> {
+        let task = self
+            .state
+            .tasks
+            .lock()
+            .expect("mobile-linux tasks mutex")
+            .get(&handle.id)
+            .cloned()
+            .ok_or_else(|| MobileLinuxError::InvalidRequest("unknown task handle".to_string()))?;
+        if task.terminal_emitted.load(Ordering::Acquire) {
+            return self.close_raw_stdio_if_present(&handle.id).await;
+        }
+        task.cancel_requested.store(true, Ordering::Release);
+        let starting = task.pid.load(Ordering::Acquire) == 0;
+        // A foreground owner may still be waiting for its enforcement receipt.
+        // Keep the cancellation request pending until it publishes the child;
+        // never abandon an owned startup solely because its PID is not ready.
+        let budget = REAP_BUDGET
+            + if starting {
+                ENFORCEMENT_RECEIPT_TIMEOUT
+            } else {
+                Duration::ZERO
+            };
+        let deadline = tokio::time::Instant::now() + budget;
+        let mut hard_kill_at = None;
+        let mut sent_sigkill = false;
+        while !task.terminal_emitted.load(Ordering::Acquire) {
+            let pid = u32::try_from(task.pid.load(Ordering::Acquire))
+                .map_err(|_| MobileLinuxError::Io("invalid task pid".to_string()))?;
+            if pid != 0 && hard_kill_at.is_none() {
+                terminate_group(pid, Signal::SIGTERM);
+                hard_kill_at = Some(tokio::time::Instant::now() + REAP_BUDGET / 2);
+            }
+            if !sent_sigkill && hard_kill_at.is_some_and(|at| tokio::time::Instant::now() >= at) {
+                terminate_group(pid, Signal::SIGKILL);
+                sent_sigkill = true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(MobileLinuxError::Io(format!(
+                    "task {} did not reap within {} seconds",
+                    handle.id,
+                    budget.as_secs()
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        self.close_raw_stdio_if_present(&handle.id).await
+    }
+
+    async fn open_pty(
+        &self,
+        request: PtyOpenRequest,
+    ) -> Result<PtySessionHandle, MobileLinuxError> {
+        self.prepare_execution()?;
+        validate_pty_request(&request)?;
+        let mounts = self.execution_mounts(&request.mounts, ForegroundMountMode::Merged)?;
+        let (program, args, env) = self.build_pty_invocation(
+            &request.command,
+            &request.args,
+            request.cwd.as_deref(),
+            &request.env,
+            &mounts,
+        )?;
+        let (id, task) = self.create_task(
+            "pty",
+            display_command(&request.command, &request.args),
+            MobileLinuxTaskStatus::Running,
+        );
+        let spawned = platform_pty::spawn_pty_process(
+            &program,
+            &args,
+            &self.state.config.managed_root,
+            &env,
+            &None,
+            platform_pty::TerminalSize {
+                cols: request.size.cols,
+                rows: request.size.rows,
+            },
+            &[],
+        )
+        .await;
+        let spawned = match spawned {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                let error = MobileLinuxError::Io(format!("spawn PRoot PTY: {error}"));
+                self.finish_task(
+                    &id,
+                    &task,
+                    MobileLinuxTaskStatus::Failed,
+                    None,
+                    Some(error.to_string()),
+                );
+                return Err(error);
+            }
+        };
+        let process = Arc::new(spawned.session);
+        if let Some(pid) = process.process_id() {
+            task.pid.store(u64::from(pid), Ordering::Release);
+        }
+        let control = Arc::new(PtyControl {
+            task: task.clone(),
+            process: process.clone(),
+        });
+        self.state
+            .ptys
+            .lock()
+            .expect("mobile-linux PTY mutex")
+            .insert(id.clone(), control);
+        let mut stdout = spawned.stdout_rx;
+        let exit = spawned.exit_rx;
+        let runtime = self.clone();
+        let reaper_id = id.clone();
+        tokio::spawn(async move {
+            let output_runtime = runtime.clone();
+            let output_id = reaper_id.clone();
+            let output_task = tokio::spawn(async move {
+                while let Some(data) = stdout.recv().await {
+                    output_runtime.emit(
+                        Some(output_id.clone()),
+                        MobileLinuxEventKind::PtyOutput {
+                            session_id: output_id.clone(),
+                            data,
+                        },
+                    );
+                }
+            });
+            let result = exit.await;
+            let _ = output_task.await;
+            let cancelled = task.cancel_requested.load(Ordering::Acquire);
+            let (status, code, detail) = match result {
+                Ok(code) => (
+                    if cancelled {
+                        MobileLinuxTaskStatus::Cancelled
+                    } else if code == 0 {
+                        MobileLinuxTaskStatus::Completed
+                    } else {
+                        MobileLinuxTaskStatus::Failed
+                    },
+                    Some(code),
+                    cancelled.then(|| "PTY closed".to_string()),
+                ),
+                Err(error) => (
+                    MobileLinuxTaskStatus::Failed,
+                    None,
+                    Some(format!("PTY exit channel closed: {error}")),
+                ),
+            };
+            runtime.finish_task(&reaper_id, &task, status, code, detail.clone());
+            runtime.emit(
+                Some(reaper_id.clone()),
+                MobileLinuxEventKind::PtyClosed {
+                    session_id: reaper_id.clone(),
+                    exit_code: code,
+                    detail,
+                },
+            );
+            runtime
+                .state
+                .ptys
+                .lock()
+                .expect("mobile-linux PTY mutex")
+                .remove(&reaper_id);
+        });
+        Ok(PtySessionHandle { id })
+    }
+
+    async fn open_raw_stdio(
+        &self,
+        request: RawStdioOpenRequest,
+    ) -> Result<RawStdioSessionHandle, MobileLinuxError> {
+        self.prepare_execution()?;
+        let (id, task) = self.create_task(
+            "stdio",
+            display_command(&request.command, &request.args),
+            MobileLinuxTaskStatus::Running,
+        );
+        let (stop, mut stopped) = tokio::sync::watch::channel(false);
+        let mut cancellation = CallerCancellation {
+            task: task.clone(),
+            stop,
+            armed: true,
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            let result = runtime
+                .open_raw_stdio_owned(request, id.clone(), task.clone())
+                .await;
+            if let Err(error) = &result {
+                runtime.finish_task(
+                    &id,
+                    &task,
+                    if task.cancel_requested.load(Ordering::Acquire) {
+                        MobileLinuxTaskStatus::Cancelled
+                    } else {
+                        MobileLinuxTaskStatus::Failed
+                    },
+                    None,
+                    Some(error.to_string()),
+                );
+            }
+            let handle = result.as_ref().ok().cloned();
+            let delivered = reply.send(result).is_ok();
+            if let Some(handle) = handle {
+                // Sending the result is not acceptance: the caller can disappear
+                // before polling it. Its guard closes the channel on acceptance
+                // or publishes cancellation, leaving this owner to dispose it.
+                let abandoned = task.cancel_requested.load(Ordering::Acquire)
+                    || !delivered
+                    || stopped.wait_for(|cancelled| *cancelled).await.is_ok();
+                if abandoned || task.cancel_requested.load(Ordering::Acquire) {
+                    task.cancel_requested.store(true, Ordering::Release);
+                    if let Err(error) = runtime.close_raw_stdio_if_present(&handle.id).await {
+                        runtime.emit(
+                            Some(id),
+                            MobileLinuxEventKind::RuntimeError {
+                                detail: error.to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+        });
+        let result = response.await.map_err(|error| {
+            MobileLinuxError::Io(format!("process startup owner failed: {error}"))
+        })?;
+        cancellation.armed = false;
+        result
     }
 
     async fn write_raw_stdio(
@@ -1842,29 +2213,7 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
             .ok_or_else(|| {
                 MobileLinuxError::InvalidRequest("unknown raw stdio session".to_string())
             })?;
-        // Never wait on a writer's pipe or mutex before signalling the child.
-        // The owner task cancels stdin, reaps the process and joins both drains.
-        control.task.cancel_requested.store(true, Ordering::Release);
-        if !control.task.terminal_emitted.load(Ordering::Acquire) {
-            let pid = control.task.pid.load(Ordering::Acquire) as u32;
-            terminate_group(pid, Signal::SIGTERM);
-        }
-        control.stop.send_replace(true);
-        let worker = control
-            .worker
-            .lock()
-            .expect("raw stdio worker mutex")
-            .take();
-        let result = match worker {
-            Some(worker) => worker.await.map_err(|error| {
-                MobileLinuxError::Io(format!("raw stdio owner failed: {error}"))
-            })?,
-            None => Ok(()),
-        };
-        for root in &control.snapshot_roots {
-            let _ = fs::remove_dir_all(root);
-        }
-        result
+        Self::dispose_raw_control(control).await
     }
 
     async fn write_pty(
@@ -2563,6 +2912,10 @@ async fn terminate_and_reap(
 ) -> Result<std::process::ExitStatus, MobileLinuxError> {
     terminate_group(pid, Signal::SIGTERM);
     if let Ok(result) = tokio::time::timeout(REAP_BUDGET / 2, child.wait()).await {
+        // Reaping the launcher does not prove its descendants exited. A child
+        // can ignore TERM and retain the output pipes after the group leader
+        // has gone; kill the remaining group before waiting for either drain.
+        terminate_group(pid, Signal::SIGKILL);
         return result
             .map_err(|error| MobileLinuxError::Io(format!("reap raw stdio child: {error}")));
     }
@@ -3101,6 +3454,388 @@ mod tests {
         .await;
     }
 
+    #[tokio::test]
+    async fn foreground_caller_cancellation_reaps_blocked_stdin_and_finishes_task() {
+        let (_temp, runtime) = runtime();
+        let mut request = request();
+        request.command = "/bin/sh".into();
+        request.args = vec![
+            "-c".into(),
+            "sh -c 'trap \"\" TERM; printf \"ready\\n\"; sleep 30' & wait".into(),
+        ];
+        request.stdin = Some("x".repeat(2 * 1024 * 1024));
+        let execution_runtime = runtime.clone();
+        let caller = tokio::spawn(async move { execution_runtime.run(request).await });
+        let (task_id, pid) = io_test_timeout(async {
+            loop {
+                let tasks = runtime.state.tasks.lock().unwrap();
+                let task = tasks.iter().next().map(|(id, task)| {
+                    (id.clone(), task.pid.load(Ordering::Acquire) as u32)
+                });
+                drop(tasks);
+                if let Some((id, pid)) = task {
+                    let ready = runtime.state.events.lock().unwrap().iter().any(|event| {
+                        matches!(&event.kind, MobileLinuxEventKind::StdoutLine { line } if line == "ready")
+                    });
+                    if pid != 0 && ready {
+                        break (id, pid);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await;
+        assert!(!caller.is_finished(), "fixture must still be blocked");
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        io_test_timeout(async {
+            loop {
+                let tasks = runtime.list_tasks().await.unwrap();
+                let task = tasks.iter().find(|task| task.task_id == task_id).unwrap();
+                if task.finished_at_ms.is_some() {
+                    assert_eq!(task.status, MobileLinuxTaskStatus::Cancelled);
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            kill(Pid::from_raw(pid as i32), None).is_err(),
+            "cancelled child must be reaped"
+        );
+        io_test_timeout(runtime.shutdown())
+            .await
+            .expect("shutdown after cancelled caller");
+    }
+
+    async fn cancel_pending_foreground_startup(shutdown: bool) {
+        let (temp, runtime) = runtime();
+        let launcher = temp
+            .path()
+            .join("runtime/bin/libmobile_linux_policy_launcher.so");
+        fs::write(&launcher, b"#!/bin/sh\nsleep 0.2\nprintf '%s\\n' \"$1\" > \"$LINGXI_ENFORCEMENT_RECEIPT_PATH\"\nshift\nexec \"$@\"\n").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut request = request();
+        request.command = "/bin/sh".into();
+        request.args = vec!["-c".into(), "sleep 30".into()];
+        request.network = NetworkPolicy::Disabled;
+        request.stdin = Some("x".repeat(2 * 1024 * 1024));
+        let execution_runtime = runtime.clone();
+        let caller = tokio::spawn(async move { execution_runtime.run(request).await });
+        let task = io_test_timeout(async {
+            loop {
+                let task = runtime.state.tasks.lock().unwrap().values().next().cloned();
+                if let Some(task) = task {
+                    assert_eq!(
+                        task.pid.load(Ordering::Acquire),
+                        0,
+                        "exercise receipt startup"
+                    );
+                    break task;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        if shutdown {
+            io_test_timeout(runtime.shutdown())
+                .await
+                .expect("shutdown must own pending startup");
+            assert!(io_test_timeout(caller).await.unwrap().unwrap().cancelled);
+        } else {
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+        }
+        io_test_timeout(async {
+            while !task.terminal_emitted.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            task.snapshot.lock().unwrap().status,
+            MobileLinuxTaskStatus::Cancelled
+        );
+        let pid = task.pid.load(Ordering::Acquire) as i32;
+        assert!(
+            pid > 0,
+            "owner must observe and reap the launcher it created"
+        );
+        assert!(kill(Pid::from_raw(pid), None).is_err());
+        assert_eq!(
+            fs::read_dir(temp.path().join("runtime/tmp"))
+                .unwrap()
+                .count(),
+            0,
+            "receipt cleanup"
+        );
+        io_test_timeout(runtime.shutdown()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_during_receipt_startup_still_reaps() {
+        cancel_pending_foreground_startup(false).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_receipt_startup_waits_for_owned_child() {
+        cancel_pending_foreground_startup(true).await;
+    }
+
+    async fn wait_cancelled_startup(runtime: &AndroidProotRuntime, task: &TaskControl) {
+        io_test_timeout(async {
+            while !task.terminal_emitted.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert_eq!(
+            task.snapshot.lock().unwrap().status,
+            MobileLinuxTaskStatus::Cancelled
+        );
+        let pid = task.pid.load(Ordering::Acquire) as i32;
+        if pid > 0 {
+            assert!(
+                kill(Pid::from_raw(pid), None).is_err(),
+                "startup child must be reaped"
+            );
+        }
+        io_test_timeout(async {
+            while !runtime.state.raw_stdio.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        let snapshots = runtime
+            .state
+            .config
+            .app_sandbox_root
+            .join("cache/raw-stdio-snapshots");
+        assert!(!snapshots.exists() || fs::read_dir(snapshots).unwrap().next().is_none());
+        io_test_timeout(runtime.shutdown())
+            .await
+            .expect("shutdown after cancelled startup");
+    }
+
+    async fn cancel_pending_handle_startup(raw: bool, shutdown: bool) {
+        let (temp, runtime) = runtime();
+        let launcher = temp
+            .path()
+            .join("runtime/bin/libmobile_linux_policy_launcher.so");
+        fs::write(&launcher, b"#!/bin/sh\nsleep 0.2\nprintf '%s\\n' \"$1\" > \"$LINGXI_ENFORCEMENT_RECEIPT_PATH\"\nshift\nexec \"$@\"\n").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        let source = temp.path().join("workspace");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("sample"), b"private snapshot").unwrap();
+        let execution_runtime = runtime.clone();
+        let caller = tokio::spawn(async move {
+            if raw {
+                let mut request = raw_request("sleep 30");
+                request.network = NetworkPolicy::Disabled;
+                request.mounts.push(MountSpec {
+                    host_path: source,
+                    guest_path: "/workspace/source".into(),
+                    read_only: true,
+                    purpose: MountPurpose::External,
+                });
+                execution_runtime.open_raw_stdio(request).await.map(|_| ())
+            } else {
+                let mut request = request();
+                request.command = "/bin/sh".into();
+                request.args = vec!["-c".into(), "sleep 30".into()];
+                request.network = NetworkPolicy::Disabled;
+                request.stdin = Some("x".repeat(2 * 1024 * 1024));
+                execution_runtime
+                    .spawn_background(request)
+                    .await
+                    .map(|_| ())
+            }
+        });
+        let task = io_test_timeout(async {
+            loop {
+                let task = runtime.state.tasks.lock().unwrap().values().next().cloned();
+                // Wait until the receipt file exists: the real child is alive,
+                // but neither API has published a PID/handle to its caller yet.
+                let receipt_exists = fs::read_dir(temp.path().join("runtime/tmp"))
+                    .is_ok_and(|mut entries| entries.next().is_some());
+                if let Some(task) = task.filter(|_| receipt_exists) {
+                    assert_eq!(task.pid.load(Ordering::Acquire), 0);
+                    break task;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+        if raw {
+            assert!(temp
+                .path()
+                .join("sandbox/cache/raw-stdio-snapshots")
+                .join(&task.snapshot.lock().unwrap().task_id)
+                .join("0/sample")
+                .is_file());
+        }
+        if shutdown {
+            io_test_timeout(runtime.shutdown())
+                .await
+                .expect("shutdown during handle startup");
+            assert!(io_test_timeout(caller).await.unwrap().is_err());
+        } else {
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+        }
+        wait_cancelled_startup(&runtime, &task).await;
+        assert_eq!(
+            fs::read_dir(temp.path().join("runtime/tmp"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn background_caller_abort_during_receipt_reaps_owned_startup() {
+        cancel_pending_handle_startup(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn background_shutdown_during_receipt_reaps_owned_startup() {
+        cancel_pending_handle_startup(false, true).await;
+    }
+
+    #[tokio::test]
+    async fn raw_caller_abort_during_receipt_reaps_and_removes_snapshot() {
+        cancel_pending_handle_startup(true, false).await;
+    }
+
+    #[tokio::test]
+    async fn raw_shutdown_during_receipt_reaps_and_removes_snapshot() {
+        cancel_pending_handle_startup(true, true).await;
+    }
+
+    fn cancel_queued_raw_snapshot(shutdown: bool) {
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        executor.block_on(async {
+            let (temp, runtime) = runtime();
+            let source = temp.path().join("source");
+            fs::create_dir_all(&source).unwrap();
+            fs::write(source.join("file"), b"snapshot input").unwrap();
+            let (release, wait) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = wait.recv();
+            });
+            ready.await.unwrap();
+            let execution_runtime = runtime.clone();
+            let mut request = raw_request("sleep 30");
+            request.mounts.push(MountSpec {
+                host_path: source,
+                guest_path: "/workspace/source".into(),
+                read_only: true,
+                purpose: MountPurpose::External,
+            });
+            let caller =
+                tokio::spawn(async move { execution_runtime.open_raw_stdio(request).await });
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let pending = !caller.is_finished();
+            let task = runtime.state.tasks.lock().unwrap().values().next().cloned();
+            let (aborted, shutdown_result) = if shutdown {
+                let result = tokio::time::timeout(Duration::from_secs(8), runtime.shutdown()).await;
+                (false, Some(result))
+            } else {
+                caller.abort();
+                (true, None)
+            };
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            if let Some(result) = shutdown_result {
+                result
+                    .unwrap()
+                    .expect("queued copy must not block shutdown");
+            }
+            if aborted {
+                assert!(caller.await.unwrap_err().is_cancelled());
+            } else {
+                assert!(caller.await.unwrap().is_err());
+            }
+            assert!(
+                pending,
+                "caller must be pending while snapshot copy awaits its worker"
+            );
+            let task = task.expect("startup registered before queued snapshot");
+            wait_cancelled_startup(&runtime, &task).await;
+            assert_eq!(
+                task.pid.load(Ordering::Acquire),
+                0,
+                "cancelled snapshot must not start a guest"
+            );
+        });
+    }
+
+    #[test]
+    fn raw_caller_abort_while_snapshot_is_queued_has_no_late_leak() {
+        cancel_queued_raw_snapshot(false);
+    }
+
+    #[test]
+    fn raw_shutdown_while_snapshot_is_queued_is_bounded() {
+        cancel_queued_raw_snapshot(true);
+    }
+
+    async fn cancel_unaccepted_handle(raw: bool) {
+        let (_temp, runtime) = runtime();
+        let mut caller: std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), MobileLinuxError>> + Send>,
+        > = if raw {
+            Box::pin(async {
+                runtime
+                    .open_raw_stdio(raw_request("sleep 30"))
+                    .await
+                    .map(|_| ())
+            })
+        } else {
+            let mut request = request();
+            request.command = "/bin/sh".into();
+            request.args = vec!["-c".into(), "sleep 30".into()];
+            Box::pin(async { runtime.spawn_background(request).await.map(|_| ()) })
+        };
+        std::future::poll_fn(|cx| {
+            assert!(caller.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let task = io_test_timeout(async {
+            loop {
+                let task = runtime.state.tasks.lock().unwrap().values().next().cloned();
+                if let Some(task) = task {
+                    if task.pid.load(Ordering::Acquire) > 0 {
+                        break task;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await;
+        // The owner has created a handle and sent the result. This caller has
+        // never polled the response, so dropping it must still dispose the child.
+        drop(caller);
+        wait_cancelled_startup(&runtime, &task).await;
+    }
+
+    #[tokio::test]
+    async fn background_unaccepted_handle_is_cancelled_and_reaped() {
+        cancel_unaccepted_handle(false).await;
+    }
+
+    #[tokio::test]
+    async fn raw_unaccepted_handle_is_cancelled_and_reaped() {
+        cancel_unaccepted_handle(true).await;
+    }
+
     async fn close_blocked_raw_writer(shutdown: bool) {
         let (_temp, runtime) = runtime();
         let handle = runtime
@@ -3555,6 +4290,7 @@ mod tests {
                 purpose: MountPurpose::External,
             }],
             &snapshot,
+            &AtomicBool::new(false),
         )
         .expect("snapshot mount");
 

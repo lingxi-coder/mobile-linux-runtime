@@ -194,7 +194,7 @@
  
      // Write stdinData to pipe in background, then close write end
      if (stdinData && stdinPipe[1] >= 0) {
-@@ -571,6 +661,25 @@
+@@ -571,6 +661,26 @@
          NSLog(@"ISHShellExecutor: refusing killProcessGroup for pid=%d", pid);
          return;
      }
@@ -207,8 +207,9 @@
 +            lock(&pids_lock);
 +            for (int index = 2; index < MAX_PID; index++) {
 +                struct task *candidate = pid_get_task(index);
-+                if (candidate && candidate->group && candidate->group->fs_context == context)
++                if (candidate && candidate->group && candidate->group->fs_context == context) {
 +                    send_signal(candidate, signalNumber, contextInfo);
++                }
 +            }
 +            unlock(&pids_lock);
 +        };
@@ -220,7 +221,7 @@
      struct siginfo_ info = SIGINFO_NIL;
  
      lock(&pids_lock);
-@@ -637,10 +746,22 @@
+@@ -637,13 +747,26 @@
      @synchronized(_activeExecutions) {
          ctx = _activeExecutions[@(pid)];
          if (!ctx) return;
@@ -243,8 +244,13 @@
 +    }
  
      // Record exit code and duration immediately
-     ctx.result.exitCode = exitCode;
-@@ -692,7 +813,26 @@
+-    ctx.result.exitCode = exitCode;
++    // ISHProcessExited carries the guest wait status, not a decoded exit code.
++    ctx.result.exitCode = (exitCode & 0x7f) ? 128 + (exitCode & 0x7f) : ((exitCode >> 8) & 0xff);
+     ctx.result.duration = -[ctx.startTime timeIntervalSinceNow];
+     NSUInteger outLen, errLen;
+     @synchronized(ctx.stdoutBuffer) { outLen = ctx.stdoutBuffer.length; }
+@@ -692,7 +815,26 @@
  
  + (void)startReaderForPipe:(int)fd context:(ISHShellExecutionContext *)ctx isStdErr:(BOOL)isStdErr {
      dispatch_async(_readerQueue, ^{

@@ -142,7 +142,10 @@ jobs:
       - name: Snapshot immutable source
         run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
       - name: Native build tools
-        run: brew install meson ninja
+        run: |
+          brew install meson ninja lld
+          command -v ld.lld
+          ld.lld --version
       - name: Build separate native-support and SDK FFI distributions
         run: |
           bash scripts/build-ios-xcframework.sh --output "$RUNNER_TEMP/ios-native-support" --cache "$RUNNER_TEMP/ios-cache" --kind native-support
