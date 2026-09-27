@@ -1,0 +1,19 @@
+{
+  "status": "historical-only; never an active release input",
+  "files": [
+    {
+      "origin_repository": "https://github.com/lingxi-coder/harness-runtime.git",
+      "origin_revision": "fe876d368a6bd06988f936064f9a6e00edbe55a3",
+      "origin_path": "docs/mobile-linux/mobile-linux-pins.json",
+      "archive_path": "docs/migration/legacy/mobile-linux-pins.json",
+      "sha256": "250f30a7d995b9f4d0f089655c7bf3d00386f3614f92e8f9f7d2d0f3476bc15e"
+    },
+    {
+      "origin_repository": "https://github.com/lingxi-coder/harness-runtime.git",
+      "origin_revision": "fe876d368a6bd06988f936064f9a6e00edbe55a3",
+      "origin_path": "docs/mobile-linux/sbom/mobile-linux.spdx.json",
+      "archive_path": "docs/migration/legacy/mobile-linux.spdx.json",
+      "sha256": "84d7ca0ca33f1594649c6ea0e60a660b94ac5ec08c1da4cd839bfe120dddf67d"
+    }
+  ]
+}

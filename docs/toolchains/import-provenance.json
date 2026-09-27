@@ -43,5 +43,32 @@
       "source_sha256": "94c3ca0edb5101cdb80928fddb3119762dd868e2a1c09ef3972706869317fa10"
     }
   ],
-  "contract": "Generic shared toolchain pins exclude only local_app_runtime product profile. APK/toolchain digests preserved."
+  "contract": "Generic shared toolchain pins exclude only local_app_runtime product profile. APK/toolchain digests preserved.",
+  "deduplicated_harness_resources": [
+    {
+      "source_path": "docs/mobile-linux/rootfs/README.md",
+      "sdk_path": "docs/mobile-linux/rootfs/README.md",
+      "sha256": "68d35036c32818d8b55b8b6fd06db6c0cfe745070e3d43696ecc36d77caf3a24"
+    },
+    {
+      "source_path": "docs/mobile-linux/rootfs/rootfs-build.lock.sample.json",
+      "sdk_path": "docs/mobile-linux/rootfs/rootfs-build.lock.sample.json",
+      "sha256": "597db3f0bc63babd06e33af4902431db9207f8e12722916bff417e3744a78e45"
+    },
+    {
+      "source_path": "docs/mobile-linux/rootfs/rootfs-manifest.sample.json",
+      "sdk_path": "docs/mobile-linux/rootfs/rootfs-manifest.sample.json",
+      "sha256": "13d1ceda66607627f899964a07cf4650f27cd46f34849ae80fd162a653fe7ac9"
+    },
+    {
+      "source_path": "docs/mobile-linux/rootfs/rootfs-manifest.schema.json",
+      "sdk_path": "docs/mobile-linux/rootfs/rootfs-manifest.schema.json",
+      "sha256": "ef20477f72012a05b0d28fde9b3cd7974e0f86d67014c458cb930036eb4f49f1"
+    },
+    {
+      "source_path": "docs/mobile-linux/LICENSES/NOTICE.md",
+      "sdk_path": "docs/mobile-linux/LICENSES/NOTICE.md",
+      "sha256": "a5e0ab35e6439ca3832498ac47d81907d071af6011b2590c583e7297c053a282"
+    }
+  ]
 }

@@ -1,0 +1,27 @@
+name: MobileLinuxNativeTests
+options:
+  deploymentTarget:
+    iOS: '18.0'
+targets:
+  MobileLinuxNativeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ../NativeSupport
+      - path: MobileLinuxNativeRegressionTests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.mobile-linux.native.tests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: '5.0'
+        SWIFT_OBJC_BRIDGING_HEADER: NativeTestBridge.h
+        CODE_SIGNING_ALLOWED: NO
+    dependencies:
+      - sdk: libz.tbd
+schemes:
+  MobileLinuxNativeTests:
+    build:
+      targets:
+        MobileLinuxNativeTests: [test]
+    test:
+      targets: [MobileLinuxNativeTests]

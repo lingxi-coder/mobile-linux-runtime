@@ -1,0 +1,13 @@
+--- a/src/ios/iSH/ISHKernel.m
++++ b/src/ios/iSH/ISHKernel.m
+@@ -590,8 +590,8 @@
+     NSFileManager *fm = [NSFileManager defaultManager];
+ 
+     // Determine host path: Library/MinisChat/dns/resolv.conf
+-    NSString *library = [NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES) firstObject];
+-    NSString *dnsDir = [library stringByAppendingPathComponent:@"MinisChat/dns"];
++    // Runtime-owned state derives only from the explicitly supplied root path.
++    NSString *dnsDir = [[_rootPath stringByDeletingLastPathComponent] stringByAppendingPathComponent:@"host-dns"];
+     _dnsHostPath = [dnsDir stringByAppendingPathComponent:@"resolv.conf"];
+ 
+     // Ensure directory and seed file exist before bind mount

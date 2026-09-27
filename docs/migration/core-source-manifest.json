@@ -1,0 +1,287 @@
+{
+  "schema_version": 1,
+  "source_repository": "https://github.com/lingxi-coder/harness-runtime",
+  "source_revision": "fe876d368a6bd06988f936064f9a6e00edbe55a3",
+  "entries": [
+    {
+      "source": "crates/platform-api/src/process.rs",
+      "source_sha256": "2d8d864d6dd359d104d4e89be9ec004b57788513437f9e75f032da2b1617a7ca",
+      "destinations": [
+        {
+          "path": "crates/mobile-linux-api/src/execution.rs",
+          "sha256": "6d3aea552b96a02c27063b7e4d8277d0c6821b6e9d500a76ba8014383f69ec42"
+        }
+      ],
+      "compatibility_adapter": {
+        "repository": "harness-runtime",
+        "path": "crates/platform-api/src/process.rs",
+        "sha256": "7e152294d2b3a87fbe6dd197e030831921585294e337cba7ef454c4774c0d4db"
+      }
+    },
+    {
+      "source": "crates/platform-api/src/sandbox.rs",
+      "source_sha256": "b698937f3df89dc838bfc52bc7ec246e0153e8128a3a67e9af22581d3e16c6e9",
+      "destinations": [
+        {
+          "path": "crates/mobile-linux-api/src/execution.rs",
+          "sha256": "6d3aea552b96a02c27063b7e4d8277d0c6821b6e9d500a76ba8014383f69ec42"
+        }
+      ],
+      "compatibility_adapter": {
+        "repository": "harness-runtime",
+        "path": "crates/platform-api/src/sandbox.rs",
+        "sha256": "d5e14f1dbc9b3e0d6997b4c8e340cd38b6edd4b82fed1a83986fa5d85ac151a2"
+      }
+    },
+    {
+      "source": "crates/platform-api/src/mobile_linux.rs",
+      "source_sha256": "492bfcfda96f824f2b42572a8a5d28a0d8de50ffdaf37cfaf46070119c593d3f",
+      "destinations": [
+        {
+          "path": "crates/mobile-linux-api/src/mobile_linux.rs",
+          "sha256": "13313e84cf4cd1dc01cd18f8e5f629f01c1e1e3c2992e6f93655228d68dc5619"
+        }
+      ],
+      "compatibility_adapter": {
+        "repository": "harness-runtime",
+        "path": "crates/platform-api/src/mobile_linux.rs",
+        "sha256": "f3a1996dfcd3c1b6c698cc7dc6d0c555ccfc539edecd4d8eeb622e547b65cb89"
+      }
+    },
+    {
+      "source": "crates/platforms/common/src/mobile_linux.rs",
+      "source_sha256": "321db5d0ad8540b8a246bc22bb83cf2f3fd33445ed6985ec51ab36b2790224c8",
+      "destinations": [
+        {
+          "path": "crates/mobile-linux-core/src/lib.rs",
+          "sha256": "5b701aff6bdcd26340c5cdb39490c0561f7aee7efacef4f277cc2754404455fd"
+        }
+      ],
+      "compatibility_adapter": {
+        "repository": "harness-runtime",
+        "path": "crates/platforms/common/src/mobile_linux.rs",
+        "sha256": "8faa78688a411cfabd175da6168769c049b67a6e9dc11be8b5d5199b51bc704b"
+      }
+    },
+    {
+      "source": "crates/platform-api/Cargo.toml",
+      "source_sha256": "eaa6ddb76c524b73c71ca59d1dcadbb0cb570fa4bae9f8c6335d7a161bd022c1",
+      "destinations": [],
+      "compatibility_adapter": {
+        "repository": "harness-runtime",
+        "path": "crates/platform-api/Cargo.toml",
+        "sha256": "65975cb71b5da239ff841b8cc89664b722378e6e65c8b1495a8847d7ea387e4c"
+      }
+    },
+    {
+      "source": "crates/platforms/common/Cargo.toml",
+      "source_sha256": "7a37fb72893f37e774f070a68741b8f653e256319533120c7f33064567f452a3",
+      "destinations": [],
+      "compatibility_adapter": {
+        "repository": "harness-runtime",
+        "path": "crates/platforms/common/Cargo.toml",
+        "sha256": "713ac296550dead8ab81abd84346cdd1e919908b5d2cc2bf5a93c70fa63c1d16"
+      }
+    },
+    {
+      "source": "crates/platforms/pty/Cargo.toml",
+      "source_sha256": "e8bfce25ddb1d882c11040f9301b3c958318de998f1a3567e682eeaa444d0339",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/Cargo.toml",
+          "sha256": "8e2d943cc349b5b6ed19969c38fabd9c26066f3ec6aa69b567a17431af5e7d5a"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/NOTICE",
+      "source_sha256": "cecef442480825acdc9292119c581890bddc591c248f55da8d66dafdb158029f",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/NOTICE",
+          "sha256": "cecef442480825acdc9292119c581890bddc591c248f55da8d66dafdb158029f"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/README.md",
+      "source_sha256": "3276b07b011e688cb1fd8f83699a5bc2a08984221d6547d86cce43fb52cbc4b5",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/README.md",
+          "sha256": "3276b07b011e688cb1fd8f83699a5bc2a08984221d6547d86cce43fb52cbc4b5"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/windows_file.rs",
+      "source_sha256": "4e25e3eee5c1c92c5426d9ed18370a3f1062cb9946fbcc036dd9711b42a5f674",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/windows_file.rs",
+          "sha256": "4e25e3eee5c1c92c5426d9ed18370a3f1062cb9946fbcc036dd9711b42a5f674"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/windows_pipe.rs",
+      "source_sha256": "86cded8434d03ee721a1e296720bda2fca758ab3ef85d58c666a4e2b4df5120f",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/windows_pipe.rs",
+          "sha256": "86cded8434d03ee721a1e296720bda2fca758ab3ef85d58c666a4e2b4df5120f"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/lib.rs",
+      "source_sha256": "b101ddf4e0f18c117159da3849759f1b947a8f40e97b4f6acaaea8201f5b41f8",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/lib.rs",
+          "sha256": "b101ddf4e0f18c117159da3849759f1b947a8f40e97b4f6acaaea8201f5b41f8"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/unix_command.rs",
+      "source_sha256": "9dd9f749309d0557a899a3e783f622662139224c7e896698b8e05d391f8ea0c9",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/unix_command.rs",
+          "sha256": "9dd9f749309d0557a899a3e783f622662139224c7e896698b8e05d391f8ea0c9"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/process_group.rs",
+      "source_sha256": "ef2f03406dff247e368ea920acc0cf0a8c459c22198505489ebb91387c4c595b",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/process_group.rs",
+          "sha256": "ef2f03406dff247e368ea920acc0cf0a8c459c22198505489ebb91387c4c595b"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/private_file.rs",
+      "source_sha256": "69660cb97bd8f5abf73c1b8d8b8908a74cd9ff6402f1502b07fb1fdfefe8dbba",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/private_file.rs",
+          "sha256": "69660cb97bd8f5abf73c1b8d8b8908a74cd9ff6402f1502b07fb1fdfefe8dbba"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/tests.rs",
+      "source_sha256": "0c5f3b77f1d58f813781800aec5b82c5ce71038d5609d59a5e2509a741c52b3a",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/tests.rs",
+          "sha256": "0c5f3b77f1d58f813781800aec5b82c5ce71038d5609d59a5e2509a741c52b3a"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/windows_terminal.rs",
+      "source_sha256": "05b82df590d1f79b1a467c8fc9e80998fef8afb18205b125ecbddac6bddd8213",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/windows_terminal.rs",
+          "sha256": "05b82df590d1f79b1a467c8fc9e80998fef8afb18205b125ecbddac6bddd8213"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/process.rs",
+      "source_sha256": "4ba273bc22c80a5c8ea2f81253bc0e473b31e816b30d4bb3899b73a7abe9e525",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/process.rs",
+          "sha256": "4ba273bc22c80a5c8ea2f81253bc0e473b31e816b30d4bb3899b73a7abe9e525"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/pty.rs",
+      "source_sha256": "f1d00ded5b8a079bd76205a4121a080fa09600435243b274885ba0419a5cd38f",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/pty.rs",
+          "sha256": "f1d00ded5b8a079bd76205a4121a080fa09600435243b274885ba0419a5cd38f"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/windows_input.rs",
+      "source_sha256": "5d4be1b1f634483d9a42ed3b88143f025612698c0c1e8677442ec343afee40d4",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/windows_input.rs",
+          "sha256": "5d4be1b1f634483d9a42ed3b88143f025612698c0c1e8677442ec343afee40d4"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/win/procthreadattr.rs",
+      "source_sha256": "ada85c9dc97627af2b05992833a0047e238206b65bc48309bca7d36e11d848e5",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/win/procthreadattr.rs",
+          "sha256": "ada85c9dc97627af2b05992833a0047e238206b65bc48309bca7d36e11d848e5"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/win/psuedocon.rs",
+      "source_sha256": "f05b4e683bd43bf202eab96448c54cbf10edc61b23acf5a2fc9d9b275d2ff3d7",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/win/psuedocon.rs",
+          "sha256": "f05b4e683bd43bf202eab96448c54cbf10edc61b23acf5a2fc9d9b275d2ff3d7"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/win/mod.rs",
+      "source_sha256": "8faca18ff1c93024b11264a3ea75840edc52d59723b935a34c3ff888ba8224a3",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/win/mod.rs",
+          "sha256": "8faca18ff1c93024b11264a3ea75840edc52d59723b935a34c3ff888ba8224a3"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/pty/src/win/conpty.rs",
+      "source_sha256": "d74b845d1d996c268ef8cdefbe668362498262046d555cd0485d78c8a7508b6a",
+      "destinations": [
+        {
+          "path": "crates/platform-pty/src/win/conpty.rs",
+          "sha256": "d74b845d1d996c268ef8cdefbe668362498262046d555cd0485d78c8a7508b6a"
+        }
+      ]
+    },
+    {
+      "source": "crates/platforms/common/src/guest_fs.rs",
+      "source_sha256": "7c72f50e1568c5ce6f76aece34f19f35e783be5beab86f238e8b8420dce2e029",
+      "destinations": [
+        {
+          "path": "crates/mobile-linux-core/src/guest_path.rs",
+          "sha256": "40ebb0ff60eea104be577c49d3d50d7ca25eb7f9d6ed326519980c94218316bc"
+        }
+      ],
+      "compatibility_adapter": {
+        "repository": "harness-runtime",
+        "path": "crates/platforms/common/src/guest_fs.rs",
+        "sha256": "e39da60190a2e822c82793ff500e00156a645adfd8f4a746f60198271cc53ed3"
+      }
+    }
+  ],
+  "notes": [
+    "Execution contracts are defined once in the SDK; Harness reexports preserve Rust type identity and serialized names.",
+    "The Harness retains product-specific guest atlas entries and trait adapters.",
+    "The old platform-pty directory is pending the parent-owned dependency cutover; new source ownership is the standalone SDK."
+  ]
+}

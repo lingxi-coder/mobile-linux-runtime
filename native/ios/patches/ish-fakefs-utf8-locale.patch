@@ -1,0 +1,22 @@
+--- a/tools/fakefsify.c
++++ b/tools/fakefsify.c
+@@ -1,6 +1,7 @@
+ #include <stdio.h>
+ #include <string.h>
+ #include <libgen.h>
++#include <locale.h>
+ 
+ #define ISH_INTERNAL
+ #include "fs/fake.h"
+@@ -12,6 +13,11 @@
+ };
+ 
+ int main(int argc, const char *argv[]) {
++    // libarchive converts UTF-8 names into the current locale.
++    if (setlocale(LC_CTYPE, "") == NULL) {
++        fprintf(stderr, "unable to initialize rootfs filename locale\n");
++        return 1;
++    }
+     enum cmd cmd = cmd_import;
+     if (strcmp(basename((char *) argv[0]), "unfakefsify") == 0) {
+         cmd = cmd_export;

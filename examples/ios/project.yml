@@ -1,0 +1,51 @@
+name: MobileLinuxSample
+options:
+  deploymentTarget:
+    iOS: "18.0"
+packages:
+  MobileLinuxRuntime:
+    path: ../../ios
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+targets:
+  MobileLinuxSample:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: DeviceResources
+        type: folder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.mobilelinux.sdk.sample
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    dependencies:
+      - package: MobileLinuxRuntime
+        product: MobileLinuxRuntime
+
+  MobileLinuxDeviceTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - DeviceTests
+      - path: DeviceResources
+        type: folder
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.mobilelinux.sdk.device-tests
+        GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: MobileLinuxSample
+      - package: MobileLinuxRuntime
+        product: MobileLinuxRuntime
+schemes:
+  MobileLinuxSample:
+    build:
+      targets:
+        MobileLinuxSample: all
+        MobileLinuxDeviceTests: [test]
+    test:
+      targets: [MobileLinuxDeviceTests]

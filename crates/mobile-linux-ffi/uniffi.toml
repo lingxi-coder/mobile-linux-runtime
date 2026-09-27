@@ -1,0 +1,6 @@
+[bindings.kotlin]
+package_name = "io.lingxi.mobilelinux.bindings"
+cdylib_name = "mobile_linux_runtime"
+[bindings.swift]
+module_name = "MobileLinuxRuntimeBindings"
+ffi_module_name = "MobileLinuxRuntimeFFI"

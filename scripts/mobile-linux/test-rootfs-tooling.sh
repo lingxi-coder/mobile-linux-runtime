@@ -417,6 +417,18 @@ if python3 "${tool}" verify-tree --root "${fixture_root}"; then
 fi
 mv "${fixture_root}/sbin/apk.disabled" "${fixture_root}/sbin/apk"
 
+# Real Alpine ships these two interpreter aliases as symlinks. Preserve the
+# strict regular-file allowlist and normalize only these aliases in staging.
+rm "${fixture_root}/bin/sh"
+ln -s busybox "${fixture_root}/bin/sh"
+mv "${fixture_root}/usr/bin/python3" "${fixture_root}/usr/bin/python3.actual"
+ln -s python3.actual "${fixture_root}/usr/bin/python3"
+if python3 "${tool}" generate-manifest --root "${fixture_root}" --runtime android-proot --platform android --abi arm64 --rootfs-version 1.0.0 --archive-filename x.tar.gz --archive-sha256 "$(printf '%064d' 0)" --archive-size 1 --output "${tmp_root}/invalid-alias-manifest.json" >"${tmp_root}/alias-error" 2>&1; then
+  echo "raw interpreter symlinks unexpectedly entered the strict allowlist" >&2
+  exit 1
+fi
+grep -q "required ELF/interpreter paths missing" "${tmp_root}/alias-error"
+python3 "${script_dir}/normalize-interpreter-aliases.py" --root "${fixture_root}" --record "${tmp_root}/alias-transformations.json"
 release1="${tmp_root}/release-1"
 release2="${tmp_root}/release-2"
 archive1="${tmp_root}/release-1/rootfs.tar.gz"
@@ -455,4 +467,18 @@ for filename in [
         raise SystemExit(f"expected repeated packaging output to match exactly: {filename}")
 PY
 
+python3 - "${script_dir}" "${release1}" <<'VERIFY'
+import importlib.util,json,pathlib,sys
+sys.dont_write_bytecode=True
+sys.path.insert(0,sys.argv[1])
+spec=importlib.util.spec_from_file_location("evidence",pathlib.Path(sys.argv[1])/"verify-evidence.py")
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+directory=pathlib.Path(sys.argv[2]);path=directory/"rootfs.spdx.json"
+original=path.read_text();data=json.loads(original);data["packages"][0]["licenseDeclared"]="tampered";path.write_text(json.dumps(data))
+try: module.verify(directory)
+except ValueError as error:
+    assert "license" in str(error)
+else: raise AssertionError("tampered SBOM license passed")
+path.write_text(original)
+VERIFY
 echo "rootfs tooling tests passed"

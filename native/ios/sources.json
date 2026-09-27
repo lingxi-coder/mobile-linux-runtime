@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "guest_arch": "aarch64",
+  "engine": "asbestos",
+  "sources": {
+    "openminis": {
+      "url": "https://github.com/OpenMinis/OpenMinis.git",
+      "revision": "9cf3a855fecd27bb5735b84cacbd56852a3ab8dd",
+      "vendored_files": {
+        "LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+        "src/ios/NativeOffloads/AlarmOffload.h": "f8b6bc9f229e5a7b6a81c4d551bf0dd411e972b7a1dbdb68a8c7966d7806db3c",
+        "src/ios/NativeOffloads/BluetoothOffload.h": "16397a6a11606b726d928796246d49fbf7c47a7e91601c7a222c6fc3596e72f8",
+        "src/ios/NativeOffloads/BrowserUseOffload.h": "e8408d9bf05981e0e5603ad098a85b934ed69ece5d6319638ad7a1993f6a899d",
+        "src/ios/NativeOffloads/CalendarOffload.h": "1c20795751fc87de029f253c2d4903c753ffe459a649e2dbf8335abfae2b12b7",
+        "src/ios/NativeOffloads/ClipboardOffload.h": "52a9a9ed0a7367f882ff5060d27dd56cdc7b3d4c2aeaab1a0d97789405bf640a",
+        "src/ios/NativeOffloads/ConfigOffload.h": "7c637938c5cea170004279537455270d913e423e86629cf1408799da46c0f028",
+        "src/ios/NativeOffloads/CoordinateUtils.h": "692e03e6f0990e81d34c2711907a52b32b80b6cc68f871b4b909f4fe073ec8c4",
+        "src/ios/NativeOffloads/DebugOffload.h": "430a9a72fefe76c4500a10013328116c2a13f38a8885fa26b999a26dfe8e6690",
+        "src/ios/NativeOffloads/DeviceOffload.h": "6de801356bf4822198aa1a76efc2240695479c9accf0744f827f36013a23e2d6",
+        "src/ios/NativeOffloads/FFmpegOffload.h": "ac98b60d00eb811a6bc90b366f2419c8ec7ff0937d8f726b9e998d801062200f",
+        "src/ios/NativeOffloads/HealthKitOffload.h": "50fe315ec34b6e3a4fca11e6ce58111f1fe75eccd46a188cfd7dbe40bbb1da1b",
+        "src/ios/NativeOffloads/HomeKitOffload.h": "689c784bf236112d6ffa73ba6f81f49e8f050030233986499cd47aa0f24b4b6f",
+        "src/ios/NativeOffloads/LocationOffload.h": "7859fa9c10d703e4dab952f3479016d9011c773d012cbc51f1bd666401e036f1",
+        "src/ios/NativeOffloads/MapsOffload.h": "bdffd4449111279631066e11d2e83c9c298c8389ab8ccbd23444bb75e13137a5",
+        "src/ios/NativeOffloads/MediaOffload.h": "b20536bb80e380851fddd509c4184ca12ca0768f21eabc409fd34dea984bff13",
+        "src/ios/NativeOffloads/ModelUseOffload.h": "c63f3b77e1212e541e2d4b1920eb1cd1c9665d890d7fba24d29af11fdfd76d89",
+        "src/ios/NativeOffloads/NFCOffload.h": "a251b0eadcecca0b48717d733a42cd897ef10c75e97e2d242abec56f7ce787d2",
+        "src/ios/NativeOffloads/NLPOffload.h": "bc29710aaa6645423d25c61e7947fe0a203c458f2332304b67575d3a84ed80f2",
+        "src/ios/NativeOffloads/NativeOffloadUtils.h": "582128dc67df0e18cfe9044c6d1e1d4f9c5aba4f8ba13043c4a2dee19d2c0646",
+        "src/ios/NativeOffloads/NotificationOffload.h": "514507dc5f873fc7101977f17639187ba3ddd2893102f6f39e40dfc92d8cc0b4",
+        "src/ios/NativeOffloads/OpenOffload.h": "150476953a631b43fcf00e84572bcc2d50eb54f1e831c46ac7d88198103b8921",
+        "src/ios/NativeOffloads/PhotosOffload.h": "0997569dff223c3eb635c5429b28e609320b9ed01aba6378a95dcda7027d2ef7",
+        "src/ios/NativeOffloads/PlayerOffload.h": "ac15ba69186f88e19edc70024ca712a6a3b075a5461984f91efe585ac89ed870",
+        "src/ios/NativeOffloads/RemindersOffload.h": "b3f81e0ab807b27ecb3c051d7159d2dfe9812da70f1a85e492e3aac4465c9a67",
+        "src/ios/NativeOffloads/SessionsOffload.h": "38fbb8ffcdc815eb149363c06e64f5e393a1df39c9f478780141fb0896878695",
+        "src/ios/NativeOffloads/SpeakOffload.h": "41d3e965abc935b52bb37ec51a9f57487bf03d2fa306488adb3d8503755ed3a4",
+        "src/ios/NativeOffloads/SpeechOffload.h": "68c944634df39ee1d674e0773c64d10e337b0aa35617ae3846a2efd6ce23d504",
+        "src/ios/NativeOffloads/VisionOffload.h": "9be41c7fa881249ef5be387cd17db7398690193a6bf8bc6f8f5e9391484f03f4",
+        "src/ios/NativeOffloads/WeatherOffload.h": "f1ef8eb59059a419348010cda560f371d43634998b18a5924675a42c1a050dac",
+        "src/ios/iSH/CurrentRoot.h": "6bd62a7dcf8ed1b7680273d40a2f0789010c612188d0842698beeb2af73a105e",
+        "src/ios/iSH/CurrentRoot.m": "6481488e9bd52197e7ef919289c16a98c3b20b380fb33b055c828ab56ff62918",
+        "src/ios/iSH/ISHKernel.h": "fadb41db17cfa4e12519cd7baa35cfb928d7a0f18c4309cc441b54b81ea4d1fc",
+        "src/ios/iSH/ISHKernel.m": "5b48941752f97703ecd5901968a1a435c5e0745c6673c6b4f460e5ce23f4b2f3",
+        "src/ios/iSH/ISHShellExecutor.h": "e6ec5e57279c3e92e46cba694e44ad0ac4bd4d4cacd7d9d1a5bfdc1c4e04da62",
+        "src/ios/iSH/ISHShellExecutor.m": "c844f7859252826d20048e32d8d4747d4f8a0505a473ef51433e56b99a9f205a"
+      }
+    },
+    "ish": {
+      "url": "https://github.com/OpenMinis/ish-arm64.git",
+      "revision": "de124dd66124a15239cea1465164f74980ada245"
+    },
+    "libapps": {
+      "url": "https://github.com/ish-app/libapps.git",
+      "revision": "b8cacae35e5b11d64bb736a053921c16ca7faf9e"
+    },
+    "libarchive": {
+      "url": "https://github.com/libarchive/libarchive.git",
+      "revision": "fc6563f5130d8a7ee1fc27c0e55baef35119f26c"
+    }
+  },
+  "patches": {
+    "openminis-raw-stdio.patch": "d0a04f2a485c2cb2c0892e40fd0526c72c5bafc9fa4f77bf297f2792fc88ba35",
+    "ish-socket-network-policy.patch": "2122d7284c98fc88c6b8b72570c64297d299ab7a941a20f3a879c6465003834f",
+    "openminis-explicit-overlay.patch": "379880442ad6e430f782bf6f8d6c792ff81531057ba870e5ac89e316f26dbd16",
+    "openminis-explicit-host-state.patch": "7db605c45e3e583fb0a22ff9c853fc0f3fbcfdfc3547c985689d762868f4c8ba",
+    "ish-fakefs-utf8-locale.patch": "8fa48cbc617a843159ca568458fa03bce9681821c3e97c776010a6bfb8acc040"
+  },
+  "features": {
+    "native_apple_offloads": false,
+    "process_kernel": "one immutable configuration; physical teardown unavailable",
+    "raw_stdio_patch": "byte-exact pipes, context-bound process-group cancellation, EOF-before-completion"
+  }
+}

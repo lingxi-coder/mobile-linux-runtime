@@ -1,0 +1,263 @@
+diff --git a/fs/sock.c b/fs/sock.c
+index 788bbf77..ecde9dac 100644
+--- a/fs/sock.c
++++ b/fs/sock.c
+@@ -17,0 +18,45 @@
++enum {
++    LXISH_NETWORK_ALLOWED = 0,
++    LXISH_NETWORK_DISABLED = 1,
++    LXISH_NETWORK_LOOPBACK_ONLY = 2,
++};
++
++extern int lx_ish_network_policy_for_context(uint64_t context);
++
++uint32_t lx_ish_sock_policy_hook_version(void) {
++    return 1;
++}
++
++static int lingxi_network_policy(void) {
++    if (current == NULL || current->group == NULL)
++        return LXISH_NETWORK_ALLOWED;
++    return lx_ish_network_policy_for_context(current->group->fs_context);
++}
++
++static int lingxi_validate_socket_domain(dword_t domain) {
++    int policy = lingxi_network_policy();
++    if (policy == LXISH_NETWORK_ALLOWED || domain == AF_LOCAL_)
++        return 0;
++    if (policy == LXISH_NETWORK_LOOPBACK_ONLY &&
++            (domain == AF_INET_ || domain == AF_INET6_))
++        return 0;
++    return _EPERM;
++}
++
++static int lingxi_validate_sockaddr(const struct sockaddr *address) {
++    int policy = lingxi_network_policy();
++    if (policy == LXISH_NETWORK_ALLOWED || address->sa_family == PF_LOCAL)
++        return 0;
++    if (policy == LXISH_NETWORK_DISABLED)
++        return _EPERM;
++    if (address->sa_family == PF_INET) {
++        const struct sockaddr_in *ipv4 = (const struct sockaddr_in *)address;
++        return (ntohl(ipv4->sin_addr.s_addr) >> 24) == 127 ? 0 : _EPERM;
++    }
++    if (address->sa_family == PF_INET6) {
++        const struct sockaddr_in6 *ipv6 = (const struct sockaddr_in6 *)address;
++        return IN6_IS_ADDR_LOOPBACK(&ipv6->sin6_addr) ? 0 : _EPERM;
++    }
++    return _EPERM;
++}
++
+@@ -39,0 +85,3 @@ int_t sys_socket(dword_t domain, dword_t type, dword_t protocol) {
++    int policy_error = lingxi_validate_socket_domain(domain);
++    if (policy_error < 0)
++        return policy_error;
+@@ -340,0 +389,3 @@ int_t sys_bind(fd_t sock_fd, addr_t sockaddr_addr, uint_t sockaddr_len) {
++    if (err < 0)
++        return err;
++    err = lingxi_validate_sockaddr((const struct sockaddr *)&sockaddr);
+@@ -380,0 +432,3 @@ int_t sys_connect(fd_t sock_fd, addr_t sockaddr_addr, uint_t sockaddr_len) {
++    if (err < 0)
++        return err;
++    err = lingxi_validate_sockaddr((const struct sockaddr *)&sockaddr);
+@@ -571,0 +626,3 @@ int_t sys_socketpair(dword_t domain, dword_t type, dword_t protocol, addr_t sock
++    int policy_error = lingxi_validate_socket_domain(domain);
++    if (policy_error < 0)
++        return policy_error;
+@@ -636,0 +694,3 @@ int_t sys_sendto(fd_t sock_fd, addr_t buffer_addr, dword_t len, dword_t flags, a
++        err = lingxi_validate_sockaddr((const struct sockaddr *)&sockaddr);
++        if (err < 0)
++            goto error;
+@@ -1030,0 +1091,3 @@ int_t sys_sendmsg(fd_t sock_fd, addr_t msghdr_addr, int_t flags) {
++        if (err < 0)
++            return err;
++        err = lingxi_validate_sockaddr((const struct sockaddr *)&msg_name);
+diff --git a/kernel/exit.c b/kernel/exit.c
+index 3f163ec3..fcc2d637 100644
+--- a/kernel/exit.c
++++ b/kernel/exit.c
+@@ -94,0 +95 @@ noreturn void do_exit(int status) {
++    lock(&current->general_lock);
+@@ -101,0 +103 @@ noreturn void do_exit(int status) {
++    unlock(&current->general_lock);
+diff --git a/kernel/resource.c b/kernel/resource.c
+index 618929d7..2e07ca06 100644
+--- a/kernel/resource.c
++++ b/kernel/resource.c
+@@ -12,0 +13 @@
++#include <stdlib.h>
+@@ -290,0 +292,91 @@ int_t sys_ioprio_set(int_t UNUSED(which), int_t UNUSED(who), int_t UNUSED(ioprio
++
++// Host-side watchdog hooks for a single opaque execution context. These live
++// inside libish so they are compiled with the same guest architecture and can
++// safely pin address spaces while guest exec/fork activity continues.
++uint64_t lx_ish_guest_execution_resident_bytes(uint64_t context) {
++    struct mm **address_spaces = calloc((size_t) MAX_PID + 1, sizeof(*address_spaces));
++    struct task **locked_tasks = calloc((size_t) MAX_PID + 1, sizeof(*locked_tasks));
++    size_t address_space_count = 0;
++    size_t locked_task_count = 0;
++    uint64_t bytes = 0;
++
++    if (context == 0)
++        return 0;
++    // Fail closed: the host interprets UINT64_MAX as over every finite limit.
++    if (address_spaces == NULL || locked_tasks == NULL) {
++        free(address_spaces);
++        free(locked_tasks);
++        return UINT64_MAX;
++    }
++
++    // Pin every matching task's mm pointer under general_lock. Holding all of
++    // those locks until the scan finishes prevents exec/exit from replacing
++    // or releasing an address space without touching iSH's non-atomic mm
++    // refcount. Threads share an mm; forked processes do not and are summed
++    // like process-group RSS.
++    lock(&pids_lock);
++    for (int pid = 2; pid <= MAX_PID; pid++) {
++        struct task *task = pid_get_task((dword_t) pid);
++        struct mm *task_mm;
++        bool seen = false;
++
++        if (task == NULL || task->group == NULL || task->exiting ||
++                task->group->fs_context != context)
++            continue;
++        lock(&task->general_lock);
++        if (task->group == NULL || task->exiting ||
++                task->group->fs_context != context || task->mm == NULL) {
++            unlock(&task->general_lock);
++            continue;
++        }
++        locked_tasks[locked_task_count++] = task;
++        task_mm = task->mm;
++        for (size_t index = 0; index < address_space_count; index++) {
++            if (address_spaces[index] == task_mm) {
++                seen = true;
++                break;
++            }
++        }
++        if (!seen && address_space_count <= MAX_PID) {
++            address_spaces[address_space_count++] = task_mm;
++        }
++    }
++    unlock(&pids_lock);
++
++    for (size_t index = 0; index < address_space_count; index++) {
++        struct mem *memory = &address_spaces[index]->mem;
++        read_wrlock(&memory->lock);
++        for (page_t page = 0; page < MEM_PAGES; mem_next_page(memory, &page)) {
++            if (mem_pt(memory, page) != NULL) {
++                if (UINT64_MAX - bytes < PAGE_SIZE) {
++                    bytes = UINT64_MAX;
++                    break;
++                }
++                bytes += PAGE_SIZE;
++            }
++        }
++        read_wrunlock(&memory->lock);
++    }
++    for (size_t index = locked_task_count; index > 0; index--)
++        unlock(&locked_tasks[index - 1]->general_lock);
++    free(locked_tasks);
++    free(address_spaces);
++    return bytes;
++}
++
++int lx_ish_guest_execution_context_active(uint64_t context) {
++    int active = 0;
++    if (context == 0)
++        return 0;
++    lock(&pids_lock);
++    for (int pid = 2; pid <= MAX_PID; pid++) {
++        struct task *task = pid_get_task((dword_t) pid);
++        if (task != NULL && task->group != NULL &&
++                task->group->fs_context == context) {
++            active = 1;
++            break;
++        }
++    }
++    unlock(&pids_lock);
++    return active;
++}
+diff --git a/fs/fake.c b/fs/fake.c
+index c86ac940..f339adaa 100644
+--- a/fs/fake.c
++++ b/fs/fake.c
+@@ -188,6 +188,9 @@ static bool fakefs_host_path_contains_rootfs(const char *host_path, int host_pat
+  * suppression is no-op until fakefs_set_rootfs_data_path() is called by
+  * the host. */
+ bool fakefs_bind_mount_resolve_path(const char *resolved, char *out_path, size_t out_size) {
++    int best_host_match = -1;
++    int best_host_path_len = -1;
++    const char *best_resolved_path = NULL;
+     for (int i = 0; i < FAKEFS_MAX_BIND_MOUNTS; i++) {
+         if (!g_bind_mounts[i].active)
+             continue;
+@@ -213,9 +216,12 @@ bool fakefs_bind_mount_resolve_path(const char *resolved, char *out_path, size_t
+         /* Try matching as-is first */
+         if (strncmp(resolved, g_bind_mounts[i].host_path, hlen) == 0 &&
+             (resolved[hlen] == '/' || resolved[hlen] == '\0')) {
+-            snprintf(out_path, out_size, "%s%s",
+-                     g_bind_mounts[i].path, resolved + hlen);
+-            return true;
++            if (hlen > best_host_path_len) {
++                best_host_match = i;
++                best_host_path_len = hlen;
++                best_resolved_path = resolved;
++            }
++            continue;
+         }
+         /* F_GETPATH resolves /var -> /private/var on iOS.
+          * If host_path starts with /var/ but resolved starts with /private/var/,
+@@ -225,12 +231,20 @@ bool fakefs_bind_mount_resolve_path(const char *resolved, char *out_path, size_t
+             const char *resolved_no_private = resolved + 8; /* skip "/private" */
+             if (strncmp(resolved_no_private, g_bind_mounts[i].host_path, hlen) == 0 &&
+                 (resolved_no_private[hlen] == '/' || resolved_no_private[hlen] == '\0')) {
+-                snprintf(out_path, out_size, "%s%s",
+-                         g_bind_mounts[i].path, resolved_no_private + hlen);
+-                return true;
++                if (hlen > best_host_path_len) {
++                    best_host_match = i;
++                    best_host_path_len = hlen;
++                    best_resolved_path = resolved_no_private;
++                }
+             }
+         }
+     }
++    if (best_host_match >= 0) {
++        snprintf(out_path, out_size, "%s%s",
++                 g_bind_mounts[best_host_match].path,
++                 best_resolved_path + best_host_path_len);
++        return true;
++    }
+     /* Static table miss — fall through to the host-provided reverse hook
+      * if one is registered. The hook knows about per-context routes that
+      * are not in g_bind_mounts[]. */
+@@ -276,16 +290,24 @@ static bool bind_mount_translate_path_ex(const char *path, char *out_path,
+             return true;
+         }
+     }
++    int best_guest_match = -1;
++    int best_guest_path_len = -1;
+     for (int i = 0; i < FAKEFS_MAX_BIND_MOUNTS; i++) {
+         if (!g_bind_mounts[i].active)
+             continue;
+         int len = g_bind_mounts[i].path_len;
+         if (strncmp(g_bind_mounts[i].path, cmp_path, len) == 0 &&
+-            (cmp_path[len] == '/' || cmp_path[len] == '\0')) {
+-            snprintf(out_path, out_size, "%s%s",
+-                     g_bind_mounts[i].host_path, cmp_path + len);
+-            return true;
++            (cmp_path[len] == '/' || cmp_path[len] == '\0') &&
++            len > best_guest_path_len) {
++            best_guest_match = i;
++            best_guest_path_len = len;
+         }
+     }
++    if (best_guest_match >= 0) {
++        snprintf(out_path, out_size, "%s%s",
++                 g_bind_mounts[best_guest_match].host_path,
++                 cmp_path + best_guest_path_len);
++        return true;
++    }
+     return false;
+ }

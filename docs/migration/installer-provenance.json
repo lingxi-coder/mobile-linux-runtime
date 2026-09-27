@@ -1,0 +1,7 @@
+{
+  "source": "/Users/luolingfeng/Projects/LingXi-Next/clients/android/app/src/main/java/com/lingxi/code/settings/LinuxRuntimeBridge.kt",
+  "source_sha256": "a53b4ca42e0ac9ff5e3cf1b988d932cf75bd819cd00c383ca6e8d3840551b736",
+  "extraction": "ROOTFS_MANIFEST_FILE through end of file; package and object visibility/name only",
+  "target": "android/installer/src/main/kotlin/io/lingxi/mobilelinux/RootfsInstaller.kt",
+  "security_adjustment": "Validate version/archive single safe component before any filesystem writes; preserve strict child staging. Materialize validated tar hardlinks as independent copies with original mode/size; unchanged final immutable inventory and content SHA gate."
+}

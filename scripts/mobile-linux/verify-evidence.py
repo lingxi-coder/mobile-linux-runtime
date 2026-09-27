@@ -8,6 +8,33 @@ import sys
 sys.dont_write_bytecode = True
 import rootfs_tool as tool
 
+def verify_archive_inventory(archive, expected):
+    """Compare every immutable payload byte, including hardlink aliases, without extraction."""
+    actual = []
+    with tool.open_tar_archive(Path(archive)) as tar:
+        for member in tar.getmembers():
+            path = "/" + tool.safe_member_path(member.name).as_posix()
+            if member.isdir() or tool.is_writable_inventory_path(path):
+                continue
+            if member.issym():
+                payload = member.linkname.encode("utf-8")
+                digest, size, kind = hashlib.sha256(payload).hexdigest(), len(payload), "symlink"
+            elif member.isreg() or member.islnk():
+                stream = tar.extractfile(member)
+                if stream is None:
+                    raise ValueError(f"archive payload missing: {path}")
+                hasher, size = hashlib.sha256(), 0
+                with stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        hasher.update(chunk)
+                        size += len(chunk)
+                digest, kind = hasher.hexdigest(), "regular-file"
+            else:
+                raise ValueError(f"unsupported archive inventory entry: {path}")
+            actual.append({"path":path, "sha256":digest, "kind":kind, "size_bytes":size})
+    if sorted(actual, key=lambda entry: entry["path"]) != expected:
+        raise ValueError("archive immutable payload inventory differs from manifest")
+
 def verify(directory, archive=None, root=None):
     directory = Path(directory)
     manifest = json.loads((directory / "rootfs-manifest.json").read_text())
@@ -30,6 +57,7 @@ def verify(directory, archive=None, root=None):
         if archive.stat().st_size != manifest["archive"]["size_bytes"] or tool.read_sha256(archive) != manifest["archive"]["sha256"]:
             raise ValueError("release archive bytes do not match manifest")
         tool.verify_archive(argparse.Namespace(archive=archive))
+        verify_archive_inventory(archive, inventory)
     if root:
         root = Path(root)
         tool.validate_rootfs_tree(root)

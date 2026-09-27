@@ -1,0 +1,19 @@
+--- a/src/ios/iSH/CurrentRoot.m
++++ b/src/ios/iSH/CurrentRoot.m
+@@ -29,10 +29,14 @@
+     return n;
+ }
+ 
++static NSString *MLROverlayBundlePath;
++void mlr_ish_set_overlay_bundle(const char *path) {
++    MLROverlayBundlePath = path ? [[NSString alloc] initWithUTF8String:path] : nil;
++}
++
+ void FsApplyOverlay(void) {
+     // Locate RootfsPatch.bundle inside the app bundle
+-    NSBundle *patchBundle = [NSBundle bundleWithURL:
+-        [NSBundle.mainBundle URLForResource:@"RootfsPatch" withExtension:@"bundle"]];
++    NSBundle *patchBundle = MLROverlayBundlePath ? [NSBundle bundleWithPath:MLROverlayBundlePath] : nil;
+     if (patchBundle == nil) {
+         NSLog(@"[RootfsPatch] bundle not found, skipping overlay");
+         return;

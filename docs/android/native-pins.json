@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "android_api": 26,
+  "supported_abis": [
+    "arm64-v8a",
+    "x86_64"
+  ],
+  "components": {
+    "openminis": {
+      "repository": "https://github.com/OpenMinis/OpenMinis.git",
+      "commit": "9cf3a855fecd27bb5735b84cacbd56852a3ab8dd",
+      "git_archive_sha256": "eaa2c18a04326c04289283e23343cc213e8287373fb11e9aef8641a9998b437d",
+      "license": "GPL-3.0-only",
+      "license_file_sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    "proot": {
+      "repository": "https://github.com/OpenMinis/proot.git",
+      "commit": "8cf13e997cdc9472997aae19df8050c073c9a86c",
+      "git_archive_sha256": "46137b4e6cd11cca50eae2a2a907c4b3e40891189857223a0b4f4af1b1b75599",
+      "license": "GPL-2.0-or-later",
+      "license_file_sha256": "0ffa6454acbe7e410ac6f0007df83b9b3161fe55484c1f4b87487c0f2d228a6d"
+    },
+    "talloc": {
+      "version": "2.4.2",
+      "source": "https://download.samba.org/pub/talloc/talloc-2.4.2.tar.gz",
+      "sha256": "85ecf9e465e20f98f9950a52e9a411e14320bc555fa257d87697b7e7a9b1d8a6",
+      "license": "LGPL-3.0-or-later",
+      "openminis_vendored_files": {
+        "deps/talloc/talloc.c": "15f218ee70beb4da371646d4116622b48f2f552a3d051e5d360e790e2c3d3a37",
+        "deps/talloc/talloc.h": "e01fb092aaed2b431be26674e2b791c77fb5984537c29b514e957582c6b31465",
+        "deps/talloc/replace.h": "7bc76ccedd248fc6ad8c61c184580d4c00b8987a7a35f1666caa98b994d20deb"
+      }
+    },
+    "pty_bridge": {
+      "source_component": "openminis",
+      "path": "src/android/app/src/main/cpp/pty_bridge.c",
+      "sha256": "0cc73b1e356429b07d9ab065f8a082fd16ea59393c8583d0c6615acd9725d96a",
+      "license": "GPL-3.0-only"
+    }
+  },
+  "sdk_sources": {
+    "mobile_linux_policy_launcher.c": "3cf616ba8f5d94c5026eeb0dbc5d60cfe92e333f2d470e665d0e43752e895026",
+    "proot_lingxi_network_policy.c": "752a7fc0a0b2cd5fcdfca0f8fa094d274c32430f4acfc891e6680c3764610e26",
+    "pty_bridge.c": "0cc73b1e356429b07d9ab065f8a082fd16ea59393c8583d0c6615acd9725d96a",
+    "talloc/talloc.c": "15f218ee70beb4da371646d4116622b48f2f552a3d051e5d360e790e2c3d3a37",
+    "talloc/talloc.h": "e01fb092aaed2b431be26674e2b791c77fb5984537c29b514e957582c6b31465",
+    "talloc/replace.h": "7bc76ccedd248fc6ad8c61c184580d4c00b8987a7a35f1666caa98b994d20deb",
+    "PtyBridge.kt": "ea04b343f2d08bb0ee41c51a49c622d15d67a8f13e6747e70ab77712b7ff53e4"
+  },
+  "distribution_licenses": {
+    "talloc-license": {
+      "source": "native/android/TALLOC-LGPL-3.0.txt",
+      "filename": "LGPL-3.0-or-later.txt",
+      "sha256": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+      "origin": "https://www.gnu.org/licenses/lgpl-3.0.txt"
+    },
+    "talloc-notice": {
+      "source": "native/android/TALLOC-NOTICE.txt",
+      "filename": "talloc-NOTICE.txt",
+      "sha256": "665fce5b1cb7c4b60abcffd7b48bb2d50ffc37ddc56538fcdd6323c971b636c6"
+    },
+    "mksh": {
+      "source": "third_party/mksh/NOTICE",
+      "filename": "mksh-NOTICE.txt",
+      "sha256": "9d0a1d9cebf03f4a448105f4d79d8625a03aa5227e45b391dd79a1e89a7f0b0d"
+    },
+    "toybox": {
+      "source": "third_party/toybox/LICENSE",
+      "filename": "toybox-LICENSE.txt",
+      "sha256": "948039f91e7e23916019047a035c69214447323c5fc272aefc0fd21e505bf41d"
+    },
+    "minijail-license": {
+      "source": "third_party/minijail/LICENSE",
+      "filename": "minijail-LICENSE.txt",
+      "sha256": "dc1433a79c832fe103c3eec62610d3e530cdbb6ab60a9c0dfb165e0edd8f2fbb"
+    },
+    "minijail-notice": {
+      "source": "third_party/minijail/NOTICE",
+      "filename": "minijail-NOTICE.txt",
+      "sha256": "d20e000b94db73939f262badd4994a6451c7f61ddd192e13c90f48399af2c9c6"
+    },
+    "libcap": {
+      "source": "third_party/libcap/License",
+      "filename": "libcap-LICENSE.txt",
+      "sha256": "68467e731f4744bd6e0bb69e8df9c3a994e09cd6b203d0c41327ac6d079c581d"
+    }
+  }
+}

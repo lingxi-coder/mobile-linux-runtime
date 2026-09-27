@@ -1,0 +1,274 @@
+--- a/src/ios/iSH/ISHShellExecutor.h
++++ b/src/ios/iSH/ISHShellExecutor.h
+@@ -48,7 +48,18 @@
+ /// @param result Execution result containing exit code and outputs
+ typedef void (^ISHShellCompletionCallback)(ISHShellExecutionResult *result);
+ 
++typedef void (^ISHShellDataCallback)(NSData *data, BOOL isStdErr);
++
+ @interface ISHShellExecutor : NSObject
+++ (int)executeRawExecutable:(NSString *)executable
++                 arguments:(nullable NSArray<NSString *> *)arguments
++               environment:(nullable NSDictionary<NSString *, NSString *> *)environment
++                 fsContext:(uint64_t)fsContext
++              dataCallback:(ISHShellDataCallback)dataCallback
++                completion:(nullable ISHShellCompletionCallback)completion;
+++ (BOOL)writeRawStdin:(NSData *)data pid:(int)pid;
+++ (BOOL)closeRawStdinForPid:(int)pid;
++
+ 
+ /// Execute a shell command with line-by-line output callback
+ /// @param command Shell command to execute (will be passed to /bin/sh -c)
+--- a/src/ios/iSH/ISHShellExecutor.m
++++ b/src/ios/iSH/ISHShellExecutor.m
+@@ -46,6 +46,12 @@
+ @property (nonatomic) dispatch_semaphore_t waitSemaphore;
+ @property (nonatomic) ISHShellExecutionResult *result;
+ @property (atomic) BOOL isCompleted;
++@property (nonatomic, copy) ISHShellDataCallback dataCallback;
++@property (nonatomic) int stdinWriteFd;
++@property (nonatomic) NSLock *stdinWriter;
++@property (nonatomic) uint64_t fsContext;
++@property (nonatomic) dispatch_group_t readers;
++@property (nonatomic) dispatch_queue_t rawCallbacks;
+ 
+ - (int *)stdoutPipe;
+ - (int *)stderrPipe;
+@@ -70,6 +76,10 @@
+         _stdoutPipe[1] = -1;
+         _stderrPipe[0] = -1;
+         _stderrPipe[1] = -1;
++        _stdinWriteFd = -1;
++        _stdinWriter = [[NSLock alloc] init];
++        _readers = dispatch_group_create();
++        _rawCallbacks = dispatch_queue_create("org.mobile-linux.raw-stdio", DISPATCH_QUEUE_SERIAL);
+         _result = [[ISHShellExecutionResult alloc] init];
+         _result.error = ISHShellExecutorErrorNone;
+     }
+@@ -77,6 +87,10 @@
+ }
+ 
+ - (void)cleanup {
++    @synchronized(self) {
++        if (_stdinWriteFd >= 0) close(_stdinWriteFd);
++        _stdinWriteFd = -1;
++    }
+     if (_stdoutPipe[0] >= 0) close(_stdoutPipe[0]);
+     if (_stdoutPipe[1] >= 0) close(_stdoutPipe[1]);
+     if (_stderrPipe[0] >= 0) close(_stderrPipe[0]);
+@@ -172,6 +186,72 @@
+                fsContext:(uint64_t)fsContext
+             lineCallback:(ISHShellLineCallback)lineCallback
+               completion:(ISHShellCompletionCallback)completion {
++    return [self executeExecutable:executable arguments:arguments environment:environment
++                        stdinData:stdinData fsContext:fsContext dataCallback:nil
++                     lineCallback:lineCallback completion:completion];
++}
++
+++ (int)executeRawExecutable:(NSString *)executable arguments:(NSArray<NSString *> *)arguments
++               environment:(NSDictionary<NSString *, NSString *> *)environment
++                 fsContext:(uint64_t)fsContext dataCallback:(ISHShellDataCallback)dataCallback
++                completion:(ISHShellCompletionCallback)completion {
++    if (!dataCallback) return ISHShellExecutorErrorProcessCreationFailed;
++    return [self executeExecutable:executable arguments:arguments environment:environment
++                        stdinData:nil fsContext:fsContext dataCallback:dataCallback
++                     lineCallback:nil completion:completion];
++}
++
+++ (BOOL)writeRawStdin:(NSData *)data pid:(int)pid {
++    if (data.length > 1048576) return NO;
++    ISHShellExecutionContext *ctx;
++    @synchronized(_activeExecutions) { ctx = _activeExecutions[@(pid)]; }
++    if (!ctx || !ctx.dataCallback) return NO;
++    [ctx.stdinWriter lock];
++    @try {
++        const uint8_t *bytes = data.bytes;
++        NSUInteger remaining = data.length;
++        NSTimeInterval deadline = [NSDate timeIntervalSinceReferenceDate] + 5.0;
++        while (remaining) {
++            ssize_t n;
++            int descriptor;
++            @synchronized(ctx) {
++                if (ctx.stdinWriteFd < 0 || ctx.isCompleted) return NO;
++                descriptor = ctx.stdinWriteFd;
++                n = write(descriptor, bytes, remaining);
++            }
++            if (n > 0) { bytes += n; remaining -= (NSUInteger)n; continue; }
++            if (n < 0 && errno == EINTR) continue;
++            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)
++                    && [NSDate timeIntervalSinceReferenceDate] < deadline) {
++                struct pollfd pending = { .fd = descriptor, .events = POLLOUT };
++                poll(&pending, 1, 25);
++                continue;
++            }
++            return NO;
++        }
++        return YES;
++    } @finally {
++        [ctx.stdinWriter unlock];
++    }
++}
++
+++ (BOOL)closeRawStdinForPid:(int)pid {
++    ISHShellExecutionContext *ctx;
++    @synchronized(_activeExecutions) { ctx = _activeExecutions[@(pid)]; }
++    if (!ctx || !ctx.dataCallback) return NO;
++    @synchronized(ctx) {
++        if (ctx.stdinWriteFd >= 0) close(ctx.stdinWriteFd);
++        ctx.stdinWriteFd = -1;
++    }
++    return YES;
++}
++
+++ (int)executeExecutable:(NSString *)executable arguments:(NSArray<NSString *> *)arguments
++             environment:(NSDictionary<NSString *, NSString *> *)environment
++               stdinData:(NSData *)stdinData fsContext:(uint64_t)fsContext
++            dataCallback:(ISHShellDataCallback)dataCallback
++            lineCallback:(ISHShellLineCallback)lineCallback
++              completion:(ISHShellCompletionCallback)completion {
+ 
+     // Bail out if the iSH kernel hasn't booted yet. become_new_init_child()
+     // calls pid_get_task(1) and then assert(init != NULL); on a non-booted
+@@ -185,6 +265,8 @@
+ 
+     ISHShellExecutionContext *ctx = [[ISHShellExecutionContext alloc] init];
+     ctx.lineCallback = lineCallback;
++    ctx.dataCallback = dataCallback;
++    ctx.fsContext = fsContext;
+     ctx.completion = completion;
+     ctx.startTime = [NSDate date];
+ 
+@@ -222,7 +304,7 @@
+ 
+     // Setup stdin: pipe if stdinData provided, /dev/null otherwise
+     int stdinPipe[2] = {-1, -1};
+-    if (stdinData) {
++    if (stdinData || dataCallback) {
+         if (pipe(stdinPipe) < 0) {
+             NSLog(@"ISHShellExecutor[stdin]: pipe() failed: %s", strerror(errno));
+             current = saved_current;
+@@ -236,10 +318,10 @@
+     }
+     struct fd *stdin_fd = adhoc_fd_create(&realfs_fdops);
+     if (stdin_fd) {
+-        int real_fd = stdinData ? dup(stdinPipe[0]) : open("/dev/null", O_RDONLY);
++        int real_fd = (stdinData || dataCallback) ? dup(stdinPipe[0]) : open("/dev/null", O_RDONLY);
+         if (real_fd < 0) {
+             NSLog(@"ISHShellExecutor[stdin]: fd creation failed: %s", strerror(errno));
+-            if (stdinData) { close(stdinPipe[0]); close(stdinPipe[1]); }
++            if (stdinData || dataCallback) { close(stdinPipe[0]); close(stdinPipe[1]); }
+             current = saved_current;
+             [ctx cleanup];
+             return ISHShellExecutorErrorProcessCreationFailed;
+@@ -248,7 +330,7 @@
+         NSLog(@"ISHShellExecutor[stdin]: fd0 real_fd=%d (source=%s)", stdin_fd->real_fd, stdinData ? "pipe" : "/dev/null");
+         task->files->files[0] = stdin_fd;
+     }
+-    if (stdinData) {
++    if (stdinData || dataCallback) {
+         close(stdinPipe[0]);
+         stdinPipe[0] = -1;
+     }
+@@ -433,13 +515,21 @@
+     // Get guest PID and start task
+     ctx.guestPid = task->pid;
+     ctx.result.pid = ctx.guestPid;
+-    task_start(task);
+-    current = saved_current;
+-
++    if (dataCallback) {
++        ctx.stdinWriteFd = stdinPipe[1];
++        stdinPipe[1] = -1;
++        fcntl(ctx.stdinWriteFd, F_SETFL, O_NONBLOCK);
++        fcntl(ctx.stdinWriteFd, F_SETNOSIGPIPE, 1);
++        dispatch_group_enter(ctx.readers);
++        dispatch_group_enter(ctx.readers);
++    }
++    // Register BEFORE starting: even an immediate guest exit must be observed.
+     // Register context
+     @synchronized(_activeExecutions) {
+         _activeExecutions[@(ctx.guestPid)] = ctx;
+     }
++    task_start(task);
++    current = saved_current;
+ 
+     // Write stdinData to pipe in background, then close write end
+     if (stdinData && stdinPipe[1] >= 0) {
+@@ -571,6 +661,25 @@
+         NSLog(@"ISHShellExecutor: refusing killProcessGroup for pid=%d", pid);
+         return;
+     }
++    ISHShellExecutionContext *execution;
++    @synchronized(_activeExecutions) { execution = _activeExecutions[@(pid)]; }
++    uint64_t context = execution.fsContext;
++    if (context != 0) {
++        void (^signalContext)(int) = ^(int signalNumber) {
++            struct siginfo_ contextInfo = SIGINFO_NIL;
++            lock(&pids_lock);
++            for (int index = 2; index < MAX_PID; index++) {
++                struct task *candidate = pid_get_task(index);
++                if (candidate && candidate->group && candidate->group->fs_context == context)
++                    send_signal(candidate, signalNumber, contextInfo);
++            }
++            unlock(&pids_lock);
++        };
++        signalContext(SIGTERM_);
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
++                       dispatch_get_global_queue(0, 0), ^{ signalContext(SIGKILL_); });
++        return;
++    }
+     struct siginfo_ info = SIGINFO_NIL;
+ 
+     lock(&pids_lock);
+@@ -637,10 +746,22 @@
+     @synchronized(_activeExecutions) {
+         ctx = _activeExecutions[@(pid)];
+         if (!ctx) return;
+-        [_activeExecutions removeObjectForKey:@(pid)];
++        if (!ctx.dataCallback) [_activeExecutions removeObjectForKey:@(pid)];
+     }
+ 
+     if (ctx.isCompleted) return;
++    if (ctx.dataCallback) {
++        ctx.result.exitCode = (exitCode & 0x7f) ? 128 + (exitCode & 0x7f) : ((exitCode >> 8) & 0xff);
++        ctx.result.duration = -[ctx.startTime timeIntervalSinceNow];
++        [self closeRawStdinForPid:pid];
++        dispatch_group_notify(ctx.readers, ctx.rawCallbacks, ^{
++            ctx.isCompleted = YES;
++            @synchronized(_activeExecutions) { [_activeExecutions removeObjectForKey:@(pid)]; }
++            [ctx cleanup];
++            if (ctx.completion) ctx.completion(ctx.result);
++        });
++        return;
++    }
+ 
+     // Record exit code and duration immediately
+     ctx.result.exitCode = exitCode;
+@@ -692,7 +813,26 @@
+ 
+ + (void)startReaderForPipe:(int)fd context:(ISHShellExecutionContext *)ctx isStdErr:(BOOL)isStdErr {
+     dispatch_async(_readerQueue, ^{
+-        [self readPipe:fd context:ctx isStdErr:isStdErr];
++        if (ctx.dataCallback) {
++            uint8_t bytes[16384];
++            for (;;) {
++                struct pollfd descriptor = { .fd = fd, .events = POLLIN };
++                int ready = poll(&descriptor, 1, 250);
++                if (ready < 0 && errno == EINTR) continue;
++                if (ready < 0) break;
++                if (ready == 0) continue;
++                ssize_t count = read(fd, bytes, sizeof(bytes));
++                if (count > 0) {
++                    NSData *data = [NSData dataWithBytes:bytes length:(NSUInteger)count];
++                    // Synchronous delivery bounds memory and orders all bytes before completion.
++                    dispatch_sync(ctx.rawCallbacks, ^{ ctx.dataCallback(data, isStdErr); });
++                } else if (count == 0) { break; }
++                else if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) { break; }
++            }
++            dispatch_group_leave(ctx.readers);
++        } else {
++            [self readPipe:fd context:ctx isStdErr:isStdErr];
++        }
+     });
+ }
+ 
