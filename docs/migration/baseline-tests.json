@@ -1,0 +1,17 @@
+{
+  "packages": [
+    "platform-api",
+    "platform-common",
+    "platform-android",
+    "platform-pty"
+  ],
+  "baseline": "fe876d368a6bd06988f936064f9a6e00edbe55a3",
+  "passed": 756,
+  "failed": 2,
+  "ignored": 1,
+  "failed_tests": [
+    "llm_config::llm_config_test::pricing_overrides_optional_fields_may_be_absent",
+    "bridge_drives_llm_runtime_event_stream_end_to_end"
+  ],
+  "log": "/tmp/mobile-linux-core-baseline.log"
+}

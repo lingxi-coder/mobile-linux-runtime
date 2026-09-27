@@ -1,0 +1,10 @@
+{
+  "host_head": "7f5619342236077e3aba4edbcb01f4fef042abb5",
+  "harness_head": "fe876d368a6bd06988f936064f9a6e00edbe55a3",
+  "runtime_consumer_pin": "36dd3c1295ae13bde59f6131705dbf86a244ae52",
+  "host_status_sha256": "6d5dc79b00c05b15566175258edf0c21272324e52565870b5086a99e5147133b",
+  "harness_status_sha256": "5b5c37986122ee88d6faf6ecc97c3d8f3f496be58b7c1d6235c555a44bc44408",
+  "rust": "1.94.0",
+  "android_api": 26,
+  "ios_deployment_target": "18.0"
+}
