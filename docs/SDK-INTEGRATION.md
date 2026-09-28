@@ -35,9 +35,9 @@ No sibling Harness or application checkout is needed.
 : "${SDK_BUILD_DIR:?Set an absolute directory outside the source checkout}"
 export CARGO_TARGET_DIR="$SDK_BUILD_DIR/rust"
 cargo test --locked -p mobile-linux-api -p mobile-linux-core -p platform-pty
-bash scripts/check-dependencies.sh
-bash scripts/check-resource-contracts.sh
-bash scripts/check-resource-tests.sh
+bash scripts/checks/check-dependencies.sh
+bash scripts/checks/check-resource-contracts.sh
+bash scripts/checks/check-resource-tests.sh
 ```
 
 Default tests use checked-in manifests and temporary fixtures. The optional
@@ -59,7 +59,7 @@ published SHA-256 and full binary-source commit. Set `SDK_MAVEN_ARCHIVE`,
 values; keep `SDK_BUILD_DIR` outside the source checkout.
 
 ```sh
-python3 scripts/install-maven-bundle.py \
+python3 scripts/release/install-maven-bundle.py \
   --archive "$SDK_MAVEN_ARCHIVE" --sha256 "$SDK_MAVEN_SHA256" \
   --version "$SDK_VERSION" --source-revision "$SDK_SOURCE_REVISION" \
   --cache-dir "$SDK_BUILD_DIR/download-cache" \
@@ -81,14 +81,14 @@ Android targets and `cargo-ndk`. Build both supported ABIs:
 ```sh
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk --locked --version '=4.1.2'
-bash scripts/build-android-native.sh \
+bash scripts/build/build-android-native.sh \
   --ndk "$ANDROID_NDK_HOME" --android-api 26 \
   --output-dir "$SDK_BUILD_DIR/android-native" \
   --cache-dir "$SDK_BUILD_DIR/android-native-cache"
-python3 scripts/build-ffi.py --platform android --release \
+python3 scripts/build/build-ffi.py --platform android --release \
   --output-dir "$SDK_BUILD_DIR/android-ffi" \
   --target-dir "$SDK_BUILD_DIR/android-rust"
-python3 scripts/publish-android.py \
+python3 scripts/release/publish-android.py \
   --native-artifacts "$SDK_BUILD_DIR/android-native" \
   --ffi-artifacts "$SDK_BUILD_DIR/android-ffi" \
   --maven-dir "$SDK_BUILD_DIR/maven" --build-dir "$SDK_BUILD_DIR/gradle" \
@@ -158,10 +158,10 @@ Build native support and the FFI independently from the same source revision:
 
 ```sh
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-bash scripts/build-ios-xcframework.sh \
+bash scripts/build/build-ios-xcframework.sh \
   --output "$SDK_BUILD_DIR/ios-native" --cache "$SDK_BUILD_DIR/ios-cache" \
   --kind native-support --configuration Release
-python3 scripts/build-ffi.py --platform ios --release \
+python3 scripts/build/build-ffi.py --platform ios --release \
   --output-dir "$SDK_BUILD_DIR/ios-ffi" --target-dir "$SDK_BUILD_DIR/ios-rust"
 ```
 
@@ -189,7 +189,7 @@ an attested aarch64 rootfs with the pinned SDK tool:
 ```sh
 : "${ROOTFS_ARCHIVE:?Set the aarch64 archive path}"
 : "${ROOTFS_ARCHIVE_SHA256:?Set its pinned SHA-256}"
-bash scripts/prepare-ios-rootfs.sh \
+bash scripts/build/prepare-ios-rootfs.sh \
   --archive "$ROOTFS_ARCHIVE" --expected-archive-sha256 "$ROOTFS_ARCHIVE_SHA256" \
   --profile toolchain --native-output "$SDK_BUILD_DIR/ios-native/native" \
   --output "$SDK_BUILD_DIR/ios-rootfs" --cache "$SDK_BUILD_DIR/ios-cache"

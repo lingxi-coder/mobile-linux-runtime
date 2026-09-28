@@ -6,7 +6,7 @@ integrity-pinned npm, pnpm and native TypeScript. Historical Alpine 3.21.3
 minirootfs download records are preserved only in `docs/migration/legacy`.
 They are not release archive identities.
 
-Build with `scripts/mobile-linux/build-rootfs.sh --arch aarch64|x86_64
+Build with `scripts/rootfs/build-rootfs.sh --arch aarch64|x86_64
 --output-dir /external/rootfs --cache-dir /external/cache`. Source is mounted
 read-only; all mutable staging and compilation happen in explicit external paths.
 Every APK is hash-checked before offline installation. Node is built from its
@@ -46,8 +46,8 @@ records each target and before/after byte hash. Other symlinks retain their exac
 inventory representation. Schema v1 is rejected because it lacks this inventory.
 
 Real per-ABI candidate records live under `docs/mobile-linux/releases`.
-`scripts/check-resource-contracts.sh` validates actual committed evidence and
+`scripts/checks/check-resource-contracts.sh` validates actual committed evidence and
 proves the intentionally incomplete documentation sample is rejected.
-`scripts/mobile-linux/test-rootfs-tooling.sh` exercises packaging and rejection
+`scripts/rootfs/test-rootfs-tooling.sh` exercises packaging and rejection
 cases. The native `rootfs-build.yml` workflow verifies actual archives before
 uploading candidate artifacts and separately asserts source checkout immutability.

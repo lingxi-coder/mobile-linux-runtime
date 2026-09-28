@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Snapshot immutable SDK source
         run: |
-          python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+          python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
           mkdir -p "$RUNNER_TEMP/smoke-report"
       - name: Resolve explicit dispatch or exact committed PR candidate identity
         run: |
@@ -93,14 +93,14 @@ jobs:
           run=json.loads((temp/'rootfs-run.json').read_text())
           (temp/'smoke-report/rootfs-input.json').write_text(json.dumps({'rootfs_run_id':run['id'],'rootfs_producer_revision':run['head_sha'],'archive_sha256':digest,'sdk_source_revision':os.environ['GITHUB_SHA']},indent=2)+'\n')
           PY
-          bash scripts/mobile-linux/check-rootfs-manifest.sh "$RUNNER_TEMP/x86_64-release/evidence/rootfs-manifest.json"
-          python3 scripts/mobile-linux/verify-evidence.py --evidence-dir "$RUNNER_TEMP/x86_64-release/evidence" --archive "$RUNNER_TEMP/x86_64-release/rootfs.tar.gz"
-          python3 scripts/mobile-linux/verify-rootfs-profile.py --profile toolchain --arch x86_64 --sha256 "$ROOTFS_SHA256" --archive "$RUNNER_TEMP/x86_64-release/rootfs.tar.gz" --receipt "$RUNNER_TEMP/smoke-report/archive-inventory.json"
+          bash scripts/rootfs/check-rootfs-manifest.sh "$RUNNER_TEMP/x86_64-release/evidence/rootfs-manifest.json"
+          python3 scripts/rootfs/verify-evidence.py --evidence-dir "$RUNNER_TEMP/x86_64-release/evidence" --archive "$RUNNER_TEMP/x86_64-release/rootfs.tar.gz"
+          python3 scripts/rootfs/verify-rootfs-profile.py --profile toolchain --arch x86_64 --sha256 "$ROOTFS_SHA256" --archive "$RUNNER_TEMP/x86_64-release/rootfs.tar.gz" --receipt "$RUNNER_TEMP/smoke-report/archive-inventory.json"
       - name: Build standalone native support and release FFI for Maven publication
         run: |
-          bash scripts/build-android-native.sh --ndk "$ANDROID_NDK_HOME" --abi all --android-api 26 --output-dir "$RUNNER_TEMP/artifacts/native" --cache-dir "$RUNNER_TEMP/native-cache"
-          python3 scripts/build-ffi.py --platform android --release --output-dir "$RUNNER_TEMP/artifacts/ffi" --target-dir "$RUNNER_TEMP/ffi-target"
-          python3 scripts/publish-android.py --native-artifacts "$RUNNER_TEMP/artifacts/native" --ffi-artifacts "$RUNNER_TEMP/artifacts/ffi" --maven-dir "$RUNNER_TEMP/artifacts/maven" --build-dir "$RUNNER_TEMP/gradle-build" --version 0.1.0
+          bash scripts/build/build-android-native.sh --ndk "$ANDROID_NDK_HOME" --abi all --android-api 26 --output-dir "$RUNNER_TEMP/artifacts/native" --cache-dir "$RUNNER_TEMP/native-cache"
+          python3 scripts/build/build-ffi.py --platform android --release --output-dir "$RUNNER_TEMP/artifacts/ffi" --target-dir "$RUNNER_TEMP/ffi-target"
+          python3 scripts/release/publish-android.py --native-artifacts "$RUNNER_TEMP/artifacts/native" --ffi-artifacts "$RUNNER_TEMP/artifacts/ffi" --maven-dir "$RUNNER_TEMP/artifacts/maven" --build-dir "$RUNNER_TEMP/gradle-build" --version 0.1.0
           cp "$RUNNER_TEMP/artifacts/native/native-manifest.json" "$RUNNER_TEMP/artifacts/ffi/ffi-build.json" "$RUNNER_TEMP/artifacts/maven/sdk-artifacts.json" "$RUNNER_TEMP/smoke-report/"
       - name: Boot hardware-accelerated API35 x86_64 emulator
         run: |
@@ -124,7 +124,7 @@ jobs:
         run: python3 examples/android/run-device-smoke.py --adb "$ANDROID_SDK_ROOT/platform-tools/adb" --serial emulator-5554 --maven-repo "$RUNNER_TEMP/artifacts/maven" --rootfs-dir "$RUNNER_TEMP/x86_64-release" --report-dir "$RUNNER_TEMP/smoke-report"
       - name: Verify SDK source remained unchanged
         if: always()
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
       - name: Stop emulator
         if: always()
         run: adb -s emulator-5554 emu kill || true

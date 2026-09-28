@@ -18,19 +18,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Snapshot SDK source
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json"
       - name: Build and verify real x86_64 candidate rootfs
         env:
           VERIFY_BLOCKED: ${{ inputs.verify_blocked_closure }}
         run: |
           mode=()
           if [[ "$VERIFY_BLOCKED" == "true" ]]; then mode=(--verify-blocked-closure); fi
-          bash scripts/mobile-linux/build-rootfs.sh --arch x86_64 --output-dir "$RUNNER_TEMP/rootfs" --cache-dir "$RUNNER_TEMP/node-cache" "${mode[@]}"
-          python3 scripts/mobile-linux/verify-evidence.py --evidence-dir "$RUNNER_TEMP/rootfs/release-evidence/x86_64" --archive "$RUNNER_TEMP/rootfs/x86_64/rootfs.tar.gz"
-          bash scripts/mobile-linux/check-rootfs-manifest.sh "$RUNNER_TEMP/rootfs/release-evidence/x86_64/rootfs-manifest.json"
+          bash scripts/rootfs/build-rootfs.sh --arch x86_64 --output-dir "$RUNNER_TEMP/rootfs" --cache-dir "$RUNNER_TEMP/node-cache" "${mode[@]}"
+          python3 scripts/rootfs/verify-evidence.py --evidence-dir "$RUNNER_TEMP/rootfs/release-evidence/x86_64" --archive "$RUNNER_TEMP/rootfs/x86_64/rootfs.tar.gz"
+          bash scripts/rootfs/check-rootfs-manifest.sh "$RUNNER_TEMP/rootfs/release-evidence/x86_64/rootfs-manifest.json"
       - name: Verify read-only source
         if: always()
-        run: python3 scripts/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
+        run: python3 scripts/lib/source_guard.py --snapshot "$RUNNER_TEMP/sdk-source.json" --check
       - uses: actions/upload-artifact@v4
         with:
           name: verified-x86_64-rootfs-candidate
