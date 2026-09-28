@@ -191,7 +191,7 @@ impl IosIshRuntime {
                 match runtime
                     .native_poll_pty(
                         after_sequence,
-                        mobile_linux_api::mobile_linux::MAX_MOBILE_LINUX_EVENT_BATCH as u32,
+                        mobile_linux_api::MAX_MOBILE_LINUX_EVENT_BATCH as u32,
                     )
                     .await
                 {

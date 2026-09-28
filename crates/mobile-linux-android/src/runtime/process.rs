@@ -1,4 +1,4 @@
-use mobile_linux_api::mobile_linux::LinuxEnforcementReceipt;
+use mobile_linux_api::LinuxEnforcementReceipt;
 use mobile_linux_api::{
     LinuxCommandRequest, LinuxCommandResult, MobileLinuxError, MobileLinuxEventKind,
     MobileLinuxTaskStatus, MountSpec, NetworkPolicy, ProcessStreamSink,

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use mobile_linux_api::mobile_linux::LinuxEnforcementReceipt;
+use mobile_linux_api::LinuxEnforcementReceipt;
 use mobile_linux_api::{
     LinuxCommandRequest, LinuxCommandResult, LinuxProcessHandle, MobileLinuxCapability,
     MobileLinuxError, MobileLinuxEvent, MobileLinuxEventKind, MobileLinuxRuntime,
@@ -664,7 +664,7 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
             .expect("mobile-linux events mutex")
             .iter()
             .filter(|event| event.sequence > after)
-            .take(limit.min(mobile_linux_api::mobile_linux::MAX_MOBILE_LINUX_EVENT_BATCH))
+            .take(limit.min(mobile_linux_api::MAX_MOBILE_LINUX_EVENT_BATCH))
             .cloned()
             .collect())
     }

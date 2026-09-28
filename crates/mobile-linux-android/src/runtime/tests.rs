@@ -4,7 +4,7 @@ use super::mounts::{
 };
 use super::process::{enforced_network_policy_name, requested_memory_limit_bytes};
 use async_trait::async_trait;
-use mobile_linux_api::mobile_linux::LinuxEnforcementReceipt;
+use mobile_linux_api::LinuxEnforcementReceipt;
 use mobile_linux_api::{
     LinuxCommandRequest, MobileLinuxError, MobileLinuxEventKind, MobileLinuxRuntime,
     MobileLinuxTaskStatus, MountPurpose, MountSpec, NetworkPolicy, ProcessStreamSink,

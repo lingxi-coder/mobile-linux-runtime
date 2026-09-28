@@ -43,7 +43,7 @@ impl IosIshRuntimeConfig {
     }
 
     pub(super) fn workspace_guest_path(&self) -> String {
-        mobile_linux_api::mobile_linux::guest_paths::workspace(&self.stable_workspace_id)
+        mobile_linux_api::guest_paths::workspace(&self.stable_workspace_id)
     }
 
     pub(super) fn persistent_home_host_path(&self) -> PathBuf {
@@ -62,7 +62,7 @@ impl IosIshRuntimeConfig {
     pub(super) fn persistent_home_mount(&self) -> MountSpec {
         MountSpec {
             host_path: self.persistent_home_host_path(),
-            guest_path: mobile_linux_api::mobile_linux::guest_paths::HOME.to_string(),
+            guest_path: mobile_linux_api::guest_paths::HOME.to_string(),
             read_only: false,
             purpose: MountPurpose::Shared,
         }

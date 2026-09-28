@@ -6,7 +6,7 @@ use crate::{RootfsManifest, RootfsStoreError};
 use mobile_linux_api::RootfsStatus;
 use std::fs;
 
-const RESETTABLE_GUEST_PATHS: &[&str] = mobile_linux_api::mobile_linux::guest_paths::SCRATCH;
+const RESETTABLE_GUEST_PATHS: &[&str] = mobile_linux_api::guest_paths::SCRATCH;
 impl RootfsStore {
     pub fn recover_interrupted_activation(
         &self,

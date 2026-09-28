@@ -1,6 +1,6 @@
-use mobile_linux_api::mobile_linux::LinuxEnforcementReceipt;
 #[cfg(test)]
 use mobile_linux_api::LinuxCommandResult;
+use mobile_linux_api::LinuxEnforcementReceipt;
 use mobile_linux_api::{
     LinuxCommandRequest, MobileLinuxError, MobileLinuxTaskStatus, MountPurpose, MountSpec,
     PtyOpenRequest, RawStdioOpenRequest, RawStdioReadResult,

@@ -5,10 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 pub(crate) const ALLOWED_WRITABLE_GUEST_PATHS: &[&str] = &[
-    mobile_linux_api::mobile_linux::guest_paths::HOME,
-    mobile_linux_api::mobile_linux::guest_paths::SCRATCH[0],
-    mobile_linux_api::mobile_linux::guest_paths::SCRATCH[1],
-    mobile_linux_api::mobile_linux::guest_paths::WORKSPACE_ROOT,
+    mobile_linux_api::guest_paths::HOME,
+    mobile_linux_api::guest_paths::SCRATCH[0],
+    mobile_linux_api::guest_paths::SCRATCH[1],
+    mobile_linux_api::guest_paths::WORKSPACE_ROOT,
 ];
 
 pub(crate) const REQUIRED_ROOTFS_PACKAGES: &[&str] = &[

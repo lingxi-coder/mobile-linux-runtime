@@ -12,7 +12,7 @@ use super::validation::{
     normalize_host_path, validate_mount, validate_pty_request, validate_request,
 };
 use async_trait::async_trait;
-use mobile_linux_api::mobile_linux::LinuxEnforcementReceipt;
+use mobile_linux_api::LinuxEnforcementReceipt;
 use mobile_linux_api::{
     LinuxCommandRequest, LinuxProcessHandle, MobileLinuxError, MobileLinuxEventKind,
     MobileLinuxRuntime, MobileLinuxTaskSnapshot, MobileLinuxTaskStatus, MountPurpose, MountSpec,
@@ -543,12 +543,9 @@ fn current_mounts_exposes_the_live_workspace_and_home_table() {
     assert_eq!(mounts.len(), 2);
     assert_eq!(
         mounts[0].guest_path,
-        mobile_linux_api::mobile_linux::guest_paths::workspace(&config.stable_workspace_id)
+        mobile_linux_api::guest_paths::workspace(&config.stable_workspace_id)
     );
-    assert_eq!(
-        mounts[1].guest_path,
-        mobile_linux_api::mobile_linux::guest_paths::HOME
-    );
+    assert_eq!(mounts[1].guest_path, mobile_linux_api::guest_paths::HOME);
     assert_eq!(
         mounts[1].host_path,
         config.managed_root.join("persistent/root")

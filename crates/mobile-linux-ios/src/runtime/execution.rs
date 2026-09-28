@@ -1,4 +1,4 @@
-use mobile_linux_api::mobile_linux::LinuxEnforcementReceipt;
+use mobile_linux_api::LinuxEnforcementReceipt;
 use mobile_linux_api::{
     LinuxCommandRequest, LinuxCommandResult, MobileLinuxError, MobileLinuxEventKind,
     MobileLinuxRuntime, MobileLinuxTaskStatus, ProcessStreamSink,
@@ -186,7 +186,7 @@ impl IosIshRuntime {
                 .native_poll_background(
                     &start.process_id,
                     cursor,
-                    mobile_linux_api::mobile_linux::MAX_MOBILE_LINUX_EVENT_BATCH as u32,
+                    mobile_linux_api::MAX_MOBILE_LINUX_EVENT_BATCH as u32,
                 )
                 .await
             {
