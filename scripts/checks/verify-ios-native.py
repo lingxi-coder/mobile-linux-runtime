@@ -49,6 +49,20 @@ def verify_swift_imports(framework, slices):
             ], text=True, capture_output=True)
             require(result.returncode == 0, f'Swift import failed for {slice_name}: {result.stderr.strip()}')
 
+
+def verify_device_policy_symbols(framework, slices):
+    if 'iphoneos-arm64' not in slices or sys.platform != 'darwin':
+        return
+    binary = framework / 'ios-arm64/MobileLinuxNativeSupport.framework/MobileLinuxNativeSupport'
+    output = subprocess.check_output(['xcrun', 'nm', '-gU', str(binary)], text=True)
+    defined = {line.split()[-1] for line in output.splitlines() if line.split()}
+    required = {
+        '_lx_ish_sock_policy_hook_version',
+        '_lx_ish_guest_execution_resident_bytes',
+        '_lx_ish_guest_execution_context_active',
+    }
+    require(required <= defined, 'iSH policy hooks missing from device native support: ' + ', '.join(sorted(required - defined)))
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--artifact-dir', type=Path, required=True)
@@ -63,6 +77,7 @@ def main():
     require(slices in (simulator, simulator | {'iphoneos-arm64'}), 'unexpected or missing native slices')
     framework = artifact / 'MobileLinuxNativeSupport.xcframework'
     verify_swift_imports(framework, slices)
+    verify_device_policy_symbols(framework, slices)
     scopes = [framework, artifact / 'licenses', artifact / 'source-provenance']
     require(all(scope.is_dir() and any(scope.rglob('*')) for scope in scopes), 'missing native license or source provenance sidecars')
     actual_files = {str(path.relative_to(artifact)) for scope in scopes for path in scope.rglob('*') if path.is_file()}

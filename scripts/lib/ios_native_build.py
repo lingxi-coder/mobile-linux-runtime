@@ -12,6 +12,35 @@ def run(args, **kwargs):
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 def tool(command): return subprocess.check_output(command,text=True).strip()
 def copytree(src,dst): shutil.copytree(src,dst,dirs_exist_ok=True)
+def apply_source_patch(root,name):
+    # git apply silently skips these files when the cache sits inside a host
+    # repository: its current-directory prefix is unrelated to the patch paths.
+    run(['patch','-F','0','-p1','-d',root,'-i',SDK/'native/ios/patches'/name])
+PATCH_MARKERS = {
+    'fs/sock.c': ('lx_ish_sock_policy_hook_version',),
+    'kernel/resource.c': (
+        'lx_ish_guest_execution_resident_bytes',
+        'lx_ish_guest_execution_context_active',
+    ),
+}
+
+def prepared_work_matches(work, identity):
+    marker = work/'prepared'
+    if not marker.is_file() or marker.read_text() != identity:
+        return False
+    for relative, symbols in PATCH_MARKERS.items():
+        source = work/'ish'/relative
+        if not source.is_file(): return False
+        text = source.read_text()
+        if any(symbol not in text for symbol in symbols): return False
+    return True
+
+def required_policy_symbols(binary):
+    output = tool(['xcrun','nm','-gU',binary])
+    defined = {line.split()[-1] for line in output.splitlines() if line.split()}
+    missing = {'_'+symbol for symbols in PATCH_MARKERS.values() for symbol in symbols} - defined
+    if missing: raise SystemExit('iSH policy hooks missing from native archive: '+', '.join(sorted(missing)))
+
 def source(name,pins,cache):
     info=pins['sources'][name]; revision=info['revision']; repo=cache/'git'/f'{name}.git'
     repo.parent.mkdir(parents=True,exist_ok=True)
@@ -33,19 +62,20 @@ def prepare(cache):
         if sha(SDK/'native/ios/upstream/openminis'/name)!=digest: raise SystemExit('upstream source hash mismatch: '+name)
     for name,digest in pins['patches'].items():
         if sha(SDK/'native/ios/patches'/name)!=digest: raise SystemExit('patch hash mismatch: '+name)
-    key=sha(PINS)[:20]; work=cache/'work'/key;ish=work/'ish';glue=work/'openminis'
-    if not (work/'prepared').exists():
+    identity=hashlib.sha256(PINS.read_bytes()+P(__file__).read_bytes()).hexdigest()
+    work=cache/'work'/identity[:20];ish=work/'ish';glue=work/'openminis'
+    if not prepared_work_matches(work,identity):
+        if work.exists(): shutil.rmtree(work)
         copytree(source('ish',pins,cache),ish)
         for name in ['libapps','libarchive']: copytree(source(name,pins,cache),ish/'deps'/name)
         copytree(SDK/'native/ios/upstream/openminis',glue)
-        run(['git','apply','--unidiff-zero',SDK/'native/ios/patches/ish-socket-network-policy.patch'],cwd=ish)
-        run(['git','apply',SDK/'native/ios/patches/ish-fakefs-utf8-locale.patch'],cwd=ish)
-        run(['git','apply',SDK/'native/ios/patches/ish-task-wakeup-signal.patch'],cwd=ish)
-        run(['git','apply',SDK/'native/ios/patches/openminis-raw-stdio.patch'],cwd=glue)
-        run(['git','apply',SDK/'native/ios/patches/openminis-generic-environment.patch'],cwd=glue)
-        run(['git','apply',SDK/'native/ios/patches/openminis-explicit-overlay.patch'],cwd=glue)
-        run(['git','apply',SDK/'native/ios/patches/openminis-explicit-host-state.patch'],cwd=glue)
-        (work/'prepared').write_text(sha(PINS))
+        for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch'):
+            apply_source_patch(ish,name)
+        for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch'):
+            apply_source_patch(glue,name)
+        (work/'prepared').write_text(identity)
+        if not prepared_work_matches(work,identity):
+            raise SystemExit('iSH policy patches were not applied to the native build tree')
     return work,ish,glue
 
 def native(output,cache,configuration):
@@ -56,6 +86,7 @@ def native(output,cache,configuration):
     run(['ninja','-C',build,'libish.a','libish_emu.a','libfakefs.a','vdso/arm64/libvdso.so.elf'])
     for part in ['lib','include/ish','resources']: (output/part).mkdir(parents=True,exist_ok=True)
     for name in ['libish.a','libish_emu.a','libfakefs.a']: shutil.copy2(build/name,output/'lib'/name)
+    required_policy_symbols(output/'lib/libish.a')
     for path in ish.rglob('*.h'):
         if any(x.startswith('build') for x in path.relative_to(ish).parts): continue
         dest=output/'include/ish'/path.relative_to(ish);dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(path,dest)
@@ -108,6 +139,7 @@ def framework(output,cache,configuration,simulator_only):
         inputs=list(objects.glob('*.o'))
         if platform=='iphoneos':inputs+=list((output/'native/lib').glob('*.a'))
         run(['xcrun','libtool','-static','-o',fw/'MobileLinuxNativeSupport',*inputs])
+        if platform=='iphoneos': required_policy_symbols(fw/'MobileLinuxNativeSupport')
         (fw/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'org.mobile-linux.NativeSupport','CFBundleName':'MobileLinuxNativeSupport','CFBundleExecutable':'MobileLinuxNativeSupport','CFBundlePackageType':'FMWK','CFBundleVersion':'1','CFBundleShortVersionString':'0.1.0','MinimumOSVersion':'18.0','CFBundleSupportedPlatforms':['iPhoneOS' if platform=='iphoneos' else 'iPhoneSimulator']}))
         libraries.append((platform,arch,fw))
     # xcodebuild takes one fat framework per platform variant.
