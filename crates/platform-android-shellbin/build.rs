@@ -288,6 +288,7 @@ fn build_toybox(repo_root: &Path, out_dir: &Path, cc: &Path) -> PathBuf {
     // via `-I.` from the source root (current_dir).
     cmd.args(&sources);
     cmd.args(["-lm", "-llog"]);
+    add_arm64_page_alignment(&mut cmd);
     cmd.arg("-o").arg(&out);
     run(cmd, "toybox cross-compile", &out);
     out
@@ -316,11 +317,19 @@ fn build_mksh(repo_root: &Path, out_dir: &Path, cc: &Path) -> PathBuf {
     ])
     .args(MKSH_DEFINES)
     .current_dir(&src)
-    .args(MKSH_SOURCES)
-    .arg("-o")
-    .arg(&out);
+    .args(MKSH_SOURCES);
+    add_arm64_page_alignment(&mut cmd);
+    cmd.arg("-o").arg(&out);
     run(cmd, "mksh cross-compile", &out);
     out
+}
+
+/// The NDK's default linker page size differs across revisions. These ELF
+/// helpers are also executable files in APK nativeLibraryDir on 16 KiB devices.
+fn add_arm64_page_alignment(command: &mut Command) {
+    if env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64") {
+        command.arg("-Wl,-z,max-page-size=16384");
+    }
 }
 
 /// All `*.c` files directly under `dir`, sorted for deterministic command lines.

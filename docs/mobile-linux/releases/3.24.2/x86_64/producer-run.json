@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "repository": "lingxi-coder/mobile-linux-runtime",
+  "architecture": "x86_64",
+  "run_id": 36329480255,
+  "artifact_id": 10937573543,
+  "artifact_name": "verified-x86_64-rootfs-candidate",
+  "producer_revision": "6b72d2a610dbb44f15a88a8dc2d875ca4c8f9ff7",
+  "archive_sha256": "9948c666f8280a04d259f1e6c2dec3676685e23922ecabd563c6148eb50c2717",
+  "run_conclusion": "success"
+}

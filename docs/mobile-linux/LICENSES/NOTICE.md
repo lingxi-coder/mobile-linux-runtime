@@ -1,14 +1,17 @@
 # Mobile Linux SDK component attribution
 
-The root [MIT license](../../../LICENSE) applies to original SDK source carrying
-that grant. It does not relicense imported source or the contents of a rootfs.
+The original SDK Rust source retains its [MIT](../../../LICENSE) OR
+[Apache-2.0](../../../LICENSE-APACHE) license choice. Those grants do not relicense
+imported native source or the contents of a rootfs. The preserved source
+metadata and revisions are recorded in [license-origin.md](../../migration/license-origin.md).
 The full Android and iOS distributions are not uniformly MIT licensed. This
 inventory reports the terms and provenance recorded by the source tree;
 individual component license files and source notices remain authoritative.
 
 | Component | Recorded source / license evidence |
 | --- | --- |
-| SDK API, core, FFI and original wrappers | Root MIT license; crate metadata records exceptions |
+| SDK API, core, FFI and original wrappers | MIT OR Apache-2.0; preserved source metadata, with crate-specific exceptions |
+| Locked Rust registry dependencies | [Registry license inventory](../../licenses/rust/registry-manifest.json): all 132 `Cargo.lock` packages, exact crate checksums and 239 original license texts; [override attribution](../../licenses/rust/overrides.json) for UniFFI and winapi crates whose published tarballs omit the text |
 | `platform-pty` | [NOTICE](../../../crates/platform-pty/NOTICE): OpenAI Codex at `b8c2d29cc23b41fa7c7f5f5483e92fc71099635a`, Apache-2.0; Windows code originating from WezTerm, MIT |
 | Android OpenMinis PTY bridge | OpenMinis `9cf3a855fecd27bb5735b84cacbd56852a3ab8dd`, GPL-3.0-only; [exact license](../../../native/android/OPENMINIS-LICENSE) |
 | Android PRoot fork | OpenMinis/proot `8cf13e997cdc9472997aae19df8050c073c9a86c`, GPL-2.0-or-later; the pinned source's `COPYING` and source headers |
@@ -17,7 +20,7 @@ individual component license files and source notices remain authoritative.
 | Optional Android toybox | [Original LICENSE](../../../third_party/toybox/LICENSE), 0BSD text; per-file notices remain applicable |
 | Android minijail | [Original LICENSE](../../../third_party/minijail/LICENSE) and [NOTICE](../../../third_party/minijail/NOTICE), BSD terms |
 | Android libcap | [Original License](../../../third_party/libcap/License), BSD-3-Clause OR GPL-2.0-only, with explicit source exceptions |
-| iOS Rust backend | [Crate metadata](../../../crates/mobile-linux-ios/Cargo.toml): GPL-3.0-only |
+| iOS Rust adapter | [Crate metadata](../../../crates/mobile-linux-ios/Cargo.toml): MIT OR Apache-2.0, retained from the original LingXi Rust crate |
 | iOS OpenMinis glue | Same pinned OpenMinis revision above; [exact GPL-3.0 license](../../../native/ios/upstream/openminis/LICENSE) |
 | iSH, libapps and libarchive | Immutable revisions in [iOS sources.json](../../../native/ios/sources.json); native builds retain `LICENSE.md`, `LICENSE.IOS`, libapps `LICENSE` and libarchive `COPYING` from those revisions |
 | Alpine/APK and additional rootfs tools | [Active toolchain pins](../../toolchains/runtime-pins.json) plus each release's `rootfs.spdx.json` and APK closure; multiple package licenses |
@@ -31,7 +34,7 @@ not a release input.
 
 Distribute the applicable original license texts and copyright notices with the
 corresponding native artifacts. Preserve immutable source references and the
-actual patches used to build them; a top-level MIT file or generic Maven license
+actual patches used to build them; top-level SDK license files or a generic Maven license
 label is not a replacement. The iOS native bundle includes `licenses` and
 `source-provenance` sidecars. Android native license inventory is recorded in its
 `native-manifest.json`. Rootfs SBOM, manifest, source pins and archive digest must

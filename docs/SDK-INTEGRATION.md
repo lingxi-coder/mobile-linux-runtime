@@ -35,9 +35,9 @@ No sibling Harness or application checkout is needed.
 : "${SDK_BUILD_DIR:?Set an absolute directory outside the source checkout}"
 export CARGO_TARGET_DIR="$SDK_BUILD_DIR/rust"
 cargo test --locked -p mobile-linux-api -p mobile-linux-core -p platform-pty
-bash scripts/check-dependencies.sh
-bash scripts/check-resource-contracts.sh
-bash scripts/check-resource-tests.sh
+bash scripts/checks/check-dependencies.sh
+bash scripts/checks/check-resource-contracts.sh
+bash scripts/checks/check-resource-tests.sh
 ```
 
 Default tests use checked-in manifests and temporary fixtures. The optional
@@ -51,7 +51,29 @@ cargo test --locked -p mobile-linux-core --test producer_manifest \
   published_archive_stages_verifies_and_activates_real_tree -- --ignored
 ```
 
-## Android: build and consume AARs
+## Android: install a precompiled release
+
+When a release provides `mobile-linux-maven-<version>.zip`, install it with its
+published SHA-256 and full binary-source commit. Set `SDK_MAVEN_ARCHIVE`,
+`SDK_MAVEN_SHA256`, `SDK_VERSION` and `SDK_SOURCE_REVISION` to those exact release
+values; keep `SDK_BUILD_DIR` outside the source checkout.
+
+```sh
+python3 scripts/release/install-maven-bundle.py \
+  --archive "$SDK_MAVEN_ARCHIVE" --sha256 "$SDK_MAVEN_SHA256" \
+  --version "$SDK_VERSION" --source-revision "$SDK_SOURCE_REVISION" \
+  --cache-dir "$SDK_BUILD_DIR/download-cache" \
+  --output-dir "$SDK_BUILD_DIR/maven"
+```
+
+Use `--url "$SDK_MAVEN_URL"` instead of `--archive` for an explicit HTTPS release
+URL. The installer checks clean release identity and every file against the
+recorded inventory, rejects unsafe ZIP paths, and keeps the installed directory
+immutable. A validation-only bundle is intentionally rejected. This path needs
+Python and the published assets, not a Rust/NDK rebuild. Then configure the
+consumer's Gradle repositories and dependencies below.
+
+## Android: build AARs from source
 
 Set `ANDROID_NDK_HOME` to the pinned NDK installation, and install the Rust
 Android targets and `cargo-ndk`. Build both supported ABIs:
@@ -59,14 +81,14 @@ Android targets and `cargo-ndk`. Build both supported ABIs:
 ```sh
 rustup target add aarch64-linux-android x86_64-linux-android
 cargo install cargo-ndk --locked --version '=4.1.2'
-bash scripts/build-android-native.sh \
+bash scripts/build/build-android-native.sh \
   --ndk "$ANDROID_NDK_HOME" --android-api 26 \
   --output-dir "$SDK_BUILD_DIR/android-native" \
   --cache-dir "$SDK_BUILD_DIR/android-native-cache"
-python3 scripts/build-ffi.py --platform android --release \
+python3 scripts/build/build-ffi.py --platform android --release \
   --output-dir "$SDK_BUILD_DIR/android-ffi" \
   --target-dir "$SDK_BUILD_DIR/android-rust"
-python3 scripts/publish-android.py \
+python3 scripts/release/publish-android.py \
   --native-artifacts "$SDK_BUILD_DIR/android-native" \
   --ffi-artifacts "$SDK_BUILD_DIR/android-ffi" \
   --maven-dir "$SDK_BUILD_DIR/maven" --build-dir "$SDK_BUILD_DIR/gradle" \
@@ -78,6 +100,8 @@ Publication requires a clean committed checkout. For local development only,
 version above is the local build coordinate, not a claim that Maven Central has
 a published release. Rust embeddings omit the FFI build and pass `--native-only`
 to publication.
+
+## Android: configure and run the consumer
 
 Add your Maven directory or published Maven URL to both `pluginManagement` and
 `dependencyResolutionManagement` repositories in the consumer's
@@ -134,10 +158,10 @@ Build native support and the FFI independently from the same source revision:
 
 ```sh
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-bash scripts/build-ios-xcframework.sh \
+bash scripts/build/build-ios-xcframework.sh \
   --output "$SDK_BUILD_DIR/ios-native" --cache "$SDK_BUILD_DIR/ios-cache" \
   --kind native-support --configuration Release
-python3 scripts/build-ffi.py --platform ios --release \
+python3 scripts/build/build-ffi.py --platform ios --release \
   --output-dir "$SDK_BUILD_DIR/ios-ffi" --target-dir "$SDK_BUILD_DIR/ios-rust"
 ```
 
@@ -165,7 +189,7 @@ an attested aarch64 rootfs with the pinned SDK tool:
 ```sh
 : "${ROOTFS_ARCHIVE:?Set the aarch64 archive path}"
 : "${ROOTFS_ARCHIVE_SHA256:?Set its pinned SHA-256}"
-bash scripts/prepare-ios-rootfs.sh \
+bash scripts/build/prepare-ios-rootfs.sh \
   --archive "$ROOTFS_ARCHIVE" --expected-archive-sha256 "$ROOTFS_ARCHIVE_SHA256" \
   --profile toolchain --native-output "$SDK_BUILD_DIR/ios-native/native" \
   --output "$SDK_BUILD_DIR/ios-rootfs" --cache "$SDK_BUILD_DIR/ios-cache"
@@ -208,9 +232,11 @@ B. Record the binary source revision and later package revision separately.
 Archive presence, simulator linking and host tests do not establish real-device
 acceptance; attach the corresponding device evidence to each release.
 
-The root MIT license covers original SDK source only. Full Android distributions
-include OpenMinis, PRoot and talloc under their separate GPL/LGPL terms; iOS
-includes the GPL-3.0-only Rust backend and the pinned native sources. Preserve
+SDK Rust source retains its original MIT OR Apache-2.0 license choice, including
+the iOS Rust adapter; imported PTY files keep their distinct Apache/MIT notices.
+Full Android distributions include OpenMinis, PRoot and talloc under their
+separate GPL/LGPL terms. The iOS native-support distribution includes the pinned
+OpenMinis/iSH native sources under their original terms. Preserve
 the applicable license/notice files, source revisions and patch provenance.
 [Component attribution](mobile-linux/LICENSES/NOTICE.md) identifies these inputs;
 rootfs SBOMs carry their own package licenses. The SDK's independence from an

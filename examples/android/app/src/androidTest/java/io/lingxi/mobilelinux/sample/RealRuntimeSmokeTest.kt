@@ -58,8 +58,23 @@ class RealRuntimeSmokeTest {
         }
 
     @Test(timeout = 900_000)
-    fun verifiedRootfsRunsNetworkRawPtyCancelAndRestart() = runBlocking {
+    fun verifiedRootfsRunsNetworkRawPtyCancelAndRestart(): Unit {
+      runBlocking {
         val inputs = File(context.filesDir, "sdk-smoke-input")
+        val testAssets = InstrumentationRegistry.getInstrumentation().context.assets
+        if (testAssets.list("sdk-smoke-input")?.contains("rootfs-manifest.json") == true) {
+            inputs.deleteRecursively()
+            check(inputs.mkdirs())
+            for ((assetName, name) in listOf(
+                "rootfs-archive.bin" to "rootfs.tar.gz",
+                "rootfs-manifest.json" to "rootfs-manifest.json",
+                "rootfs.spdx.json" to "rootfs.spdx.json",
+            )) {
+                testAssets.open("sdk-smoke-input/$assetName").use { source ->
+                    File(inputs, name).outputStream().use { destination -> source.copyTo(destination) }
+                }
+            }
+        }
         val manifestFile = File(inputs, "rootfs-manifest.json")
         check(manifestFile.isFile) { "Stage real verified rootfs inputs into files/sdk-smoke-input before instrumentation" }
         val manifestText = manifestFile.readText()
@@ -98,6 +113,7 @@ class RealRuntimeSmokeTest {
             protectedHostRoots = emptyList(), allowedMountRoots = emptyList(), allowedGuestRoots = emptyList(),
         )
         var runtime = MobileLinuxRuntime.create(config)
+        var primaryFailure: Throwable? = null
         try {
             assertEquals(MobileLinuxRootfsStateFfi.READY, runtime.handle.repairRootfs().state)
             assertEquals(MobileLinuxRootfsStateFfi.READY, runtime.boot().state)
@@ -179,18 +195,34 @@ class RealRuntimeSmokeTest {
             passed("blocked-stdin-timeout-and-reap")
 
             val memorySession = runtime.handle.openRawStdio(command(
-                "import time; allocation=bytearray(128*1024*1024); print('ALLOCATED',flush=True); time.sleep(60)",
+                "import os,time; print(os.getpid(),flush=True); time.sleep(0.3); allocation=bytearray(128*1024*1024); time.sleep(60)",
                 python = true, raw = true,
             ).copy(resourceLimits = ResourceLimitsFfi(null, 32u, null, null)))
             assertTrue("raw memory receipt must reflect an active watchdog", memorySession.enforcement.memoryLimitEnforced)
+            val memoryOutput = ByteArrayOutputStream()
             withTimeout(15_000) {
                 while (true) {
-                    val chunk = runtime.handle.readRawStdio(memorySession.id, 64u)
-                    if (chunk.closed) { assertNotEquals("memory overrun must terminate the process", 0, chunk.exitCode); break }
+                    try {
+                        val chunk = runtime.handle.readRawStdio(memorySession.id, 64u)
+                        memoryOutput.write(chunk.stdout)
+                        assertFalse("memory overrun must return a typed limit error", chunk.closed)
+                    } catch (limit: MobileLinuxApiErrorFfi.ResourceLimitExceeded) {
+                        assertTrue(limit.detail.contains("resident-memory limit"))
+                        break
+                    }
                     delay(25)
                 }
             }
-            runtime.handle.closeRawStdio(memorySession.id)
+            val memoryPid = memoryOutput.toString(Charsets.UTF_8.name()).trim().toInt()
+            try {
+                runtime.handle.closeRawStdio(memorySession.id)
+                fail("close must preserve the typed resource limit result")
+            } catch (limit: MobileLinuxApiErrorFfi.ResourceLimitExceeded) {
+                assertTrue(limit.detail.contains("resident-memory limit"))
+            }
+            assertEquals(MobileLinuxTaskStateFfi.FAILED, runtime.handle.taskStatus(memorySession.id)?.status)
+            val memoryReaped = runtime.execute(command("test ! -e /proc/$memoryPid"))
+            assertEquals("memory-limited guest must be reaped: " + memoryReaped.stderr, 0, memoryReaped.exitCode)
             passed("raw-memory-watchdog-terminates-overrun")
 
             val pty = runtime.handle.openPty(MobileLinuxPtyOpenRequestFfi(
@@ -225,14 +257,28 @@ class RealRuntimeSmokeTest {
             assertEquals(0, restarted.exitCode)
             assertEquals("SDK_RESTARTED", restarted.stdout)
             passed("shutdown-recreate-restart")
-            File(context.filesDir, "sdk-smoke-evidence.json").writeText(JSONObject().apply {
+            val evidence = JSONObject().apply {
                 put("deviceAbi", Build.SUPPORTED_ABIS.first()); put("sdkInt", Build.VERSION.SDK_INT)
                 put("rootfsSha256", archiveSha); put("checks", org.json.JSONArray(checks))
-            }.toString(2))
+            }
+            File(context.filesDir, "sdk-smoke-evidence.json").writeText(evidence.toString(2))
+            Log.i("MobileLinuxSdkSmoke", "SDK_SMOKE_EVIDENCE=" + evidence.toString())
+        } catch (failure: Throwable) {
+            primaryFailure = failure
+            throw failure
         } finally {
-            // Preserve the original assertion/timeout when cleanup also fails.
-            runCatching { runtime.shutdown() }.onFailure { Log.e("MobileLinuxSdkSmoke", "cleanup shutdown failed", it) }
-            runtime.handle.destroy()
+            // Keep the first failure; cleanup failures still fail an otherwise successful test.
+            try {
+                runtime.shutdown()
+            } catch (cleanupFailure: Throwable) {
+                val original = primaryFailure
+                if (original == null) throw cleanupFailure
+                original.addSuppressed(cleanupFailure)
+                Log.e("MobileLinuxSdkSmoke", "cleanup shutdown failed", cleanupFailure)
+            } finally {
+                runtime.handle.destroy()
+            }
         }
+      }
     }
 }

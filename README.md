@@ -28,11 +28,11 @@ a successful source build is not a device acceptance result. The checked-in
 rootfs ABIs have actual payload evidence. Rootfs archives are separate caller
 inputs and are not silently downloaded or bundled into the SDK.
 
-Original SDK code carries the [MIT license](LICENSE), with explicit exceptions
-in crate metadata and source notices. The full distributions include third-party
+SDK source retains its original [MIT](LICENSE) OR [Apache-2.0](LICENSE-APACHE)
+license choice, with explicit exceptions in crate metadata and source notices. The full distributions include third-party
 code under other terms, including GPL/LGPL components. See the
 [component attribution](docs/mobile-linux/LICENSES/NOTICE.md),
 [Android native pins](docs/android/native-pins.json),
 [iOS source pins](native/ios/sources.json), and
-[PTY notice](crates/platform-pty/NOTICE). The root license does not relicense those
+[PTY notice](crates/platform-pty/NOTICE). The root licenses do not relicense those
 components.

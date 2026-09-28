@@ -197,6 +197,8 @@ impl ProcessHandle {
     }
 
     /// Close the PTY input channel. This does not terminate the child.
+    /// Windows queues the cooked-console Ctrl+Z/Enter EOF gesture after pending
+    /// writes; applications using raw input can interpret that gesture themselves.
     pub fn close_stdin(&self) {
         if let Ok(mut writer_tx) = self.writer_tx.lock() {
             writer_tx.take();

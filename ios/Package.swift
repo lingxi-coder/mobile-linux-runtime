@@ -1,7 +1,7 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
-// Stage actual artifacts with scripts/package-sdk.py before consuming locally.
+// Stage actual artifacts with scripts/release/package-sdk.py before consuming locally.
 let package = Package(
     name: "MobileLinuxRuntime",
     platforms: [.iOS("18.0")],

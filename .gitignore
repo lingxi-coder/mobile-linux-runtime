@@ -8,6 +8,7 @@
 **/.gradle/
 **/.build/
 **/build/
+!scripts/build/
 /local.properties
 /ios/Artifacts/
 **/__pycache__/

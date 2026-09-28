@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "name": "uniffi",
+      "version": "0.28.3",
+      "source_revision": "0d38fc51ec057c271233b70db51b13ef403e360d",
+      "source_url": "https://raw.githubusercontent.com/mozilla/uniffi-rs/0d38fc51ec057c271233b70db51b13ef403e360d/LICENSE",
+      "source_path": "LICENSE",
+      "license_path": "docs/licenses/rust/uniffi-0.28.3-MPL-2.0.txt",
+      "license_sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+      "crate_vcs_path": "uniffi"
+    },
+    {
+      "name": "uniffi_bindgen",
+      "version": "0.28.3",
+      "source_revision": "0d38fc51ec057c271233b70db51b13ef403e360d",
+      "source_url": "https://raw.githubusercontent.com/mozilla/uniffi-rs/0d38fc51ec057c271233b70db51b13ef403e360d/LICENSE",
+      "source_path": "LICENSE",
+      "license_path": "docs/licenses/rust/uniffi-0.28.3-MPL-2.0.txt",
+      "license_sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+      "crate_vcs_path": "uniffi_bindgen"
+    },
+    {
+      "name": "uniffi_checksum_derive",
+      "version": "0.28.3",
+      "source_revision": "0d38fc51ec057c271233b70db51b13ef403e360d",
+      "source_url": "https://raw.githubusercontent.com/mozilla/uniffi-rs/0d38fc51ec057c271233b70db51b13ef403e360d/LICENSE",
+      "source_path": "LICENSE",
+      "license_path": "docs/licenses/rust/uniffi-0.28.3-MPL-2.0.txt",
+      "license_sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+      "crate_vcs_path": "uniffi_checksum_derive"
+    },
+    {
+      "name": "uniffi_core",
+      "version": "0.28.3",
+      "source_revision": "0d38fc51ec057c271233b70db51b13ef403e360d",
+      "source_url": "https://raw.githubusercontent.com/mozilla/uniffi-rs/0d38fc51ec057c271233b70db51b13ef403e360d/LICENSE",
+      "source_path": "LICENSE",
+      "license_path": "docs/licenses/rust/uniffi-0.28.3-MPL-2.0.txt",
+      "license_sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+      "crate_vcs_path": "uniffi_core"
+    },
+    {
+      "name": "uniffi_macros",
+      "version": "0.28.3",
+      "source_revision": "0d38fc51ec057c271233b70db51b13ef403e360d",
+      "source_url": "https://raw.githubusercontent.com/mozilla/uniffi-rs/0d38fc51ec057c271233b70db51b13ef403e360d/LICENSE",
+      "source_path": "LICENSE",
+      "license_path": "docs/licenses/rust/uniffi-0.28.3-MPL-2.0.txt",
+      "license_sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+      "crate_vcs_path": "uniffi_macros"
+    },
+    {
+      "name": "uniffi_meta",
+      "version": "0.28.3",
+      "source_revision": "0d38fc51ec057c271233b70db51b13ef403e360d",
+      "source_url": "https://raw.githubusercontent.com/mozilla/uniffi-rs/0d38fc51ec057c271233b70db51b13ef403e360d/LICENSE",
+      "source_path": "LICENSE",
+      "license_path": "docs/licenses/rust/uniffi-0.28.3-MPL-2.0.txt",
+      "license_sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+      "crate_vcs_path": "uniffi_meta"
+    },
+    {
+      "name": "uniffi_testing",
+      "version": "0.28.3",
+      "source_revision": "0d38fc51ec057c271233b70db51b13ef403e360d",
+      "source_url": "https://raw.githubusercontent.com/mozilla/uniffi-rs/0d38fc51ec057c271233b70db51b13ef403e360d/LICENSE",
+      "source_path": "LICENSE",
+      "license_path": "docs/licenses/rust/uniffi-0.28.3-MPL-2.0.txt",
+      "license_sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+      "crate_vcs_path": "uniffi_testing"
+    },
+    {
+      "name": "uniffi_udl",
+      "version": "0.28.3",
+      "source_revision": "0d38fc51ec057c271233b70db51b13ef403e360d",
+      "source_url": "https://raw.githubusercontent.com/mozilla/uniffi-rs/0d38fc51ec057c271233b70db51b13ef403e360d/LICENSE",
+      "source_path": "LICENSE",
+      "license_path": "docs/licenses/rust/uniffi-0.28.3-MPL-2.0.txt",
+      "license_sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5",
+      "crate_vcs_path": "uniffi_udl"
+    },
+    {
+      "name": "winapi-i686-pc-windows-gnu",
+      "version": "0.4.0",
+      "source_package": "winapi",
+      "source_package_version": "0.3.9",
+      "source_package_checksum": "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419",
+      "source_path": "LICENSE-APACHE",
+      "license_path": "docs/licenses/rust/winapi-0.4.0-LICENSE-APACHE",
+      "license_sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+    },
+    {
+      "name": "winapi-i686-pc-windows-gnu",
+      "version": "0.4.0",
+      "source_package": "winapi",
+      "source_package_version": "0.3.9",
+      "source_package_checksum": "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419",
+      "source_path": "LICENSE-MIT",
+      "license_path": "docs/licenses/rust/winapi-0.4.0-LICENSE-MIT",
+      "license_sha256": "ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b"
+    },
+    {
+      "name": "winapi-x86_64-pc-windows-gnu",
+      "version": "0.4.0",
+      "source_package": "winapi",
+      "source_package_version": "0.3.9",
+      "source_package_checksum": "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419",
+      "source_path": "LICENSE-APACHE",
+      "license_path": "docs/licenses/rust/winapi-0.4.0-LICENSE-APACHE",
+      "license_sha256": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+    },
+    {
+      "name": "winapi-x86_64-pc-windows-gnu",
+      "version": "0.4.0",
+      "source_package": "winapi",
+      "source_package_version": "0.3.9",
+      "source_package_checksum": "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419",
+      "source_path": "LICENSE-MIT",
+      "license_path": "docs/licenses/rust/winapi-0.4.0-LICENSE-MIT",
+      "license_sha256": "ce7bc3499fee93d5022ef430d5e4201e79a6d9154f3974e42f41349f0569e09b"
+    }
+  ]
+}

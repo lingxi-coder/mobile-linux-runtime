@@ -6,6 +6,13 @@ import MobileLinuxRuntimeBindings
 struct SDKDeviceSmoke {
     struct Failure: Error { let message: String }
     private func require(_ condition: Bool, _ message: String) throws { if !condition { throw Failure(message: message) } }
+    private func archiveDigest(in manifest: [String: Any]) throws -> String {
+        guard let digest = manifest["rootfs_zip_sha256"] as? String,
+              digest.count == 64, digest.allSatisfy({ "0123456789abcdef".contains($0) }) else {
+            throw Failure(message: "missing or invalid rootfs digest")
+        }
+        return digest
+    }
     private func command(_ script: String, network: NetworkPolicyFfi = .disabled, memory: UInt32? = nil, timeout: UInt64? = 10_000) -> MobileLinuxCommandRequestFfi {
         MobileLinuxCommandRequestFfi(command: "/bin/sh", args: ["-c", script], cwd: nil, env: [], stdin: nil,
             timeoutMs: timeout, network: network,
@@ -17,8 +24,9 @@ struct SDKDeviceSmoke {
         throw Failure(message: "Real embedded iSH execution requires an arm64 physical device")
         #else
         let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: resources.appendingPathComponent("manifest.json"))) as! [String: Any]
+        let archiveHash = try archiveDigest(in: manifest)
         let files = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("sdk-device-validation")
+            .appendingPathComponent("sdk-device-validation-" + String(archiveHash.prefix(16)))
         let workspace = files.appendingPathComponent("workspace-one")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         var config = RuntimeConfig(platform: .ios, managedRoot: files.appendingPathComponent("runtime").path,
@@ -39,6 +47,14 @@ struct SDKDeviceSmoke {
         try require(first.stdout == "sdk-ready", "foreground stdout mismatch")
         try require(first.exitCode == 0, "foreground exit code")
         try require(first.enforcement.networkPolicyEnforced, "network receipt missing")
+        let nonzero = try await runtime.handle.runCommand(request: command("exit 7"))
+        try require(nonzero.exitCode == 7, "guest wait status was not decoded")
+        let defaults = try await runtime.handle.runCommand(request: command("printf %s \"${BROWSER-unset}\""))
+        try require(defaults.stdout == "unset", "SDK injected a product browser command")
+        var customEnvironment = command("printf '%s|%s' \"$HOME\" \"$BROWSER\"")
+        customEnvironment.env = [MobileLinuxEnvEntryFfi(key: "HOME", value: "/tmp/sdk-home"), MobileLinuxEnvEntryFfi(key: "BROWSER", value: "/tmp/caller-browser")]
+        let custom = try await runtime.handle.runCommand(request: customEnvironment)
+        try require(custom.stdout == "/tmp/sdk-home|/tmp/caller-browser", "caller environment did not override native defaults")
         // Read tiny combined chunks after a process emits non-UTF8 bytes on both pipes.
         print("SDK_SMOKE_PHASE raw-binary")
         let raw = try await runtime.handle.openRawStdio(request: command(#"printf '\000\377\001\200\002\003\004'; printf '\376\000\372\012\013' >&2"#, timeout: nil))

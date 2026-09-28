@@ -2,7 +2,7 @@ plugins { id("com.android.library"); id("org.jetbrains.kotlin.android"); id("mav
 extensions.configure<com.android.build.api.dsl.LibraryExtension> {
     namespace = "io.lingxi.mobilelinux.nativesupport"
     compileSdk = 37
-    defaultConfig { minSdk = 26 }
+    defaultConfig { minSdk = 26; consumerProguardFiles("consumer-rules.pro") }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     sourceSets.getByName("main").assets.srcDir(providers.gradleProperty("nativeArtifacts").map { "$it/licenses" }.getOrElse("build/missing/licenses"))
     publishing { singleVariant("release") { withSourcesJar() } }
@@ -12,7 +12,7 @@ dependencies {  }
 afterEvaluate { publishing { publications { create<MavenPublication>("release") {
     from(components["release"])
     artifactId = "mobile-linux-native-support"
-    pom { name.set("Mobile Linux native-support"); description.set("Standalone mobile Linux SDK native-support"); url.set("https://github.com/lingxi-coder/mobile-linux-runtime"); licenses { license { name.set("GPL-3.0 (OpenMinis); GPL-2.0-or-later (PRoot); LGPL-3.0-or-later (talloc); MIT (SDK wrapper)") } } }
+    pom { name.set("Mobile Linux native-support"); description.set("Standalone mobile Linux SDK native-support"); url.set("https://github.com/lingxi-coder/mobile-linux-runtime"); licenses { license { name.set("GPL-3.0 (OpenMinis); GPL-2.0-or-later (PRoot); LGPL-3.0-or-later (talloc); MIT OR Apache-2.0 (SDK wrapper)") } } }
 } }; repositories { maven { url = uri(providers.gradleProperty("sdkMavenRepo").getOrElse(rootProject.layout.buildDirectory.dir("maven").get().asFile.absolutePath)) } } } }
 
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach { compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }

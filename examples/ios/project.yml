@@ -17,6 +17,7 @@ targets:
       - App
       - path: DeviceResources
         type: folder
+        optional: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.mobilelinux.sdk.sample
@@ -33,6 +34,7 @@ targets:
       - DeviceTests
       - path: DeviceResources
         type: folder
+        optional: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.mobilelinux.sdk.device-tests

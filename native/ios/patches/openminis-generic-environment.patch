@@ -1,0 +1,52 @@
+--- a/src/ios/iSH/ISHShellExecutor.m
++++ b/src/ios/iSH/ISHShellExecutor.m
+@@ -352,9 +352,13 @@
+     // NSString truncates at first NUL so we must use a raw C buffer
+     char envp_buf[8192];
+     size_t envp_pos = 0;
++    BOOL appendingCustomEnvironment = NO;
+ 
+ #define ENVP_APPEND(s) do { \
+     const char *_s = (s); \
++    const char *_equals = strchr(_s, '='); \
++    NSString *_key = _equals ? [[NSString alloc] initWithBytes:_s length:(NSUInteger)(_equals - _s) encoding:NSUTF8StringEncoding] : nil; \
++    if (!appendingCustomEnvironment && _key && environment[_key] != nil) break; \
+     size_t _len = strlen(_s) + 1; \
+     if (envp_pos + _len < sizeof(envp_buf) - 256) { \
+         memcpy(envp_buf + envp_pos, _s, _len); \
+@@ -369,12 +373,6 @@
+     ENVP_APPEND("CHARSET=UTF-8");
+     ENVP_APPEND("ENV=/etc/profile");
+     ENVP_APPEND("OPENSSL_armcap=0");
+-    // Route browser-opening calls through the in-app WebKit preview.
+-    // Python's stdlib `webbrowser` module honours $BROWSER before probing
+-    // $DISPLAY, so setting it here lets `python -c "import webbrowser;
+-    // webbrowser.open(...)"` and similar non-login shell invocations reach
+-    // /usr/local/bin/minis-open which emits an OSC marker parsed by the host.
+-    ENVP_APPEND("BROWSER=/usr/local/bin/minis-open");
+ 
+     // Inject device timezone so iSH userspace sees local time.
+     // Use POSIX TZ format with a fixed name to avoid abbreviations like "GMT+8"
+@@ -408,7 +406,8 @@
+         ENVP_APPEND("LD_PRELOAD=/lib/zero_free.so");
+     }
+ 
+-    // Custom environment
++    // Caller entries replace defaults instead of creating duplicate env keys.
++    appendingCustomEnvironment = YES;
+     if (environment) {
+         for (NSString *key in environment) {
+             NSString *entry = [NSString stringWithFormat:@"%@=%@", key, environment[key]];
+--- a/src/ios/iSH/ISHKernel.m
++++ b/src/ios/iSH/ISHKernel.m
+@@ -754,10 +754,6 @@
+         KERNEL_ENVP_APPEND("LANG=C.UTF-8");
+         KERNEL_ENVP_APPEND("CHARSET=UTF-8");
+         KERNEL_ENVP_APPEND("ENV=/etc/profile");
+-        // Mirrors ISHShellExecutor: route browser-open calls to the in-app
+-        // preview shim. Needed for interactive terminal sessions too, where
+-        // Python's webbrowser module picks $BROWSER before $DISPLAY probing.
+-        KERNEL_ENVP_APPEND("BROWSER=/usr/local/bin/minis-open");
+ 
+         // Inject device timezone so iSH userspace sees local time.
+         // Use POSIX TZ format with a fixed name to avoid abbreviations like "GMT+8"

@@ -3,7 +3,7 @@ name = "mobile-linux-ios"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-license = "GPL-3.0-only"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 async-trait.workspace = true

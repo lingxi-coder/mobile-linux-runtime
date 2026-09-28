@@ -45,7 +45,8 @@
     "talloc/talloc.c": "15f218ee70beb4da371646d4116622b48f2f552a3d051e5d360e790e2c3d3a37",
     "talloc/talloc.h": "e01fb092aaed2b431be26674e2b791c77fb5984537c29b514e957582c6b31465",
     "talloc/replace.h": "7bc76ccedd248fc6ad8c61c184580d4c00b8987a7a35f1666caa98b994d20deb",
-    "PtyBridge.kt": "ea04b343f2d08bb0ee41c51a49c622d15d67a8f13e6747e70ab77712b7ff53e4"
+    "PtyBridge.kt": "ea04b343f2d08bb0ee41c51a49c622d15d67a8f13e6747e70ab77712b7ff53e4",
+    "patches/proot-loader-16k.patch": "878ddf1a34879d333725e3b9e33c8b3d31c0b4f668ca8514544509a0d53326e3"
   },
   "distribution_licenses": {
     "talloc-license": {
