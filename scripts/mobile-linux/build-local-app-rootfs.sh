@@ -143,13 +143,13 @@ for apk in "${OUTPUT}/${ARCH}/repo/${ARCH}"/*.apk; do
 done
 echo "[rootfs] release apk-dir view: ${OUTPUT}/apk-closure (--apk-dir)"
 
-CHECK_ARGS=()
+set --
 if [[ "${VERIFY_BLOCKED}" == "1" ]]; then
   BLOCKER="$(python3 -c 'import json,sys; abi={"aarch64":"arm64-v8a","x86_64":"x86_64"}[sys.argv[2]]; print(json.load(open(sys.argv[1]))["apk_artifacts"][abi].get("blocker", ""))' "${PINS}" "${ARCH}")"
-  [[ -z "${BLOCKER}" ]] || CHECK_ARGS=(--blocker "${BLOCKER}")
+  [[ -z "${BLOCKER}" ]] || set -- --blocker "${BLOCKER}"
 fi
 python3 "${SCRIPT_DIR}/update-local-app-pins.py" \
-  --pins "${PINS}" --arch "${ARCH}" --closure "${CLOSURE}" --check "${CHECK_ARGS[@]}"
+  --pins "${PINS}" --arch "${ARCH}" --closure "${CLOSURE}" --check "$@"
 echo "[rootfs] closure matches the pins for ${ARCH}"
 
 echo "[rootfs] output: ${OUTPUT}/${ARCH}/rootfs.tar.gz"
