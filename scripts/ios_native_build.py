@@ -101,7 +101,10 @@ def framework(output,cache,configuration,simulator_only):
             if platform=='iphoneos':args+=['-DISH_INTERNAL=1','-DGUEST_ARM64=1']
             run(args)
         swiftmodule=modules/'MobileLinuxNativeSupport.swiftmodule';swiftmodule.mkdir(exist_ok=True)
-        run(['xcrun','swiftc','-parse-as-library','-whole-module-optimization','-emit-object','-emit-module','-enable-library-evolution','-module-name','MobileLinuxNativeSupport','-import-underlying-module','-I',headers,'-target',triple,'-sdk',sdk,'-module-cache-path',cache/'swift-modules','-emit-module-path',swiftmodule/(triple+'.swiftmodule'),'-emit-module-interface-path',swiftmodule/(triple+'.swiftinterface'),*sorted((SDK/'ios/NativeSupport').glob('*.swift')),'-o',objects/'native-swift.o'])
+        # Swift module lookup omits the deployment version even though the
+        # compiler target triple includes it (arm64-apple-ios-simulator, etc.).
+        module_arch=f'{arch}-apple-ios'+('-simulator' if platform=='iphonesimulator' else '')
+        run(['xcrun','swiftc','-parse-as-library','-whole-module-optimization','-emit-object','-emit-module','-enable-library-evolution','-module-name','MobileLinuxNativeSupport','-import-underlying-module','-I',headers,'-target',triple,'-sdk',sdk,'-module-cache-path',cache/'swift-modules','-emit-module-path',swiftmodule/(module_arch+'.swiftmodule'),'-emit-module-interface-path',swiftmodule/(module_arch+'.swiftinterface'),*sorted((SDK/'ios/NativeSupport').glob('*.swift')),'-o',objects/'native-swift.o'])
         inputs=list(objects.glob('*.o'))
         if platform=='iphoneos':inputs+=list((output/'native/lib').glob('*.a'))
         run(['xcrun','libtool','-static','-o',fw/'MobileLinuxNativeSupport',*inputs])
@@ -112,7 +115,8 @@ def framework(output,cache,configuration,simulator_only):
     if fat.exists():shutil.rmtree(fat)
     copytree(sim[0],fat)
     run(['xcrun','lipo','-create',*[f/'MobileLinuxNativeSupport' for f in sim],'-output',fat/'MobileLinuxNativeSupport'])
-    copytree(sim[1]/'Modules/MobileLinuxNativeSupport.swiftmodule',fat/'Modules/MobileLinuxNativeSupport.swiftmodule')
+    # Both simulator architectures must be importable from the fat framework.
+    shutil.copytree(sim[1]/'Modules/MobileLinuxNativeSupport.swiftmodule',fat/'Modules/MobileLinuxNativeSupport.swiftmodule',dirs_exist_ok=True)
     result=output/'MobileLinuxNativeSupport.xcframework'
     if result.exists():shutil.rmtree(result)
     args=['xcodebuild','-create-xcframework']
