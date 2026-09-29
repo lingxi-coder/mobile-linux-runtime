@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import importlib.util
 import hashlib
+import json
 import shutil
 from pathlib import Path
 import tempfile
@@ -43,7 +44,9 @@ class NoticeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'license'):verify(ROOT,target)
 
     def test_registry_notice_inventory_rejects_lock_and_text_drift(self):
-        self.assertEqual(len(registry_files(ROOT)), 240)  # manifest plus 239 texts
+        manifest = json.loads((ROOT/'docs/licenses/rust/registry-manifest.json').read_text())
+        expected_files = 1 + sum(len(package['files']) for package in manifest['packages'])
+        self.assertEqual(len(registry_files(ROOT)), expected_files)
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
             shutil.copy2(ROOT/'Cargo.lock',root/'Cargo.lock')
