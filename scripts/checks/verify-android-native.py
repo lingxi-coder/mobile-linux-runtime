@@ -24,23 +24,21 @@ def main():
     args = parser.parse_args()
     pin_path = SDK / "docs/android/native-pins.json"
     pins = json.loads(pin_path.read_text())
-    if pins.get("schema_version") != 1 or set(pins["components"]) != {"openminis", "proot", "talloc", "pty_bridge"}:
+    if pins.get("schema_version") != 1 or set(pins["components"]) != {"openminis", "proot", "talloc"}:
         fail("Android-only source pin schema/components diverged")
     sources = pins.get("sdk_sources", {})
-    required_sources = {"mobile_linux_policy_launcher.c", "proot_lingxi_network_policy.c", "pty_bridge.c", "talloc/talloc.c", "talloc/talloc.h", "talloc/replace.h", "PtyBridge.kt", "patches/proot-loader-16k.patch"}
+    required_sources = {"mobile_linux_policy_launcher.c", "proot_lingxi_network_policy.c", "talloc/talloc.c", "talloc/talloc.h", "talloc/replace.h", "patches/proot-loader-16k.patch"}
     if set(sources) != required_sources: fail("incomplete Android SDK source inventory")
     for relative, expected in sources.items():
         path = SDK / "native/android" / relative
         if path.is_symlink() or not path.is_file() or sha(path) != expected:
             fail("Android SDK source digest mismatch: " + relative)
-    if sources["pty_bridge.c"] != pins["components"]["pty_bridge"]["sha256"]:
-        fail("vendored PTY source differs from upstream pin")
     for path, expected in pins["components"]["talloc"]["openminis_vendored_files"].items():
         if sources[path.removeprefix("deps/")] != expected: fail("vendored talloc differs from pin")
     if sha(SDK / "native/android/OPENMINIS-LICENSE") != pins["components"]["openminis"]["license_file_sha256"]:
         fail("vendored OpenMinis license differs from pinned source")
     distribution = pins.get("distribution_licenses", {})
-    required_licenses = {"talloc-license", "talloc-notice", "mksh", "toybox", "minijail-license", "minijail-notice", "libcap"}
+    required_licenses = {"talloc-license", "talloc-notice"}
     if set(distribution) != required_licenses: fail("incomplete distribution license source inventory")
     for component, record in distribution.items():
         path = SDK / record["source"]
@@ -79,7 +77,6 @@ def main():
         if path.is_symlink() or not path.is_file() or sha(path) != expected or record.get("sha256") != expected or path.stat().st_size != record.get("size_bytes"):
             fail("native source license digest mismatch: " + component)
     expected_names = {"libproot.so", "libproot-loader.so", "libmobile_linux_policy_launcher.so"}
-    if manifest.get("legacy_host_shell") is True: expected_names |= {"libpty_bridge.so", "libmksh.so", "libtoybox.so"}
     records = manifest.get("artifacts", [])
     abis = {record.get("abi") for record in records}
     if not abis or not abis <= {"arm64-v8a", "x86_64"}: fail("invalid native ABI inventory")

@@ -30,22 +30,14 @@
         "deps/talloc/talloc.h": "e01fb092aaed2b431be26674e2b791c77fb5984537c29b514e957582c6b31465",
         "deps/talloc/replace.h": "7bc76ccedd248fc6ad8c61c184580d4c00b8987a7a35f1666caa98b994d20deb"
       }
-    },
-    "pty_bridge": {
-      "source_component": "openminis",
-      "path": "src/android/app/src/main/cpp/pty_bridge.c",
-      "sha256": "0cc73b1e356429b07d9ab065f8a082fd16ea59393c8583d0c6615acd9725d96a",
-      "license": "GPL-3.0-only"
     }
   },
   "sdk_sources": {
     "mobile_linux_policy_launcher.c": "3cf616ba8f5d94c5026eeb0dbc5d60cfe92e333f2d470e665d0e43752e895026",
     "proot_lingxi_network_policy.c": "752a7fc0a0b2cd5fcdfca0f8fa094d274c32430f4acfc891e6680c3764610e26",
-    "pty_bridge.c": "0cc73b1e356429b07d9ab065f8a082fd16ea59393c8583d0c6615acd9725d96a",
     "talloc/talloc.c": "15f218ee70beb4da371646d4116622b48f2f552a3d051e5d360e790e2c3d3a37",
     "talloc/talloc.h": "e01fb092aaed2b431be26674e2b791c77fb5984537c29b514e957582c6b31465",
     "talloc/replace.h": "7bc76ccedd248fc6ad8c61c184580d4c00b8987a7a35f1666caa98b994d20deb",
-    "PtyBridge.kt": "ea04b343f2d08bb0ee41c51a49c622d15d67a8f13e6747e70ab77712b7ff53e4",
     "patches/proot-loader-16k.patch": "878ddf1a34879d333725e3b9e33c8b3d31c0b4f668ca8514544509a0d53326e3"
   },
   "distribution_licenses": {
@@ -59,31 +51,6 @@
       "source": "native/android/TALLOC-NOTICE.txt",
       "filename": "talloc-NOTICE.txt",
       "sha256": "665fce5b1cb7c4b60abcffd7b48bb2d50ffc37ddc56538fcdd6323c971b636c6"
-    },
-    "mksh": {
-      "source": "third_party/mksh/NOTICE",
-      "filename": "mksh-NOTICE.txt",
-      "sha256": "9d0a1d9cebf03f4a448105f4d79d8625a03aa5227e45b391dd79a1e89a7f0b0d"
-    },
-    "toybox": {
-      "source": "third_party/toybox/LICENSE",
-      "filename": "toybox-LICENSE.txt",
-      "sha256": "948039f91e7e23916019047a035c69214447323c5fc272aefc0fd21e505bf41d"
-    },
-    "minijail-license": {
-      "source": "third_party/minijail/LICENSE",
-      "filename": "minijail-LICENSE.txt",
-      "sha256": "dc1433a79c832fe103c3eec62610d3e530cdbb6ab60a9c0dfb165e0edd8f2fbb"
-    },
-    "minijail-notice": {
-      "source": "third_party/minijail/NOTICE",
-      "filename": "minijail-NOTICE.txt",
-      "sha256": "d20e000b94db73939f262badd4994a6451c7f61ddd192e13c90f48399af2c9c6"
-    },
-    "libcap": {
-      "source": "third_party/libcap/License",
-      "filename": "libcap-LICENSE.txt",
-      "sha256": "68467e731f4744bd6e0bb69e8df9c3a994e09cd6b203d0c41327ac6d079c581d"
     }
   }
 }

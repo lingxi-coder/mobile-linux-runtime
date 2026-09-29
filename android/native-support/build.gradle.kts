@@ -2,7 +2,7 @@ plugins { id("com.android.library"); id("org.jetbrains.kotlin.android"); id("mav
 extensions.configure<com.android.build.api.dsl.LibraryExtension> {
     namespace = "io.lingxi.mobilelinux.nativesupport"
     compileSdk = 37
-    defaultConfig { minSdk = 26; consumerProguardFiles("consumer-rules.pro") }
+    defaultConfig { minSdk = 26;  }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     sourceSets.getByName("main").assets.srcDir(providers.gradleProperty("nativeArtifacts").map { "$it/licenses" }.getOrElse("build/missing/licenses"))
     publishing { singleVariant("release") { withSourcesJar() } }
@@ -19,7 +19,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 
 tasks.named("preBuild") { doFirst {
     val artifacts = providers.gradleProperty("nativeArtifacts").orNull ?: error("Supply -PnativeArtifacts=<validated SDK artifacts>")
-    for (abi in listOf("arm64-v8a", "x86_64")) for (name in listOf("libproot.so", "libproot-loader.so", "libmobile_linux_policy_launcher.so", "libpty_bridge.so", "libmksh.so", "libtoybox.so")) {
+    for (abi in listOf("arm64-v8a", "x86_64")) for (name in listOf("libproot.so", "libproot-loader.so", "libmobile_linux_policy_launcher.so")) {
         check(file("$artifacts/jniLibs/$abi/$name").isFile) { "Missing SDK artifact $abi/$name" }
     }
 } }
