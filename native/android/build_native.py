@@ -29,9 +29,7 @@ def source_input_hashes():
     roots = [SDK / name for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml",
         "docs/android/native-pins.json", "native/android", "scripts/build/build-android-native.sh",
         "scripts/checks/verify-android-native.py", "scripts/lib/sdk_artifact_identity.py",
-        "crates/platform-android-minijail", "crates/platform-android-libcap",
-        "crates/platform-android-shellbin", "third_party/minijail", "third_party/libcap",
-        "third_party/mksh", "third_party/toybox")]
+        "native/android/TALLOC-LGPL-3.0.txt", "native/android/TALLOC-NOTICE.txt")]
     for root in roots:
         paths = root.rglob("*") if root.is_dir() else [root]
         for path in paths:
@@ -62,7 +60,6 @@ def main():
     parser.add_argument("--abi", choices=("all", "arm64-v8a", "x86_64"), default="all")
     parser.add_argument("--android-api", type=int, default=26)
     parser.add_argument("--jobs", type=int, default=2)
-    parser.add_argument("--without-legacy-shell", action="store_true", help="omit optional mksh/toybox/PTY bridge")
     args = parser.parse_args()
     if args.android_api < 26 or args.jobs < 1:
         parser.error("android-api must be >=26 and jobs must be positive")
@@ -150,13 +147,6 @@ def main():
             shutil.copy2(proot / "src/proot", stage / "libproot.so")
             shutil.copy2(proot / "src/loader/loader", stage / "libproot-loader.so")
             run([cc, NATIVE / "mobile_linux_policy_launcher.c", "-o", stage / "libmobile_linux_policy_launcher.so", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIE", "-pie", "-Wl,-z,noexecstack", *([page_flag] if page_flag else [])], env=env)
-            if not args.without_legacy_shell:
-                run([cc, NATIVE / "pty_bridge.c", "-o", stage / "libpty_bridge.so", "-shared", "-fPIC", "-O2", "-llog", *([page_flag] if page_flag else [])], env=env)
-                run(["cargo", "ndk", "-t", abi, "--platform", "29", "build", "--locked", "--release", "-j", str(args.jobs), "-p", "platform-android-shellbin", "-p", "platform-android-minijail"], cwd=SDK, env=env)
-                candidates = sorted((cache / "cargo" / triple / "release/build").glob("platform-android-shellbin-*/out"), key=lambda p: p.stat().st_mtime, reverse=True)
-                shell_out = next((p for p in candidates if (p / "mksh").is_file() and (p / "toybox").is_file()), None)
-                if shell_out is None: raise SystemExit("shellbin build produced no mksh/toybox")
-                for name in ("mksh", "toybox"): shutil.copy2(shell_out / name, stage / f"lib{name}.so")
             for artifact in sorted(stage.iterdir()):
                 run([tools / "llvm-strip", artifact], env=env)
                 data = artifact.read_bytes()
@@ -175,7 +165,7 @@ def main():
         raise SystemExit("SDK native build inputs changed during compilation; rebuild before publishing")
     manifest = {"source_revision": source_revision, "source_dirty": source_dirty,
         "source_inputs": source_inputs, "files": file_hashes(output, "native-manifest.json"),
-        "schema_version": 1, "kind": "native-support-only", "contains_rust_core": False, "android_api": args.android_api, "legacy_shell_android_api": 29 if not args.without_legacy_shell else None, "legacy_host_shell": not args.without_legacy_shell, "proot_revision": pin["commit"], "source_pins_sha256": digest(SDK / "docs/android/native-pins.json"), "artifacts": artifacts, "licenses": license_records}
+        "schema_version": 1, "kind": "native-support-only", "contains_rust_core": False, "android_api": args.android_api, "proot_revision": pin["commit"], "source_pins_sha256": digest(SDK / "docs/android/native-pins.json"), "artifacts": artifacts, "licenses": license_records}
     (output / "native-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     run([sys.executable, SDK / "scripts/checks/verify-android-native.py", "--artifact-dir", output])
     print("Android native support verified: " + str(output), flush=True)

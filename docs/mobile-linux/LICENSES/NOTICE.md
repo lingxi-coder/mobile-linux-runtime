@@ -16,10 +16,6 @@ individual component license files and source notices remain authoritative.
 | Android OpenMinis PTY bridge | OpenMinis `9cf3a855fecd27bb5735b84cacbd56852a3ab8dd`, GPL-3.0-only; [exact license](../../../native/android/OPENMINIS-LICENSE) |
 | Android PRoot fork | OpenMinis/proot `8cf13e997cdc9472997aae19df8050c073c9a86c`, GPL-2.0-or-later; the pinned source's `COPYING` and source headers |
 | talloc 2.4.2 | LGPL-3.0-or-later; [pinned source identity](../../android/native-pins.json) and retained source headers |
-| Optional Android mksh | [Original NOTICE](../../../third_party/mksh/NOTICE), including its component-specific terms |
-| Optional Android toybox | [Original LICENSE](../../../third_party/toybox/LICENSE), 0BSD text; per-file notices remain applicable |
-| Android minijail | [Original LICENSE](../../../third_party/minijail/LICENSE) and [NOTICE](../../../third_party/minijail/NOTICE), BSD terms |
-| Android libcap | [Original License](../../../third_party/libcap/License), BSD-3-Clause OR GPL-2.0-only, with explicit source exceptions |
 | iOS Rust adapter | [Crate metadata](../../../crates/mobile-linux-ios/Cargo.toml): MIT OR Apache-2.0, retained from the original LingXi Rust crate |
 | iOS OpenMinis glue | Same pinned OpenMinis revision above; [exact GPL-3.0 license](../../../native/ios/upstream/openminis/LICENSE) |
 | iSH, libapps and libarchive | Immutable revisions in [iOS sources.json](../../../native/ios/sources.json); native builds retain `LICENSE.md`, `LICENSE.IOS`, libapps `LICENSE` and libarchive `COPYING` from those revisions |

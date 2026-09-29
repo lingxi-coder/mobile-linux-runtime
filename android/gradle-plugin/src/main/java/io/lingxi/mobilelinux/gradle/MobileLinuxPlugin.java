@@ -11,7 +11,7 @@ import org.gradle.api.*;
 
 /** Packaging is checked on the final APK, including transitive native support. */
 public final class MobileLinuxPlugin implements Plugin<Project> {
-    private static final List<String> HELPERS = List.of("libproot.so", "libproot-loader.so", "libmobile_linux_policy_launcher.so", "libpty_bridge.so", "libmksh.so", "libtoybox.so");
+    private static final List<String> HELPERS = List.of("libproot.so", "libproot-loader.so", "libmobile_linux_policy_launcher.so");
     public void apply(Project project) {
         project.getPlugins().withId("com.android.application", ignored -> {
             ApplicationExtension android = project.getExtensions().getByType(ApplicationExtension.class);
