@@ -428,26 +428,6 @@
       ]
     },
     {
-      "name": "cc",
-      "version": "1.4.7",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "checksum": "54413ede23c2daf518f35156dfde027feb2374004d63bd497f983c8db9c0e313",
-      "license": "MIT OR Apache-2.0",
-      "override": false,
-      "files": [
-        {
-          "path": "docs/licenses/rust/files/cc-1.4.7-0-LICENSE-APACHE",
-          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
-          "source_filename": "LICENSE-APACHE"
-        },
-        {
-          "path": "docs/licenses/rust/files/cc-1.4.7-1-LICENSE-MIT",
-          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397",
-          "source_filename": "LICENSE-MIT"
-        }
-      ]
-    },
-    {
       "name": "cfg-if",
       "version": "1.0.4",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -738,26 +718,6 @@
       ]
     },
     {
-      "name": "find-msvc-tools",
-      "version": "0.1.13",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "checksum": "ef25905e51abafe4dcea6c15fec58c57b601cdbd0ee53d22ea1d3016c587d39b",
-      "license": "MIT OR Apache-2.0",
-      "override": false,
-      "files": [
-        {
-          "path": "docs/licenses/rust/files/find-msvc-tools-0.1.13-0-LICENSE-APACHE",
-          "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
-          "source_filename": "LICENSE-APACHE"
-        },
-        {
-          "path": "docs/licenses/rust/files/find-msvc-tools-0.1.13-1-LICENSE-MIT",
-          "sha256": "378f5840b258e2779c39418f3f2d7b2ba96f1c7917dd6be0713f88305dbda397",
-          "source_filename": "LICENSE-MIT"
-        }
-      ]
-    },
-    {
       "name": "fs-err",
       "version": "2.11.0",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -903,26 +863,6 @@
         {
           "path": "docs/licenses/rust/files/heck-0.5.0-1-LICENSE-MIT",
           "sha256": "7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0",
-          "source_filename": "LICENSE-MIT"
-        }
-      ]
-    },
-    {
-      "name": "hex",
-      "version": "0.4.3",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "checksum": "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70",
-      "license": "MIT OR Apache-2.0",
-      "override": false,
-      "files": [
-        {
-          "path": "docs/licenses/rust/files/hex-0.4.3-0-LICENSE-APACHE",
-          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
-          "source_filename": "LICENSE-APACHE"
-        },
-        {
-          "path": "docs/licenses/rust/files/hex-0.4.3-1-LICENSE-MIT",
-          "sha256": "f7bdb3426d045cd50efd4953026e3eb5a83d0199f458a075602611b9344da5b9",
           "source_filename": "LICENSE-MIT"
         }
       ]
@@ -1603,26 +1543,6 @@
         {
           "path": "docs/licenses/rust/files/shell-words-1.1.1-1-LICENSE-MIT",
           "sha256": "f76b7831ee8f42d3ac38919101e4ceb9f56aeb7796cdfe8a5ef52e26acedcbbf",
-          "source_filename": "LICENSE-MIT"
-        }
-      ]
-    },
-    {
-      "name": "shlex",
-      "version": "2.0.1",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "checksum": "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba",
-      "license": "MIT OR Apache-2.0",
-      "override": false,
-      "files": [
-        {
-          "path": "docs/licenses/rust/files/shlex-2.0.1-0-LICENSE-APACHE",
-          "sha256": "553fffcd9b1cb158bc3e9edc35da85ca5c3b3d7d2e61c883ebcfa8a65814b583",
-          "source_filename": "LICENSE-APACHE"
-        },
-        {
-          "path": "docs/licenses/rust/files/shlex-2.0.1-1-LICENSE-MIT",
-          "sha256": "4455bf75a91154108304cb283e0fea9948c14f13e20d60887cf2552449dea3b1",
           "source_filename": "LICENSE-MIT"
         }
       ]
