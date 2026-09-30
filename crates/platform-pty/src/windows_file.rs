@@ -10,10 +10,10 @@ use winapi::shared::minwindef::{BOOL, DWORD};
 use winapi::shared::winerror::ERROR_NO_MORE_FILES;
 use winapi::um::fileapi::{
     GetFileInformationByHandle, SetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-    FILE_DISPOSITION_INFO, FILE_ID_BOTH_DIR_INFO,
+    FILE_ID_BOTH_DIR_INFO,
 };
 use winapi::um::minwinbase::{
-    FileDispositionInfo, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo,
+    FileDispositionInfoEx, FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo,
 };
 use winapi::um::winbase::{
     FileIdType, GetFileInformationByHandleEx, OpenFileById, FILE_FLAG_BACKUP_SEMANTICS,
@@ -155,13 +155,22 @@ pub fn file_identity(file: &File) -> io::Result<WindowsFileIdentity> {
 
 /// Mark an opened object for deletion when its final handle closes.
 pub fn delete_by_handle(file: &File) -> io::Result<()> {
-    let mut disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    // ConPTY already requires Windows 10 1809. Use the DWORD-based extended
+    // disposition class supported there: the legacy one-byte BOOLEAN buffer
+    // is rejected by SetFileInformationByHandle on our native Windows runners.
+    // DELETE alone preserves deletion on final close, without POSIX semantics
+    // or overriding read-only attributes.
+    #[repr(C)]
+    struct FileDispositionInfoExBuffer {
+        flags: DWORD,
+    }
+    let mut disposition = FileDispositionInfoExBuffer { flags: 1 };
     let ok = unsafe {
         SetFileInformationByHandle(
             file.as_raw_handle() as HANDLE,
-            FileDispositionInfo,
-            (&mut disposition as *mut FILE_DISPOSITION_INFO).cast(),
-            DWORD::try_from(size_of::<FILE_DISPOSITION_INFO>()).unwrap_or(u32::MAX),
+            FileDispositionInfoEx,
+            (&mut disposition as *mut FileDispositionInfoExBuffer).cast(),
+            DWORD::try_from(size_of::<FileDispositionInfoExBuffer>()).unwrap_or(u32::MAX),
         )
     };
     if ok == 0 {

@@ -32,3 +32,32 @@ fn directory_file_ids_reopen_and_delete_the_enumerated_file() -> std::io::Result
     assert!(!child_path.exists());
     Ok(())
 }
+
+#[test]
+fn empty_directory_is_deleted_after_handle_close() -> std::io::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let child_path = temp.path().join("child-directory");
+    std::fs::create_dir(&child_path)?;
+    let child = open_windows_reparse_guarded(&child_path, true)?;
+    delete_windows_path_by_handle(&child).expect("mark the empty directory for deletion");
+    drop(child);
+    assert!(!child_path.exists());
+    Ok(())
+}
+
+#[test]
+fn deleting_without_delete_access_fails_and_preserves_the_file() -> std::io::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let child_path = temp.path().join("read-only-handle.txt");
+    std::fs::write(&child_path, b"preserved")?;
+    let child = open_windows_reparse_guarded(&child_path, false)?;
+    assert_eq!(
+        delete_windows_path_by_handle(&child)
+            .expect_err("DELETE access is required")
+            .kind(),
+        std::io::ErrorKind::PermissionDenied,
+    );
+    drop(child);
+    assert_eq!(std::fs::read(child_path)?, b"preserved");
+    Ok(())
+}
