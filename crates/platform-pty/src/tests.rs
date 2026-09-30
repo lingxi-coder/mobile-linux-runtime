@@ -185,6 +185,38 @@ async fn wait_for_exit(spawned: &mut SpawnedProcess, phase: &str) -> anyhow::Res
     }
 }
 
+async fn read_startup_preserving_output(
+    output: &mut mpsc::Receiver<Vec<u8>>,
+    marker: &[u8],
+    timeout: Duration,
+) -> anyhow::Result<()> {
+    let initial = read_until_with_timeout(output, marker, timeout).await?;
+    let (sender, receiver) = mpsc::channel(64);
+    sender.send(initial).await?;
+    let mut source = std::mem::replace(output, receiver);
+    tokio::spawn(async move {
+        while let Some(chunk) = source.recv().await {
+            if sender.send(chunk).await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_handshake_preserves_coalesced_and_subsequent_output() -> anyhow::Result<()> {
+    let (sender, mut receiver) = mpsc::channel(2);
+    sender.send(b"__STARTED____READY__".to_vec()).await?;
+    sender.send(b"__TAIL__".to_vec()).await?;
+    drop(sender);
+    read_startup_preserving_output(&mut receiver, b"__STARTED__", Duration::from_secs(1)).await?;
+    assert_eq!(receiver.recv().await.unwrap(), b"__STARTED____READY__");
+    assert_eq!(receiver.recv().await.unwrap(), b"__TAIL__");
+    assert!(receiver.recv().await.is_none());
+    Ok(())
+}
+
 #[cfg(windows)]
 async fn spawn_powershell(script: &str, size: TerminalSize) -> anyhow::Result<SpawnedProcess> {
     let cwd = std::env::current_dir()?;
@@ -206,7 +238,7 @@ async fn spawn_powershell(script: &str, size: TerminalSize) -> anyhow::Result<Sp
     // PowerShell cold startup can exceed the operation deadline when native
     // PTY regressions launch concurrently on CI. Establish readiness separately;
     // interaction, EOF, resize and termination keep their existing 15s bound.
-    read_until_with_timeout(
+    read_startup_preserving_output(
         &mut spawned.stdout_rx,
         b"__SHELL_STARTED__",
         Duration::from_secs(60),
