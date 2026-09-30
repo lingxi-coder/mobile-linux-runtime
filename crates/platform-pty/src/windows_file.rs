@@ -24,18 +24,25 @@ use winapi::um::winnt::{
     FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GENERIC_READ, HANDLE,
 };
 
+/// Stable volume and file identity for an opened Windows object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowsFileIdentity {
+    /// Volume containing the file.
     pub volume_serial_number: u32,
+    /// File identifier within the volume.
     pub file_index: u64,
 }
 
+/// File identity returned by handle-based directory enumeration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsDirectoryEntry {
+    /// Identifier used to reopen this object on the parent volume.
     pub file_id: i64,
+    /// Whether the directory entry has the directory attribute.
     pub is_directory: bool,
 }
 
+/// Open a path without following reparse points and verify its identity.
 pub fn open_reparse_guarded(path: &Path, delete_access: bool) -> io::Result<File> {
     let mut access = GENERIC_READ | FILE_LIST_DIRECTORY;
     if delete_access {
@@ -51,6 +58,7 @@ pub fn open_reparse_guarded(path: &Path, delete_access: bool) -> io::Result<File
     Ok(file)
 }
 
+/// Enumerate object identities from an already opened directory handle.
 pub fn enumerate_directory_by_handle(dir: &File) -> io::Result<Vec<WindowsDirectoryEntry>> {
     let mut entries = Vec::new();
     let mut restart = true;
@@ -98,6 +106,7 @@ pub fn enumerate_directory_by_handle(dir: &File) -> io::Result<Vec<WindowsDirect
     Ok(entries)
 }
 
+/// Reopen an enumerated file identity without following reparse points.
 pub fn open_child_by_id(parent: &File, file_id: i64, delete_access: bool) -> io::Result<File> {
     let mut descriptor: FILE_ID_DESCRIPTOR = unsafe { std::mem::zeroed() };
     descriptor.dwSize = DWORD::try_from(size_of::<FILE_ID_DESCRIPTOR>()).unwrap_or(u32::MAX);
@@ -128,6 +137,7 @@ pub fn open_child_by_id(parent: &File, file_id: i64, delete_access: bool) -> io:
     Ok(file)
 }
 
+/// Read the stable identity of a handle, refusing reparse points.
 pub fn file_identity(file: &File) -> io::Result<WindowsFileIdentity> {
     let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
     let ok: BOOL = unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut info) };
@@ -143,6 +153,7 @@ pub fn file_identity(file: &File) -> io::Result<WindowsFileIdentity> {
     })
 }
 
+/// Mark an opened object for deletion when its final handle closes.
 pub fn delete_by_handle(file: &File) -> io::Result<()> {
     let mut disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
     let ok = unsafe {

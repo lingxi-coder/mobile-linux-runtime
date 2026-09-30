@@ -37,8 +37,10 @@ pub use pty::spawn_process as spawn_pty_process;
 pub use unix_command::command_current_dir_from_open_directory;
 #[cfg(windows)]
 pub use windows_file::{
-    delete_by_handle as delete_windows_path_by_handle, file_identity as windows_file_identity,
-    open_reparse_guarded as open_windows_reparse_guarded, WindowsFileIdentity,
+    delete_by_handle as delete_windows_path_by_handle, enumerate_directory_by_handle,
+    file_identity as windows_file_identity, open_child_by_id,
+    open_reparse_guarded as open_windows_reparse_guarded, WindowsDirectoryEntry,
+    WindowsFileIdentity,
 };
 #[cfg(windows)]
 pub use windows_pipe::create_current_user_named_pipe;
