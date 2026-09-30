@@ -38,7 +38,7 @@ pub use unix_command::command_current_dir_from_open_directory;
 #[cfg(windows)]
 pub use windows_file::{
     delete_by_handle as delete_windows_path_by_handle, enumerate_directory_by_handle,
-    file_identity as windows_file_identity, open_child_by_id,
+    file_identity as windows_file_identity, open_directory_entry_by_handle,
     open_reparse_guarded as open_windows_reparse_guarded, WindowsDirectoryEntry,
     WindowsFileIdentity,
 };
