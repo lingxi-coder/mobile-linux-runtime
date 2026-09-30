@@ -188,13 +188,13 @@ async fn wait_for_exit(spawned: &mut SpawnedProcess, phase: &str) -> anyhow::Res
 #[cfg(windows)]
 async fn spawn_powershell(script: &str, size: TerminalSize) -> anyhow::Result<SpawnedProcess> {
     let cwd = std::env::current_dir()?;
-    spawn_pty_process(
+    let mut spawned = spawn_pty_process(
         "powershell.exe",
         &[
             "-NoLogo".to_owned(),
             "-NoProfile".to_owned(),
             "-Command".to_owned(),
-            script.to_owned(),
+            format!("[Console]::Out.WriteLine('__SHELL_STARTED__'); {script}"),
         ],
         &cwd,
         &environment(),
@@ -202,7 +202,17 @@ async fn spawn_powershell(script: &str, size: TerminalSize) -> anyhow::Result<Sp
         size,
         &[],
     )
-    .await
+    .await?;
+    // PowerShell cold startup can exceed the operation deadline when native
+    // PTY regressions launch concurrently on CI. Establish readiness separately;
+    // interaction, EOF, resize and termination keep their existing 15s bound.
+    read_until_with_timeout(
+        &mut spawned.stdout_rx,
+        b"__SHELL_STARTED__",
+        Duration::from_secs(60),
+    )
+    .await?;
+    Ok(spawned)
 }
 
 #[cfg(windows)]
