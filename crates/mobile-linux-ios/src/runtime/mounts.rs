@@ -52,23 +52,3 @@ impl IosIshRuntime {
         Ok(mounts)
     }
 }
-
-impl IosIshRuntime {
-    pub(super) fn isolated_mounts(
-        &self,
-        request_mounts: &[MountSpec],
-    ) -> Result<Vec<MountSpec>, MobileLinuxError> {
-        if request_mounts.is_empty() {
-            return Err(MobileLinuxError::InvalidRequest(
-                "isolated execution requires explicit mounts".into(),
-            ));
-        }
-        let mut mounts: Vec<MountSpec> = Vec::with_capacity(request_mounts.len());
-        for mount in request_mounts {
-            let normalized = validate_mount(mount, &self.state.config)?;
-            mounts.retain(|existing| existing.guest_path != normalized.guest_path);
-            mounts.push(normalized);
-        }
-        Ok(mounts)
-    }
-}

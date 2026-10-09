@@ -172,7 +172,6 @@ pub struct MountSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MountPurpose {
     Workspace,
-    LocalAppBuild,
     Memory,
     Skills,
     Shared,
@@ -577,28 +576,6 @@ pub trait MobileLinuxRuntime: Send + Sync {
         &self,
         request: LinuxCommandRequest,
     ) -> Result<LinuxCommandResult, MobileLinuxError>;
-
-    /// Run a command to completion using ONLY the mounts supplied in
-    /// `request.mounts`.
-    ///
-    /// This isolates host bind mounts from configured/default workspace and
-    /// persistent-home mounts. It does NOT isolate writes inside the shared
-    /// managed rootfs; callers that need filesystem write isolation must still
-    /// provision a separate writable rootfs layer.
-    ///
-    /// This entry point is reserved for the local-app builder's single
-    /// `LocalAppBuild` project mount. Platform implementations reject empty,
-    /// additional, or differently purposed mount sets.
-    ///
-    /// The default implementation fails closed so an isolated request is never
-    /// silently downgraded into the ordinary merged-mount execution path.
-    async fn run_isolated(
-        &self,
-        request: LinuxCommandRequest,
-    ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        let _ = request;
-        Err(MobileLinuxError::Unsupported)
-    }
 
     /// Run a command while streaming its output.
     async fn run_streaming(
@@ -1044,33 +1021,6 @@ mod tests {
             .await
             .expect_err("pty must fail");
         assert!(matches!(err, MobileLinuxError::Unavailable(_)));
-    }
-
-    #[tokio::test]
-    async fn default_run_isolated_fails_closed() {
-        let runtime = UnavailableMobileLinuxRuntime::unavailable(
-            SandboxBackend::IosIsh,
-            MobileLinuxRuntimeMode::MobileLinux,
-            "ios",
-            "arm64",
-            "runtime assets not linked",
-        );
-
-        let err = runtime
-            .run_isolated(LinuxCommandRequest {
-                command: "/bin/true".to_string(),
-                args: vec![],
-                cwd: None,
-                env: BTreeMap::new(),
-                stdin: None,
-                timeout_ms: None,
-                network: NetworkPolicy::Allowed,
-                resource_limits: ResourceLimits::default(),
-                mounts: vec![],
-            })
-            .await
-            .expect_err("isolated run must fail closed");
-        assert!(matches!(err, MobileLinuxError::Unsupported));
     }
 
     #[tokio::test]

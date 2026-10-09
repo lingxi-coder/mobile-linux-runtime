@@ -280,28 +280,6 @@ async fn foreground_timeout_kills_then_drains_before_reporting_timeout() {
     );
 }
 
-#[tokio::test]
-async fn isolated_foreground_preserves_mount_scope_and_exact_terminal_output() {
-    let temp = tempfile::tempdir().unwrap();
-    let (runtime, transport) = process_test_runtime(&temp);
-    transport
-        .events
-        .lock()
-        .unwrap()
-        .extend(TestProcessTransport::completion(false));
-    let mut request = command_request();
-    request.mounts = vec![runtime.state.config.default_workspace_mount()];
-    let result = bounded(runtime.run_isolated(request)).await.unwrap();
-    assert_eq!(result.stdout, "exact\0tail");
-    assert_eq!(result.stderr, "warn\0");
-    assert!(!result.cancelled);
-    assert_eq!(result.enforcement, LinuxEnforcementReceipt::default());
-    let request = transport.request.lock().unwrap().clone().unwrap();
-    assert_eq!(request["include_default_mounts"], false);
-    assert_eq!(request["mounts"].as_array().unwrap().len(), 1);
-    assert!(!transport.alive.load(Ordering::Acquire));
-}
-
 struct BlockingSink(tokio::sync::Notify);
 
 #[async_trait]
@@ -484,7 +462,7 @@ fn streaming_capture_is_bounded_without_truncating_utf8() {
 }
 
 #[test]
-fn run_request_payload_marks_isolated_runs_as_request_only() {
+fn run_request_payload_can_exclude_default_mounts() {
     let request = command_request();
     let payload = RunRequestPayload::from_request(&request, &[], false);
     let json = serde_json::to_value(&payload).expect("serialize payload");

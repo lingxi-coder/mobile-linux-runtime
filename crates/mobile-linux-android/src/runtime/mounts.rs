@@ -6,9 +6,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::{
-    requested_memory_limit_bytes, AndroidProotRuntime, ForegroundMountMode, IsolatedBuildProfile,
-};
+use super::{requested_memory_limit_bytes, AndroidProotRuntime, ForegroundMountMode};
 
 pub(super) fn check_snapshot_cancelled(cancelled: &AtomicBool) -> Result<(), MobileLinuxError> {
     if cancelled.load(Ordering::Acquire) {
@@ -178,22 +176,6 @@ impl AndroidProotRuntime {
         request_mounts: &[MountSpec],
         mode: ForegroundMountMode,
     ) -> Result<Vec<MountSpec>, MobileLinuxError> {
-        if matches!(mode, ForegroundMountMode::RequestOnly) {
-            validate_isolated_local_app_mounts(
-                request_mounts,
-                &self.state.config.managed_root,
-                &self.state.config.app_sandbox_root,
-                self.state
-                    .config
-                    .isolated_build_profile
-                    .as_ref()
-                    .ok_or_else(|| {
-                        MobileLinuxError::InvalidRequest(
-                            "isolated build profile is not configured".into(),
-                        )
-                    })?,
-            )?;
-        }
         let mut mounts = match mode {
             ForegroundMountMode::Merged => self
                 .state
@@ -201,9 +183,7 @@ impl AndroidProotRuntime {
                 .read()
                 .expect("mobile-linux mounts rwlock")
                 .clone(),
-            ForegroundMountMode::RequestOnly | ForegroundMountMode::ExplicitOnly => {
-                Vec::with_capacity(request_mounts.len())
-            }
+            ForegroundMountMode::ExplicitOnly => Vec::with_capacity(request_mounts.len()),
         };
         for mount in request_mounts {
             validate_mount(mount, &self.state.config.managed_root)?;
@@ -214,11 +194,7 @@ impl AndroidProotRuntime {
     }
 }
 
-pub(super) fn validate_request(
-    request: &LinuxCommandRequest,
-    isolated_local_app_build_mounts: Option<&[MountSpec]>,
-    profile: Option<&IsolatedBuildProfile>,
-) -> Result<(), MobileLinuxError> {
+pub(super) fn validate_request(request: &LinuxCommandRequest) -> Result<(), MobileLinuxError> {
     if request.command.trim().is_empty() || request.command.as_bytes().contains(&0) {
         return Err(MobileLinuxError::InvalidRequest(
             "command must not be empty or contain NUL".to_string(),
@@ -238,7 +214,7 @@ pub(super) fn validate_request(
             ));
         }
     }
-    validate_env_map(&request.env, isolated_local_app_build_mounts, profile)
+    validate_env_map(&request.env)
 }
 
 pub(super) fn validate_pty_request(request: &PtyOpenRequest) -> Result<(), MobileLinuxError> {
@@ -259,7 +235,7 @@ pub(super) fn validate_pty_request(request: &PtyOpenRequest) -> Result<(), Mobil
         }
     }
     validate_guest_path(request.cwd.as_deref().unwrap_or("/root"))?;
-    validate_env_map(&request.env, None, None)
+    validate_env_map(&request.env)
 }
 
 pub(super) fn validate_mount(
@@ -294,180 +270,7 @@ pub(super) fn validate_mount(
     Ok(())
 }
 
-pub(super) fn validate_isolated_local_app_mounts(
-    mounts: &[MountSpec],
-    managed_root: &Path,
-    app_sandbox_root: &Path,
-    profile: &IsolatedBuildProfile,
-) -> Result<(), MobileLinuxError> {
-    profile.validate()?;
-    let build_mounts: Vec<_> = mounts
-        .iter()
-        .filter(|mount| matches!(mount.purpose, MountPurpose::LocalAppBuild))
-        .collect();
-    let store_mounts: Vec<_> = mounts
-        .iter()
-        .filter(|mount| {
-            matches!(mount.purpose, MountPurpose::Shared)
-                && mount.guest_path == profile.dependency_store
-        })
-        .collect();
-    if build_mounts.len() != 1 || mounts.len() != 1 + store_mounts.len() || store_mounts.len() > 1 {
-        return Err(MobileLinuxError::InvalidRequest(
-            "isolated local-app execution requires exactly one LocalAppBuild mount and at most one validated dependency store mount".to_string(),
-        ));
-    }
-    for mount in &store_mounts {
-        let host = mount.host_path.canonicalize().map_err(|error| {
-            MobileLinuxError::InvalidRequest(format!(
-                "dependency store mount is unavailable ({}): {error}",
-                mount.host_path.display()
-            ))
-        })?;
-        if !host.starts_with(app_sandbox_root) {
-            return Err(MobileLinuxError::InvalidRequest(
-                "dependency store mount must remain inside the app sandbox".to_string(),
-            ));
-        }
-    }
-    let mount = build_mounts[0];
-    let host_path = mount.host_path.canonicalize().map_err(|error| {
-        MobileLinuxError::InvalidRequest(format!(
-            "mount host path is unavailable ({}): {error}",
-            mount.host_path.display()
-        ))
-    })?;
-    let managed_root = managed_root
-        .canonicalize()
-        .unwrap_or_else(|_| managed_root.to_path_buf());
-    if host_path.starts_with(&managed_root) || managed_root.starts_with(&host_path) {
-        return Err(MobileLinuxError::InvalidRequest(
-            "mount must not expose the managed rootfs".to_string(),
-        ));
-    }
-    let (app_id, channel) = parse_local_app_build_guest_path(&mount.guest_path, profile)?;
-    let sandbox_root = app_sandbox_root
-        .canonicalize()
-        .unwrap_or_else(|_| app_sandbox_root.to_path_buf());
-    let expected = sandbox_root
-        .join(&profile.host_apps_directory)
-        .join(app_id)
-        .join(&profile.host_build_directory)
-        .join(channel);
-    let workspace = sandbox_root
-        .join(&profile.host_apps_directory)
-        .join(app_id)
-        .join(&profile.host_workspace_directory);
-    if host_path != workspace
-        && host_path != expected
-        && !local_app_build_host_path_matches(&host_path, &expected, channel)
-    {
-        return Err(MobileLinuxError::InvalidRequest(format!(
-            "local-app build mount host_path must match {} or workspace {} or its .{channel}.staging-<numeric nonce> sibling (got {})",
-            expected.display(), workspace.display(),
-            host_path.display()
-        )));
-    }
-    Ok(())
-}
-
-pub(super) fn local_app_build_host_path_matches(
-    host_path: &Path,
-    expected_host_path: &Path,
-    channel: &str,
-) -> bool {
-    if host_path == expected_host_path {
-        return true;
-    }
-    if host_path.parent() != expected_host_path.parent() {
-        return false;
-    }
-    let staging_prefix = format!(".{channel}.staging-");
-    let Some(nonce) = host_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix(staging_prefix.as_str()))
-    else {
-        return false;
-    };
-    !nonce.is_empty() && nonce.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-pub(super) fn parse_local_app_build_guest_path<'a>(
-    path: &'a str,
-    profile: &IsolatedBuildProfile,
-) -> Result<(&'a str, &'a str), MobileLinuxError> {
-    profile.validate()?;
-    let relative = path
-        .strip_prefix(profile.guest_root.as_str())
-        .and_then(|suffix| suffix.strip_prefix('/'))
-        .ok_or_else(|| {
-            MobileLinuxError::InvalidRequest(format!(
-                "local-app build guest_path must be {}/<app-id>/<channel>/project",
-                profile.guest_root.as_str()
-            ))
-        })?;
-    let mut segments = relative.split('/');
-    let app_id = segments.next().unwrap_or_default();
-    let channel = segments.next().unwrap_or_default();
-    let project = segments.next().unwrap_or_default();
-    if segments.next().is_some()
-        || !is_valid_local_app_id(app_id)
-        || !profile.channels.iter().any(|allowed| allowed == channel)
-        || project != profile.project_directory
-    {
-        return Err(MobileLinuxError::InvalidRequest(format!(
-            "local-app build guest_path must be {}/<app-id>/<store|full>/project",
-            profile.guest_root.as_str()
-        )));
-    }
-    Ok((app_id, channel))
-}
-
-pub(super) fn is_valid_local_app_id(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= 64
-        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
-        && bytes[1..]
-            .iter()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
-}
-
-pub(super) fn validate_env_map(
-    env: &BTreeMap<String, String>,
-    isolated_local_app_build_mounts: Option<&[MountSpec]>,
-    profile: Option<&IsolatedBuildProfile>,
-) -> Result<(), MobileLinuxError> {
-    let fixed_local_app_build_env = isolated_local_app_build_mounts
-        .map(|mounts| {
-            expected_local_app_build_env(
-                mounts,
-                profile.ok_or_else(|| {
-                    MobileLinuxError::InvalidRequest(
-                        "isolated build profile is not configured".into(),
-                    )
-                })?,
-            )
-        })
-        .transpose()?;
-    if let Some(expected_env) = fixed_local_app_build_env.as_ref() {
-        for (key, expected_value) in expected_env {
-            match env.get(key) {
-                Some(value) if value == expected_value => {}
-                Some(_) => {
-                    return Err(MobileLinuxError::InvalidRequest(format!(
-                        "isolated local-app build environment variable {key} must equal {expected_value}"
-                    )))
-                }
-                None => {
-                    return Err(MobileLinuxError::InvalidRequest(format!(
-                        "isolated local-app build requires environment variable {key}"
-                    )))
-                }
-            }
-        }
-    }
+pub(super) fn validate_env_map(env: &BTreeMap<String, String>) -> Result<(), MobileLinuxError> {
     for (key, value) in env {
         if key.is_empty() || key.contains('=') || key.as_bytes().contains(&0) {
             return Err(MobileLinuxError::InvalidRequest(format!(
@@ -479,13 +282,6 @@ pub(super) fn validate_env_map(
                 "environment variable value contains NUL: {key}"
             )));
         }
-        if let Some(expected_value) = fixed_local_app_build_env
-            .as_ref()
-            .and_then(|expected| expected.get(key))
-        {
-            debug_assert_eq!(value, expected_value);
-            continue;
-        }
         if is_host_reserved_env_var(key) {
             return Err(MobileLinuxError::InvalidRequest(format!(
                 "host-reserved environment variable: {key}"
@@ -493,38 +289,6 @@ pub(super) fn validate_env_map(
         }
     }
     Ok(())
-}
-
-pub(super) fn expected_local_app_build_env(
-    mounts: &[MountSpec],
-    profile: &IsolatedBuildProfile,
-) -> Result<BTreeMap<String, String>, MobileLinuxError> {
-    let mount = mounts
-        .iter()
-        .find(|mount| matches!(mount.purpose, MountPurpose::LocalAppBuild))
-        .ok_or_else(|| {
-            MobileLinuxError::InvalidRequest("missing LocalAppBuild mount".to_string())
-        })?;
-    parse_local_app_build_guest_path(&mount.guest_path, profile)?;
-    let build_state_root = format!("{}/{}", mount.guest_path, profile.state_directory);
-    Ok(BTreeMap::from([
-        ("HOME".into(), format!("{build_state_root}/home")),
-        ("TMPDIR".into(), format!("{build_state_root}/tmp")),
-        ("TMP".into(), format!("{build_state_root}/tmp")),
-        ("TEMP".into(), format!("{build_state_root}/tmp")),
-        (
-            "XDG_CACHE_HOME".into(),
-            format!("{build_state_root}/xdg-cache"),
-        ),
-        (
-            "XDG_CONFIG_HOME".into(),
-            format!("{build_state_root}/xdg-config"),
-        ),
-        (
-            "XDG_DATA_HOME".into(),
-            format!("{build_state_root}/xdg-data"),
-        ),
-    ]))
 }
 
 pub(super) fn is_host_reserved_env_var(key: &str) -> bool {

@@ -1,7 +1,4 @@
-use super::mounts::{
-    expected_local_app_build_env, parse_local_app_build_guest_path, snapshot_read_only_mounts,
-    validate_request,
-};
+use super::mounts::{snapshot_read_only_mounts, validate_request};
 use super::process::{enforced_network_policy_name, requested_memory_limit_bytes};
 use async_trait::async_trait;
 use mobile_linux_api::LinuxEnforcementReceipt;
@@ -20,81 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-fn test_build_profile() -> super::IsolatedBuildProfile {
-    super::IsolatedBuildProfile {
-        guest_root: "/var/lingxi/local-app-build".into(),
-        project_directory: "project".into(),
-        dependency_store: "/var/lingxi/local-app-dependency-store".into(),
-        state_directory: ".lingxi-build-state".into(),
-        host_apps_directory: "apps".into(),
-        host_build_directory: "build".into(),
-        host_workspace_directory: "workspace".into(),
-        channels: vec!["store".into(), "full".into()],
-    }
-}
-
 use super::*;
 use tempfile::TempDir;
-
-#[test]
-fn independent_profile_uses_only_caller_layout() {
-    let (temp, mut runtime) = runtime();
-    let profile = IsolatedBuildProfile {
-        guest_root: "/opt/example/builds".into(),
-        project_directory: "source".into(),
-        dependency_store: "/opt/example/dependencies".into(),
-        state_directory: ".state".into(),
-        host_apps_directory: "units".into(),
-        host_build_directory: "outputs".into(),
-        host_workspace_directory: "source".into(),
-        channels: vec!["debug".into()],
-    };
-    Arc::get_mut(&mut runtime.state)
-        .unwrap()
-        .config
-        .isolated_build_profile = Some(profile.clone());
-    let host = temp.path().join("sandbox/units/example/source");
-    fs::create_dir_all(&host).unwrap();
-    let mounts = vec![MountSpec {
-        host_path: host,
-        guest_path: "/opt/example/builds/example/debug/source".into(),
-        read_only: false,
-        purpose: MountPurpose::LocalAppBuild,
-    }];
-    runtime
-        .execution_mounts(&mounts, ForegroundMountMode::RequestOnly)
-        .unwrap();
-    let env = expected_local_app_build_env(&mounts, &profile).unwrap();
-    assert_eq!(
-        env["HOME"],
-        "/opt/example/builds/example/debug/source/.state/home"
-    );
-    assert!(parse_local_app_build_guest_path(
-        "/var/lingxi/local-app-build/example/store/project",
-        &profile
-    )
-    .is_err());
-}
-
-#[test]
-fn isolated_builds_require_explicit_profile() {
-    let (_temp, mut runtime) = runtime();
-    Arc::get_mut(&mut runtime.state)
-        .unwrap()
-        .config
-        .isolated_build_profile = None;
-    let error = runtime
-        .execution_mounts(&[], ForegroundMountMode::RequestOnly)
-        .unwrap_err();
-    assert!(error.to_string().contains("profile is not configured"));
-}
-
-#[test]
-fn build_profile_rejects_path_escape_components() {
-    let mut profile = test_build_profile();
-    profile.host_apps_directory = "../outside".into();
-    assert!(profile.validate().is_err());
-}
 
 #[test]
 fn native_library_directory_is_explicit_and_not_host_library_named() {
@@ -140,7 +64,6 @@ fn runtime() -> (TempDir, AndroidProotRuntime) {
     }
     let runtime = AndroidProotRuntime::new(AndroidProotRuntimeConfig {
         native_library_dir: None,
-        isolated_build_profile: Some(test_build_profile()),
         managed_root: managed,
         app_sandbox_root: temp.path().join("sandbox"),
         abi: "x86_64".to_string(),
@@ -1022,39 +945,10 @@ async fn raw_memory_limit_without_rss_support_never_returns_an_enforced_receipt(
     ));
 }
 
-fn local_app_build_host(temp: &TempDir, app_id: &str, channel: &str) -> PathBuf {
-    let path = temp
-        .path()
-        .join("sandbox")
-        .join("apps")
-        .join(app_id)
-        .join("build")
-        .join(channel);
-    fs::create_dir_all(&path).expect("local-app build host");
+fn request_mount_host(temp: &TempDir) -> PathBuf {
+    let path = temp.path().join("sandbox").join("extra");
+    fs::create_dir_all(&path).expect("request mount host");
     path
-}
-
-fn fixed_local_app_build_env(app_id: &str, channel: &str) -> (String, BTreeMap<String, String>) {
-    let project_guest_path = format!("/var/lingxi/local-app-build/{app_id}/{channel}/project");
-    let build_state_root = format!("{project_guest_path}/.lingxi-build-state");
-    let mut env = BTreeMap::new();
-    env.insert("HOME".into(), format!("{build_state_root}/home"));
-    env.insert("TMPDIR".into(), format!("{build_state_root}/tmp"));
-    env.insert("TMP".into(), format!("{build_state_root}/tmp"));
-    env.insert("TEMP".into(), format!("{build_state_root}/tmp"));
-    env.insert(
-        "XDG_CACHE_HOME".into(),
-        format!("{build_state_root}/xdg-cache"),
-    );
-    env.insert(
-        "XDG_CONFIG_HOME".into(),
-        format!("{build_state_root}/xdg-config"),
-    );
-    env.insert(
-        "XDG_DATA_HOME".into(),
-        format!("{build_state_root}/xdg-data"),
-    );
-    (project_guest_path, env)
 }
 
 #[test]
@@ -1100,7 +994,6 @@ async fn missing_payload_fails_closed_without_legacy_fallback() {
     let temp = tempfile::tempdir().expect("temp");
     let runtime = AndroidProotRuntime::new(AndroidProotRuntimeConfig {
         native_library_dir: None,
-        isolated_build_profile: Some(test_build_profile()),
         managed_root: temp.path().join("missing"),
         app_sandbox_root: temp.path().join("sandbox"),
         abi: "x86_64".to_string(),
@@ -1134,7 +1027,7 @@ async fn mount_validation_rejects_managed_root_and_traversal() {
 fn merged_execution_mounts_keep_configured_binds() {
     let (temp, runtime) = runtime();
     let workspace_host = temp.path().join("workspace");
-    let build_host = local_app_build_host(&temp, "app", "store");
+    let build_host = request_mount_host(&temp);
     fs::create_dir_all(&workspace_host).expect("workspace host");
     runtime
         .state
@@ -1151,9 +1044,9 @@ fn merged_execution_mounts_keep_configured_binds() {
         .execution_mounts(
             &[MountSpec {
                 host_path: build_host,
-                guest_path: "/var/lingxi/local-app-build/app/store/project".to_string(),
+                guest_path: "/workspace/extra".to_string(),
                 read_only: false,
-                purpose: MountPurpose::LocalAppBuild,
+                purpose: MountPurpose::External,
             }],
             ForegroundMountMode::Merged,
         )
@@ -1163,147 +1056,8 @@ fn merged_execution_mounts_keep_configured_binds() {
         .iter()
         .any(|mount| mount.guest_path == "/workspace/default"));
     assert!(mounts.iter().any(|mount| {
-        mount.guest_path == "/var/lingxi/local-app-build/app/store/project"
-            && matches!(mount.purpose, MountPurpose::LocalAppBuild)
+        mount.guest_path == "/workspace/extra" && matches!(mount.purpose, MountPurpose::External)
     }));
-}
-
-#[test]
-fn isolated_execution_mounts_drop_configured_binds_but_keep_request_mounts() {
-    let (temp, runtime) = runtime();
-    let workspace_host = temp.path().join("workspace");
-    let build_host = local_app_build_host(&temp, "app", "store");
-    fs::create_dir_all(&workspace_host).expect("workspace host");
-    runtime
-        .state
-        .mounts
-        .write()
-        .expect("mounts rwlock")
-        .push(MountSpec {
-            host_path: workspace_host,
-            guest_path: "/workspace/default".to_string(),
-            read_only: false,
-            purpose: MountPurpose::Workspace,
-        });
-    let mounts = runtime
-        .execution_mounts(
-            &[MountSpec {
-                host_path: build_host,
-                guest_path: "/var/lingxi/local-app-build/app/store/project".to_string(),
-                read_only: false,
-                purpose: MountPurpose::LocalAppBuild,
-            }],
-            ForegroundMountMode::RequestOnly,
-        )
-        .expect("isolated mounts");
-    assert_eq!(mounts.len(), 1);
-    assert_eq!(
-        mounts[0].guest_path,
-        "/var/lingxi/local-app-build/app/store/project"
-    );
-    assert!(matches!(mounts[0].purpose, MountPurpose::LocalAppBuild));
-}
-
-#[test]
-fn isolated_execution_mounts_require_exactly_one_local_app_build_mount() {
-    let (temp, runtime) = runtime();
-    let build_host = local_app_build_host(&temp, "app", "store");
-    let extra_host = temp.path().join("workspace");
-    fs::create_dir_all(&extra_host).expect("workspace host");
-
-    let error = runtime
-        .execution_mounts(
-            &[
-                MountSpec {
-                    host_path: build_host.clone(),
-                    guest_path: "/var/lingxi/local-app-build/app/store/project".to_string(),
-                    read_only: false,
-                    purpose: MountPurpose::LocalAppBuild,
-                },
-                MountSpec {
-                    host_path: extra_host,
-                    guest_path: "/workspace/default".to_string(),
-                    read_only: false,
-                    purpose: MountPurpose::Workspace,
-                },
-            ],
-            ForegroundMountMode::RequestOnly,
-        )
-        .expect_err("extra mounts must be rejected");
-    assert!(error
-        .to_string()
-        .contains("exactly one LocalAppBuild mount"));
-}
-
-#[test]
-fn isolated_execution_mounts_reject_wrong_host_or_guest_shape() {
-    let (temp, runtime) = runtime();
-    let wrong_guest_host = local_app_build_host(&temp, "app", "store");
-    let error = runtime
-        .execution_mounts(
-            &[MountSpec {
-                host_path: wrong_guest_host,
-                guest_path: "/workspace/default".to_string(),
-                read_only: false,
-                purpose: MountPurpose::LocalAppBuild,
-            }],
-            ForegroundMountMode::RequestOnly,
-        )
-        .expect_err("wrong guest path must be rejected");
-    assert!(error.to_string().contains("guest_path must be"));
-
-    let wrong_host = temp
-        .path()
-        .join("sandbox")
-        .join("apps")
-        .join("other")
-        .join("build")
-        .join("store");
-    fs::create_dir_all(&wrong_host).expect("wrong host");
-    let error = runtime
-        .execution_mounts(
-            &[MountSpec {
-                host_path: wrong_host,
-                guest_path: "/var/lingxi/local-app-build/app/store/project".to_string(),
-                read_only: false,
-                purpose: MountPurpose::LocalAppBuild,
-            }],
-            ForegroundMountMode::RequestOnly,
-        )
-        .expect_err("wrong host app id must be rejected");
-    assert!(error.to_string().contains(&format!(
-        "{}/apps/app/build/store",
-        runtime.state.config.app_sandbox_root.display()
-    )));
-}
-
-#[test]
-fn isolated_execution_mounts_reject_same_suffix_outside_app_sandbox_root() {
-    let (temp, runtime) = runtime();
-    let wrong_host = temp
-        .path()
-        .join("other-root")
-        .join("apps")
-        .join("app")
-        .join("build")
-        .join("store");
-    fs::create_dir_all(&wrong_host).expect("wrong host");
-
-    let error = runtime
-        .execution_mounts(
-            &[MountSpec {
-                host_path: wrong_host,
-                guest_path: "/var/lingxi/local-app-build/app/store/project".to_string(),
-                read_only: false,
-                purpose: MountPurpose::LocalAppBuild,
-            }],
-            ForegroundMountMode::RequestOnly,
-        )
-        .expect_err("same suffix outside sandbox root must be rejected");
-    assert!(error.to_string().contains(&format!(
-        "{}/apps/app/build/store",
-        runtime.state.config.app_sandbox_root.display()
-    )));
 }
 
 #[test]
@@ -1445,7 +1199,7 @@ async fn loopback_network_fails_before_guest_spawn_without_policy_launcher() {
 fn loopback_only_is_admitted_for_sockaddr_aware_proot_enforcement() {
     let mut request = request();
     request.network = NetworkPolicy::LoopbackOnly;
-    validate_request(&request, None, None).expect("LoopbackOnly is supported");
+    validate_request(&request).expect("LoopbackOnly is supported");
     assert_eq!(
         enforced_network_policy_name(request.network),
         Some("loopback_only")
@@ -1455,83 +1209,13 @@ fn loopback_only_is_admitted_for_sockaddr_aware_proot_enforcement() {
 #[test]
 fn ordinary_requests_reject_build_state_env_overrides() {
     let mut request = request();
-    request.env.insert(
-        "HOME".into(),
-        "/var/lingxi/local-app-build/app/store/project/.lingxi-build-state/home".into(),
-    );
-    let error =
-        validate_request(&request, None, None).expect_err("ordinary requests must reject HOME");
+    request
+        .env
+        .insert("HOME".into(), "/workspace/extra/home".into());
+    let error = validate_request(&request).expect_err("ordinary requests must reject HOME");
     assert!(error
         .to_string()
         .contains("host-reserved environment variable"));
-}
-
-#[tokio::test]
-async fn isolated_local_app_build_accepts_fixed_build_env() {
-    let (temp, runtime) = runtime();
-    let build_host = local_app_build_host(&temp, "app", "store");
-    let (project_guest_path, env) = fixed_local_app_build_env("app", "store");
-    let mut request = request();
-    request.command = "/bin/sh".into();
-    request.args = vec![
-        "-c".into(),
-        "printf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s' \
-$HOME \"$TMPDIR\" \"$TMP\" \"$TEMP\" \"$XDG_CACHE_HOME\" \"$XDG_CONFIG_HOME\" \
-\"$XDG_DATA_HOME\""
-            .into(),
-    ];
-    request.cwd = Some(project_guest_path.clone());
-    request.env = env.clone();
-    request.mounts = vec![MountSpec {
-        host_path: build_host,
-        guest_path: project_guest_path,
-        read_only: false,
-        purpose: MountPurpose::LocalAppBuild,
-    }];
-
-    let result = runtime.run_isolated(request).await.expect("isolated run");
-    let stdout_lines: Vec<_> = result.stdout.lines().collect();
-    assert_eq!(stdout_lines.len(), env.len());
-    let expected = [
-        "HOME",
-        "TMPDIR",
-        "TMP",
-        "TEMP",
-        "XDG_CACHE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
-    ]
-    .into_iter()
-    .map(|key| {
-        env.get(key)
-            .expect("fixed local-app build env key")
-            .as_str()
-    })
-    .collect::<Vec<_>>();
-    assert_eq!(stdout_lines, expected);
-}
-
-#[test]
-fn isolated_local_app_build_rejects_incomplete_fixed_build_env() {
-    let (project_guest_path, fixed_env) = fixed_local_app_build_env("app", "store");
-    for missing_key in fixed_env.keys() {
-        let mut request = request();
-        request.cwd = Some(project_guest_path.clone());
-        request.env = fixed_env.clone();
-        request.env.remove(missing_key);
-        request.mounts = vec![MountSpec {
-            host_path: PathBuf::from("/tmp/lingxi-local-app-build"),
-            guest_path: project_guest_path.clone(),
-            read_only: false,
-            purpose: MountPurpose::LocalAppBuild,
-        }];
-
-        let error = validate_request(&request, Some(&request.mounts), Some(&test_build_profile()))
-            .expect_err("isolated builds require the complete fixed environment");
-        assert!(error.to_string().contains(&format!(
-            "isolated local-app build requires environment variable {missing_key}"
-        )));
-    }
 }
 
 #[tokio::test]

@@ -118,16 +118,7 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         &self,
         request: LinuxCommandRequest,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.run_inner(request, None, ForegroundMountMode::Merged)
-            .await
-    }
-
-    async fn run_isolated(
-        &self,
-        request: LinuxCommandRequest,
-    ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.run_inner(request, None, ForegroundMountMode::RequestOnly)
-            .await
+        self.run_inner(request, None).await
     }
 
     async fn run_streaming(
@@ -135,8 +126,7 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         request: LinuxCommandRequest,
         sink: Arc<dyn ProcessStreamSink>,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.run_inner(request, Some(sink), ForegroundMountMode::Merged)
-            .await
+        self.run_inner(request, Some(sink)).await
     }
 
     async fn spawn_background(

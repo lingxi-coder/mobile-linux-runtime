@@ -203,7 +203,6 @@ impl MountPayload {
             read_only: mount.read_only,
             purpose: match mount.purpose {
                 MountPurpose::Workspace => "workspace",
-                MountPurpose::LocalAppBuild => "local_app_build",
                 MountPurpose::Memory => "memory",
                 MountPurpose::Skills => "skills",
                 MountPurpose::Shared => "shared",

@@ -49,12 +49,6 @@ const BACKGROUND_IDLE_POLL: Duration = Duration::from_millis(25);
 
 const BACKGROUND_REAP_BUDGET: Duration = Duration::from_secs(3);
 
-#[derive(Clone, Copy)]
-enum ForegroundMountMode {
-    Merged,
-    RequestOnly,
-}
-
 #[derive(Debug)]
 struct TaskControl {
     snapshot: Mutex<MobileLinuxTaskSnapshot>,

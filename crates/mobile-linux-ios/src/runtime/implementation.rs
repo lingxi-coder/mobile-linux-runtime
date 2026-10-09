@@ -16,8 +16,8 @@ use tokio::task::spawn_blocking;
 use super::{
     display_command, encode_base64, filesystem_rootfs_state, native, parse_native_ok,
     parse_raw_stdio_read_response, raw_stdio_close_progress, validate_mount, validate_pty_request,
-    validate_request, ForegroundMountMode, IosIshRuntime, PtyControl, RawStdioNativeOperation,
-    RawStdioRequestPayload, BACKGROUND_REAP_BUDGET,
+    validate_request, IosIshRuntime, PtyControl, RawStdioNativeOperation, RawStdioRequestPayload,
+    BACKGROUND_REAP_BUDGET,
 };
 
 #[async_trait]
@@ -136,16 +136,7 @@ impl MobileLinuxRuntime for IosIshRuntime {
         &self,
         request: LinuxCommandRequest,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.run_inner(request, ForegroundMountMode::Merged, None)
-            .await
-    }
-
-    async fn run_isolated(
-        &self,
-        request: LinuxCommandRequest,
-    ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.run_inner(request, ForegroundMountMode::RequestOnly, None)
-            .await
+        self.run_inner(request, None).await
     }
 
     async fn run_streaming(
@@ -153,8 +144,7 @@ impl MobileLinuxRuntime for IosIshRuntime {
         request: LinuxCommandRequest,
         sink: Arc<dyn ProcessStreamSink>,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
-        self.run_inner(request, ForegroundMountMode::Merged, Some(sink))
-            .await
+        self.run_inner(request, Some(sink)).await
     }
 
     async fn spawn_background(

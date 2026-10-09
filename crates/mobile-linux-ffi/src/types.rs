@@ -56,7 +56,6 @@ pub struct MobileLinuxStatusFfi {
 #[derive(uniffi::Enum, Debug, Clone, Copy)]
 pub enum MobileLinuxMountPurposeFfi {
     Workspace,
-    LocalAppBuild,
     Memory,
     Skills,
     Shared,

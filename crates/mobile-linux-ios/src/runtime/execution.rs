@@ -11,8 +11,8 @@ use tokio::task::spawn_blocking;
 use super::{
     cap_capture, decode_base64, display_command, native, native_error_to_mobile,
     parse_loopback_probe, validate_request, wait_process_deadline, wait_task_cancel,
-    ForegroundCancellation, ForegroundMountMode, IosIshRuntime, LoopbackProbePayload,
-    NativeProcessStart, TaskControl, BACKGROUND_IDLE_POLL, BACKGROUND_REAP_BUDGET,
+    ForegroundCancellation, IosIshRuntime, LoopbackProbePayload, NativeProcessStart, TaskControl,
+    BACKGROUND_IDLE_POLL, BACKGROUND_REAP_BUDGET,
 };
 
 impl IosIshRuntime {
@@ -53,7 +53,6 @@ impl IosIshRuntime {
     pub(super) async fn run_inner(
         &self,
         request: LinuxCommandRequest,
-        mount_mode: ForegroundMountMode,
         sink: Option<Arc<dyn ProcessStreamSink>>,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
         self.ensure_session_open()?;
@@ -64,13 +63,8 @@ impl IosIshRuntime {
         // spawn_blocking is pending cannot release the lifecycle too early.
         let startup = self.state.lifecycle.clone().lock_owned().await;
         self.ensure_session_open()?;
-        let mounts = match mount_mode {
-            ForegroundMountMode::Merged => self.merged_mounts(&request.mounts)?,
-            ForegroundMountMode::RequestOnly => self.isolated_mounts(&request.mounts)?,
-        };
-        if matches!(mount_mode, ForegroundMountMode::Merged) {
-            self.apply_mounts(&mounts).await?;
-        }
+        let mounts = self.merged_mounts(&request.mounts)?;
+        self.apply_mounts(&mounts).await?;
         let (task_id, task) = self.create_task(
             "task",
             display_command(&request.command, &request.args),
@@ -84,11 +78,7 @@ impl IosIshRuntime {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let started = runtime
-                .native_spawn_background(
-                    &request,
-                    &mounts,
-                    matches!(mount_mode, ForegroundMountMode::Merged),
-                )
+                .native_spawn_background(&request, &mounts, true)
                 .await;
             if let Ok(start) = &started {
                 *task

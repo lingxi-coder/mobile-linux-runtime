@@ -27,13 +27,8 @@ impl AndroidProotRuntime {
         &self,
         request: &LinuxCommandRequest,
         mounts: &[MountSpec],
-        isolated_local_app_build_mounts: Option<&[MountSpec]>,
     ) -> Result<SpawnedChild, MobileLinuxError> {
-        validate_request(
-            request,
-            isolated_local_app_build_mounts,
-            self.state.config.isolated_build_profile.as_ref(),
-        )?;
+        validate_request(request)?;
         let memory_limit_bytes = requested_memory_limit_bytes(request)?;
         if memory_limit_bytes.is_some() {
             ensure_process_group_rss_available()?;
@@ -215,7 +210,7 @@ impl AndroidProotRuntime {
         request: &LinuxCommandRequest,
     ) -> Result<SpawnedChild, MobileLinuxError> {
         let mounts = self.execution_mounts(&request.mounts, ForegroundMountMode::Merged)?;
-        self.spawn_child_with_mounts(request, &mounts, None).await
+        self.spawn_child_with_mounts(request, &mounts).await
     }
 }
 
@@ -224,10 +219,9 @@ impl AndroidProotRuntime {
         &self,
         request: LinuxCommandRequest,
         sink: Option<Arc<dyn ProcessStreamSink>>,
-        mount_mode: ForegroundMountMode,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
         self.prepare_execution()?;
-        let mounts = self.execution_mounts(&request.mounts, mount_mode)?;
+        let mounts = self.execution_mounts(&request.mounts, ForegroundMountMode::Merged)?;
         let (id, task) = self.create_task(
             "task",
             display_command(&request.command, &request.args),
@@ -246,7 +240,7 @@ impl AndroidProotRuntime {
         // child and publish a terminal task instead of detaching its drains.
         tokio::spawn(async move {
             let result = runtime
-                .run_owned(request, sink, mount_mode, mounts, (&id, &task), stopped)
+                .run_owned(request, sink, mounts, (&id, &task), stopped)
                 .await;
             if let Err(error) = &result {
                 runtime.finish_task(
@@ -276,18 +270,12 @@ impl AndroidProotRuntime {
         &self,
         request: LinuxCommandRequest,
         sink: Option<Arc<dyn ProcessStreamSink>>,
-        mount_mode: ForegroundMountMode,
         mounts: Vec<MountSpec>,
         task: (&str, &Arc<TaskControl>),
         mut stopped: tokio::sync::watch::Receiver<bool>,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
         let (id, task) = task;
-        let isolated_local_app_build_mounts =
-            matches!(mount_mode, ForegroundMountMode::RequestOnly).then_some(mounts.as_slice());
-        let spawned = match self
-            .spawn_child_with_mounts(&request, &mounts, isolated_local_app_build_mounts)
-            .await
-        {
+        let spawned = match self.spawn_child_with_mounts(&request, &mounts).await {
             Ok(spawned) => spawned,
             Err(error) => {
                 self.finish_task(
@@ -670,8 +658,7 @@ pub(super) fn requested_memory_limit_bytes(
         || limits.max_open_files.is_some()
     {
         return Err(MobileLinuxError::ResourceLimitExceeded(
-            "Android PRoot currently enforces only max_memory_mb for local-app commands"
-                .to_string(),
+            "Android PRoot currently enforces only max_memory_mb".to_string(),
         ));
     }
     match limits.max_memory_mb {

@@ -12,10 +12,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, ChildStdin};
 
-pub use config::{AndroidProotRuntimeConfig, IsolatedBuildProfile};
+pub use config::AndroidProotRuntimeConfig;
 use mounts::{
-    check_snapshot_cancelled, snapshot_read_only_mounts, validate_guest_path, validate_mount,
-    validate_pty_request, validate_request,
+    check_snapshot_cancelled, snapshot_read_only_mounts, validate_mount, validate_pty_request,
+    validate_request,
 };
 use process::{requested_memory_limit_bytes, terminate_and_reap, terminate_group, wait_for_child};
 use raw_stdio::{raw_stdin_closed, wait_raw_stop};
@@ -207,7 +207,6 @@ struct SpawnedChild {
 #[derive(Clone, Copy)]
 enum ForegroundMountMode {
     Merged,
-    RequestOnly,
     ExplicitOnly,
 }
 

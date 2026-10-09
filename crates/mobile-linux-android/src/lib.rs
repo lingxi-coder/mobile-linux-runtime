@@ -8,4 +8,4 @@
 
 mod runtime;
 
-pub use runtime::{AndroidProotRuntime, AndroidProotRuntimeConfig, IsolatedBuildProfile};
+pub use runtime::{AndroidProotRuntime, AndroidProotRuntimeConfig};

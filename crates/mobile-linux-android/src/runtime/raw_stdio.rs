@@ -125,7 +125,7 @@ impl AndroidProotRuntime {
             mounts: mounts.clone(),
         };
         let spawned = match self
-            .spawn_child_with_mounts(&command_request, &mounts, None)
+            .spawn_child_with_mounts(&command_request, &mounts)
             .await
         {
             Ok(spawned) => spawned,

@@ -361,7 +361,6 @@ pub fn create_runtime(config: RuntimeConfig) -> Result<Arc<RuntimeHandle>, Mobil
                 rootfs_version: config.rootfs_version.clone(),
                 archive_sha256: config.archive_sha256.clone(),
                 native_library_dir: config.native_library_dir.clone().map(PathBuf::from),
-                isolated_build_profile: None,
             },
         );
         return Ok(Arc::new(RuntimeHandle {

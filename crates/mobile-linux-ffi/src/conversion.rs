@@ -89,7 +89,6 @@ pub(crate) fn mount_purpose_to_traits(
 ) -> platform_api::MountPurpose {
     match value {
         MobileLinuxMountPurposeFfi::Workspace => platform_api::MountPurpose::Workspace,
-        MobileLinuxMountPurposeFfi::LocalAppBuild => platform_api::MountPurpose::LocalAppBuild,
         MobileLinuxMountPurposeFfi::Memory => platform_api::MountPurpose::Memory,
         MobileLinuxMountPurposeFfi::Skills => platform_api::MountPurpose::Skills,
         MobileLinuxMountPurposeFfi::Shared => platform_api::MountPurpose::Shared,
