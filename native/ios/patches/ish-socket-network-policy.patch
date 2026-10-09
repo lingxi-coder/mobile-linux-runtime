@@ -232,7 +232,7 @@ index c86ac940..f339adaa 100644
      /* Static table miss — fall through to the host-provided reverse hook
       * if one is registered. The hook knows about per-context routes that
       * are not in g_bind_mounts[]. */
-@@ -276,16 +290,24 @@ static bool bind_mount_translate_path_ex(const char *path, char *out_path,
+@@ -276,17 +290,25 @@ static bool bind_mount_translate_path_ex(const char *path, char *out_path,
              return true;
          }
      }
@@ -261,3 +261,4 @@ index c86ac940..f339adaa 100644
 +    }
      return false;
  }
+ 

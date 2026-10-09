@@ -60,7 +60,7 @@
   },
   "patches": {
     "openminis-raw-stdio.patch": "04fe10dbf0965af4c2d44d49ef7a62fee6f6056ef8cef77f8e6ec5593fb50d1e",
-    "ish-socket-network-policy.patch": "2122d7284c98fc88c6b8b72570c64297d299ab7a941a20f3a879c6465003834f",
+    "ish-socket-network-policy.patch": "7353b08ada9ef393e6c1453a2cf65993054bf1e8e3e59c427399df84f7cd7d3d",
     "openminis-explicit-overlay.patch": "379880442ad6e430f782bf6f8d6c792ff81531057ba870e5ac89e316f26dbd16",
     "openminis-explicit-host-state.patch": "7db605c45e3e583fb0a22ff9c853fc0f3fbcfdfc3547c985689d762868f4c8ba",
     "ish-fakefs-utf8-locale.patch": "8fa48cbc617a843159ca568458fa03bce9681821c3e97c776010a6bfb8acc040",
