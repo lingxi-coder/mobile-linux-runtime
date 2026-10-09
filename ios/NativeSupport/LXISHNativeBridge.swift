@@ -2407,7 +2407,7 @@ private final class LXISHNativeCoordinator {
     ///
     /// `fakefs_bind_mount` registers exactly the path it binds and none of its
     /// parents, so a build mount such as
-    /// `/var/lingxi/local-app-build/<id>/store/project` would otherwise leave
+    /// `/var/lingxi/project-mounts/<id>/store/project` would otherwise leave
     /// its intermediate directories unknown to the guest and every lookup
     /// through them would return ENOENT. Mount points one level under a
     /// directory baked into the rootfs image (`/workspace/<id>`) were the only

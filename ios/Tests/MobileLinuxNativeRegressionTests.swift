@@ -377,9 +377,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             requestedMounts: [
                 LXISHMountSpec(
                     hostPath: temporaryRoot.appendingPathComponent("build-root/../build-root", isDirectory: true).path,
-                    guestPath: "/var/lingxi/local-app-build/abcd1234/store/project",
+                    guestPath: "/var/lingxi/project-mounts/abcd1234/store/project",
                     readOnly: false,
-                    purpose: "local_app_build"
+                    purpose: "external"
                 )
             ],
             config: config,
@@ -387,7 +387,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         )
 
         XCTAssertEqual(mounts.count, 1)
-        XCTAssertEqual(mounts[0].guestPath, "/var/lingxi/local-app-build/abcd1234/store/project")
+        XCTAssertEqual(mounts[0].guestPath, "/var/lingxi/project-mounts/abcd1234/store/project")
         XCTAssertEqual(
             mounts[0].hostPath,
             temporaryRoot.appendingPathComponent("build-root", isDirectory: true).path
@@ -407,9 +407,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let requestedMounts = [
             LXISHMountSpec(
                 hostPath: "/host/build",
-                guestPath: "/var/lingxi/local-app-build/abcd1234/store/project",
+                guestPath: "/var/lingxi/project-mounts/abcd1234/store/project",
                 readOnly: false,
-                purpose: "local_app_build"
+                purpose: "external"
             )
         ]
         var applied: [([String], Bool)] = []
@@ -430,7 +430,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             "/workspace/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertEqual(applied.count, 2)
-        XCTAssertEqual(applied[0].0, ["/var/lingxi/local-app-build/abcd1234/store/project"])
+        XCTAssertEqual(applied[0].0, ["/var/lingxi/project-mounts/abcd1234/store/project"])
         XCTAssertFalse(applied[0].1)
         XCTAssertEqual(applied[1].0, [
             "/root",
@@ -452,9 +452,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let requestedMounts = [
             LXISHMountSpec(
                 hostPath: "/host/build",
-                guestPath: "/var/lingxi/local-app-build/abcd1234/store/project",
+                guestPath: "/var/lingxi/project-mounts/abcd1234/store/project",
                 readOnly: false,
-                purpose: "local_app_build"
+                purpose: "external"
             )
         ]
         var applied: [([String], Bool)] = []
@@ -478,7 +478,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             "/workspace/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertEqual(applied.count, 2)
-        XCTAssertEqual(applied[0].0, ["/var/lingxi/local-app-build/abcd1234/store/project"])
+        XCTAssertEqual(applied[0].0, ["/var/lingxi/project-mounts/abcd1234/store/project"])
         XCTAssertFalse(applied[0].1)
         XCTAssertEqual(applied[1].0, [
             "/root",
@@ -503,16 +503,16 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         )
         let staleMounts = [
             LXISHMountSpec(
-                hostPath: "/private/var/containers/Bundle/Application/OLD/LingxiCode.app/local-app-runtime/node_modules",
-                guestPath: "/opt/lingxi/local-app-runtime/node_modules",
+                hostPath: "/private/var/containers/Bundle/Application/OLD/LingxiCode.app/app-runtime/node_modules",
+                guestPath: "/opt/lingxi/app-runtime/node_modules",
                 readOnly: true,
                 purpose: "shared"
             ),
             LXISHMountSpec(
                 hostPath: "/private/var/mobile/Containers/Data/Application/CURRENT/Library/Application Support/LingxiCode/apps/old-app/build/store",
-                guestPath: "/var/lingxi/local-app-build/old-app/store/project",
+                guestPath: "/var/lingxi/project-mounts/old-app/store/project",
                 readOnly: false,
-                purpose: "local_app_build"
+                purpose: "external"
             ),
         ]
         try LXISHBridgeJSON.encoder().encode(staleMounts).write(to: config.mountsCacheURL, options: .atomic)
@@ -679,14 +679,14 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let dataRoot = URL(fileURLWithPath: "/managed/alpine-rootfs/data", isDirectory: true)
 
         // A bind mount needs a directory on BOTH sides. Only the host side was
-        // created, so every local-app build mount attached to nothing.
+        // created, so every project mount attached to nothing.
         let build = LXISHRuntimeMountPlanner.guestMountPointURL(
-            for: "/var/lingxi/local-app-build/abcd1234/store/project",
+            for: "/var/lingxi/project-mounts/abcd1234/store/project",
             under: dataRoot
         )
         XCTAssertEqual(
             build?.standardizedFileURL.path,
-            "/managed/alpine-rootfs/data/var/lingxi/local-app-build/abcd1234/store/project"
+            "/managed/alpine-rootfs/data/var/lingxi/project-mounts/abcd1234/store/project"
         )
 
         XCTAssertEqual(
@@ -700,9 +700,8 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
     /// parents, so the parents are the runtime's job — and getting the set
     /// wrong is invisible until a guest lookup walks through one of them.
     ///
-    /// Keep the fixtures neutral here: the local-app build now uses a single
-    /// project mount, but the helper still needs to handle multiple unrelated
-    /// bind roots deterministically.
+    /// Keep the fixtures neutral here: the helper has to handle multiple
+    /// unrelated bind roots deterministically.
     func testGuestMountParentsCoverEveryAncestorButNotTheMountPoint() {
         let mounts = [
             LXISHMountSpec(
@@ -713,9 +712,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             ),
             LXISHMountSpec(
                 hostPath: "/host/data/apps/abcd1234/build/store",
-                guestPath: "/var/lingxi/local-app-build/abcd1234/store/project",
+                guestPath: "/var/lingxi/project-mounts/abcd1234/store/project",
                 readOnly: false,
-                purpose: "local_app_build"
+                purpose: "external"
             )
         ]
 
@@ -726,9 +725,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
                 "/var",
                 "/srv/assets",
                 "/var/lingxi",
-                "/var/lingxi/local-app-build",
-                "/var/lingxi/local-app-build/abcd1234",
-                "/var/lingxi/local-app-build/abcd1234/store"
+                "/var/lingxi/project-mounts",
+                "/var/lingxi/project-mounts/abcd1234",
+                "/var/lingxi/project-mounts/abcd1234/store"
             ],
             "shallowest first, deduplicated, and never the mount point itself"
         )

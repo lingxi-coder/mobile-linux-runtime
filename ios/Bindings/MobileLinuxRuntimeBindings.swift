@@ -2878,7 +2878,6 @@ extension MobileLinuxEventKindFfi: Equatable, Hashable {}
 
 public enum MobileLinuxMountPurposeFfi {
     case workspace
-    case localAppBuild
     case memory
     case skills
     case shared
@@ -2897,17 +2896,15 @@ public struct FfiConverterTypeMobileLinuxMountPurposeFfi: FfiConverterRustBuffer
         switch variant {
         case 1: return .workspace
 
-        case 2: return .localAppBuild
+        case 2: return .memory
 
-        case 3: return .memory
+        case 3: return .skills
 
-        case 4: return .skills
+        case 4: return .shared
 
-        case 5: return .shared
+        case 5: return .external
 
-        case 6: return .external
-
-        case 7: return .temp
+        case 6: return .temp
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -2918,23 +2915,20 @@ public struct FfiConverterTypeMobileLinuxMountPurposeFfi: FfiConverterRustBuffer
         case .workspace:
             writeInt(&buf, Int32(1))
 
-        case .localAppBuild:
+        case .memory:
             writeInt(&buf, Int32(2))
 
-        case .memory:
+        case .skills:
             writeInt(&buf, Int32(3))
 
-        case .skills:
+        case .shared:
             writeInt(&buf, Int32(4))
 
-        case .shared:
+        case .external:
             writeInt(&buf, Int32(5))
 
-        case .external:
-            writeInt(&buf, Int32(6))
-
         case .temp:
-            writeInt(&buf, Int32(7))
+            writeInt(&buf, Int32(6))
         }
     }
 }
