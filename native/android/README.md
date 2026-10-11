@@ -28,8 +28,4 @@ existing library instead and consume only this support bundle. Verify with
 uses `--source-only` and does not require an OpenMinis checkout.
 
 The Rust backend takes an explicit `native_library_dir`; it does not infer an
-application/library name. Optional `IsolatedBuildProfile` configuration supplies
-all application-specific build paths/channels. Without a profile, isolated
-application builds fail closed; normal shell/PTY/runtime operations remain
-available. Harness/LingXi adapters supply their historical profile and remain
-outside this SDK.
+application/library name.
