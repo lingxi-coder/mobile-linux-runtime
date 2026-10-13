@@ -36,3 +36,12 @@ code under other terms, including GPL/LGPL components. See the
 [iOS source pins](native/ios/sources.json), and
 [PTY notice](crates/platform-pty/NOTICE). The root licenses do not relicense those
 components.
+
+## System technical handbook / 系统技术手册
+
+Cross-layer behavior and SDK integration are maintained in the LingXi bilingual
+handbook. Local entries in a sibling checkout are
+`lingxi-app/docs/technical/en/README.md` and `lingxi-app/docs/technical/zh/README.md`.
+The [published Mobile Linux guide](https://lingxios.net/docs/mobile-linux) may lag
+behind the local working tree; inspect its source baseline. This repository keeps
+its SDK integration, resource provenance and release-specific evidence.
