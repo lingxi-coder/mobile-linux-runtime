@@ -147,7 +147,7 @@ fn candidate_archive_stages_verifies_and_activates_real_tree() {
     assert_eq!(status.state, mobile_linux_api::RootfsState::Ready);
     let report = store.verify_active_root(&manifest).unwrap();
     assert!(report.ok, "{:?}", report.issues);
-    assert_eq!(report.verified_files, 6096);
+    assert_eq!(report.verified_files, manifest.immutable_files.len());
     // Activation must not erase attestation when the runtime persists a manifest.
     let roundtrip: RootfsManifest =
         serde_json::from_slice(&serde_json::to_vec(&manifest).unwrap()).unwrap();
