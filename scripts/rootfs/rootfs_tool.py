@@ -66,7 +66,7 @@ BINARY_SYMLINK_SCRUTINY_PREFIXES = [
 ]
 
 WORLD_WRITABLE_ALLOWED = {"/tmp", "/var/tmp"}
-WRITABLE_ROOTS = {"/root", "/tmp", "/var/tmp", "/workspace"}
+WRITABLE_ROOTS = {"/root", "/home/lingxi", "/tmp", "/var/tmp", "/home/lingxi/lingxi"}
 DEFAULT_SOURCE_DATE_EPOCH = 0
 EXPECTED_ALPINE_RELEASE = _ALPINE["version"]
 
@@ -215,10 +215,19 @@ def format_created_timestamp(epoch: int) -> str:
     return dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def permitted_doas(path, mode, payload):
+    return (path == "/usr/bin/doas" and stat.S_IMODE(mode) == 0o4755
+            and hashlib.sha256(payload).hexdigest() in _PINS["guest_user_doas_sha256"].values())
+
+
 def normalized_tar_mode(mode: int, *, is_dir: bool, is_symlink: bool) -> int:
     if is_symlink:
         return 0o777
     permission_bits = stat.S_IMODE(mode)
+    if permission_bits == 0o4755:
+        return permission_bits
+    if permission_bits in (0o600, 0o640, 0o700):
+        return permission_bits
     if is_dir:
         if permission_bits & stat.S_IWOTH:
             return 0o1777 if permission_bits & stat.S_ISVTX else 0o777
@@ -483,8 +492,8 @@ def validate_rootfs_tree(root: pathlib.Path) -> List[PackageRecord]:
                 continue
             if not stat.S_ISREG(mode):
                 fail(f"non-regular rootfs file is forbidden: {rel}")
-            if mode & stat.S_ISUID or mode & stat.S_ISGID:
-                fail(f"suid/sgid bits are forbidden in rootfs files: {rel}")
+            if (rel == "/usr/bin/doas" or mode & (stat.S_ISUID | stat.S_ISGID)) and not permitted_doas(rel, mode, path.read_bytes()):
+                fail(f"unapproved privileged rootfs file: {rel}")
             if mode & stat.S_IWOTH and rel not in WORLD_WRITABLE_ALLOWED:
                 fail(f"world-writable file is forbidden outside scratch paths: {rel}")
 
@@ -861,8 +870,9 @@ def verify_archive(args: argparse.Namespace) -> None:
                 fail(f"device entries are forbidden in rootfs archive: {rel}")
             if member.isfifo():
                 fail(f"FIFO entries are forbidden in rootfs archive: {rel}")
-            if member.mode & stat.S_ISUID or member.mode & stat.S_ISGID:
-                fail(f"suid/sgid entries are forbidden in rootfs archive: {rel}")
+            if rel == "/usr/bin/doas" or member.mode & (stat.S_ISUID | stat.S_ISGID):
+                if not member.isreg() or member.uid != 0 or member.gid != 0 or not permitted_doas(rel, member.mode, tar.extractfile(member).read()):
+                    fail(f"unapproved privileged archive entry: {rel}")
             if rel in FORBIDDEN_PACKAGE_MANAGER_PATHS:
                 fail(f"forbidden package-manager artifact present in archive: {rel}")
             if member.issym():
@@ -928,10 +938,10 @@ def build_archive(args: argparse.Namespace) -> None:
                 info = tarfile.TarInfo(dir_name)
                 info.type = tarfile.DIRTYPE
                 info.mode = normalized_tar_mode(dir_stat.st_mode, is_dir=True, is_symlink=False)
-                info.uid = 0
-                info.gid = 0
-                info.uname = "root"
-                info.gname = "root"
+                info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                info.gid = info.uid
+                info.uname = "lingxi" if info.uid == 1000 else "root"
+                info.gname = info.uname
                 info.mtime = epoch
                 tar.addfile(info)
 
@@ -944,10 +954,10 @@ def build_archive(args: argparse.Namespace) -> None:
                     info.type = tarfile.SYMTYPE
                     info.linkname = target
                     info.mode = normalized_tar_mode(os.lstat(path).st_mode, is_dir=False, is_symlink=True)
-                    info.uid = 0
-                    info.gid = 0
-                    info.uname = "root"
-                    info.gname = "root"
+                    info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                    info.gid = info.uid
+                    info.uname = "lingxi" if info.uid == 1000 else "root"
+                    info.gname = info.uname
                     info.mtime = epoch
                     tar.addfile(info)
 
@@ -960,10 +970,10 @@ def build_archive(args: argparse.Namespace) -> None:
                     info.type = tarfile.SYMTYPE
                     info.linkname = os.readlink(path)
                     info.mode = normalized_tar_mode(st.st_mode, is_dir=False, is_symlink=True)
-                    info.uid = 0
-                    info.gid = 0
-                    info.uname = "root"
-                    info.gname = "root"
+                    info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                    info.gid = info.uid
+                    info.uname = "lingxi" if info.uid == 1000 else "root"
+                    info.gname = info.uname
                     info.mtime = epoch
                     tar.addfile(info)
                     continue
@@ -974,10 +984,10 @@ def build_archive(args: argparse.Namespace) -> None:
                     info.type = tarfile.LNKTYPE
                     info.linkname = inode_first_path[inode_key]
                     info.mode = normalized_tar_mode(st.st_mode, is_dir=False, is_symlink=False)
-                    info.uid = 0
-                    info.gid = 0
-                    info.uname = "root"
-                    info.gname = "root"
+                    info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                    info.gid = info.uid
+                    info.uname = "lingxi" if info.uid == 1000 else "root"
+                    info.gname = info.uname
                     info.mtime = epoch
                     tar.addfile(info)
                     continue
@@ -986,10 +996,10 @@ def build_archive(args: argparse.Namespace) -> None:
                 info = tarfile.TarInfo(rel)
                 info.size = st.st_size
                 info.mode = normalized_tar_mode(st.st_mode, is_dir=False, is_symlink=False)
-                info.uid = 0
-                info.gid = 0
-                info.uname = "root"
-                info.gname = "root"
+                info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                info.gid = info.uid
+                info.uname = "lingxi" if info.uid == 1000 else "root"
+                info.gname = info.uname
                 info.mtime = epoch
                 with path.open("rb") as handle:
                     tar.addfile(info, handle)

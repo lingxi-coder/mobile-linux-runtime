@@ -11,7 +11,7 @@ struct RuntimeView: View {
     @State private var runtime: MobileLinuxRuntime?
     var body: some View {
         Text(status).padding().task {
-            if ProcessInfo.processInfo.arguments.contains("--sdk-device-smoke") {
+            if ProcessInfo.processInfo.arguments.contains("--sdk-device-smoke") || ProcessInfo.processInfo.arguments.contains("--sdk-default-user-smoke") {
                 UIApplication.shared.isIdleTimerDisabled = true
                 do {
                     try await SDKDeviceSmoke().run(resources: Bundle.main.resourceURL!.appendingPathComponent("DeviceResources"))

@@ -54,7 +54,7 @@ def verify_device(adb: list[str], report: Path, variant: str, actual_sha: str) -
             raise SystemExit("minified release test did not emit acceptance evidence")
         evidence = reports[-1]
     parsed = json.loads(evidence)
-    if parsed["rootfsSha256"] != actual_sha or len(parsed["checks"]) != 10:
+    if parsed["rootfsSha256"] != actual_sha or len(parsed["checks"]) != 11 or "default-user-home-cwd-and-elevation" not in parsed["checks"]:
         raise SystemExit("device acceptance evidence is incomplete")
     (report / "evidence.json").write_text(evidence)
 

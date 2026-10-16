@@ -51,3 +51,34 @@ proves the intentionally incomplete documentation sample is rejected.
 `scripts/rootfs/test-rootfs-tooling.sh` exercises packaging and rejection
 cases. The native `rootfs-build.yml` workflow verifies actual archives before
 uploading candidate artifacts and separately asserts source checkout immutability.
+
+## Default guest account
+
+Both mobile backends use `lingxi` (UID/GID 1000), `/bin/sh`, and
+`HOME=/home/lingxi`. A command without a cwd starts in `~/lingxi`.
+Projects bind their existing host directories at `~/lingxi/<stable-id>`;
+explicit cwd values remain authoritative. The host project storage is unchanged.
+
+`guest_user.py` supplies the same account layer to the Android toolchain image
+and the independently verified iOS base image. Password login is locked.
+The pinned Alpine `doas` and `doas-sudo-shim` packages provide passwordless
+`sudo -n`, `sudo -i` and package installation as guest root. Image verification
+allows SUID only on the hash-pinned regular `/usr/bin/doas`; archive creation
+and Android extraction preserve its 04755 mode and private config permissions.
+
+`persistent/lingxi` and `persistent/root` keep user and administrator homes
+outside replaceable images. Before replacement, a one-time merge preserves
+legacy home contents without overwriting existing user files. Resetting scratch
+areas preserves both homes and project directories. Isolated raw-stdio jobs
+continue to use only their explicitly provided mounts.
+
+The account-image version is `rootfs_version` in the SDK pins; it is independent
+of the upstream Alpine version. The current candidate is `3.24.2-user1`.
+Historical release receipts are retained under their original version.
+
+When the toolchains are unchanged, `build-user-rootfs.py --base-archive FILE
+--abi arm64-v8a|x86_64 --output DIR --cache DIR` extends only the exact historical
+SDK archive. It verifies the archived SHA, installs the pinned account APKs
+offline in a digest-pinned Alpine container, and emits a fresh manifest/SBOM
+with the base-image receipt. It never reads an installed user's filesystem.
+APK wall-clock logs are omitted so identical inputs produce identical images.

@@ -131,7 +131,8 @@ impl AndroidProotRuntime {
         let (proot, rootfs) = self.readiness()?;
         let native_lib_dir = proot.parent().map(Path::to_path_buf);
         let mut proot_args = vec![
-            "-0".to_string(),
+            "-i".to_string(),
+            "1000:1000".to_string(),
             "--link2symlink".to_string(),
             "-r".to_string(),
             rootfs.display().to_string(),
@@ -142,7 +143,8 @@ impl AndroidProotRuntime {
             "-b".to_string(),
             "/sys".to_string(),
             "-w".to_string(),
-            cwd.unwrap_or("/root").to_string(),
+            cwd.unwrap_or(mobile_linux_api::guest_paths::WORKSPACE_ROOT)
+                .to_string(),
         ];
         if matches!(request.network, NetworkPolicy::LoopbackOnly) {
             // This enables LingXi's sockaddr-aware extension in the pinned
@@ -178,7 +180,9 @@ impl AndroidProotRuntime {
                 "PATH",
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin",
             )
-            .env("HOME", "/root")
+            .env("HOME", mobile_linux_api::guest_paths::HOME)
+            .env("USER", mobile_linux_api::guest_paths::USER)
+            .env("LOGNAME", mobile_linux_api::guest_paths::USER)
             .envs(env);
         if let Some(receipt_path) = receipt_path {
             command.env("LINGXI_ENFORCEMENT_RECEIPT_PATH", receipt_path);

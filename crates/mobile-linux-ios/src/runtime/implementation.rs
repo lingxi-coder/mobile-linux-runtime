@@ -558,6 +558,8 @@ impl MobileLinuxRuntime for IosIshRuntime {
             &self.state.config,
         )?);
         normalized.push(self.state.config.persistent_home_mount());
+        normalized.push(self.state.config.persistent_admin_home_mount());
+        normalized.sort_by_key(|mount| mount.guest_path.matches('/').count());
         for mount in mounts {
             let mount = validate_mount(&mount, &self.state.config)?;
             if let Some(existing) = normalized

@@ -439,7 +439,7 @@ fn command_request() -> LinuxCommandRequest {
     LinuxCommandRequest {
         command: "/bin/sh".to_string(),
         args: vec!["-lc".to_string(), "echo hi".to_string()],
-        cwd: Some("/workspace/default".to_string()),
+        cwd: Some("/home/lingxi/lingxi/default".to_string()),
         env: BTreeMap::from([(String::from("TERM"), String::from("xterm-256color"))]),
         stdin: None,
         timeout_ms: Some(1000),
@@ -489,7 +489,7 @@ fn workspace_mount_accepts_the_managed_workspace_path() {
         normalize_host_path(&config.workspace_host_path, "workspace_host_path")
             .expect("normalized workspace path")
     );
-    assert_eq!(mount.guest_path, "/workspace/default");
+    assert_eq!(mount.guest_path, "/home/lingxi/lingxi/default");
 }
 
 #[test]
@@ -501,9 +501,12 @@ fn runtime_keeps_root_on_a_protected_persistent_host_mount() {
     let mounts = runtime.state.mounts.read().expect("mounts");
     let home = mounts
         .iter()
-        .find(|mount| mount.guest_path == "/root")
+        .find(|mount| mount.guest_path == "/home/lingxi")
         .expect("persistent home mount");
-    assert_eq!(home.host_path, config.managed_root.join("persistent/root"));
+    assert_eq!(
+        home.host_path,
+        config.managed_root.join("persistent/lingxi")
+    );
     assert!(!home.read_only);
 }
 
@@ -514,20 +517,28 @@ fn runtime_keeps_root_on_a_protected_persistent_host_mount() {
 fn current_mounts_exposes_the_live_workspace_and_home_table() {
     use mobile_linux_api::MobileLinuxRuntime as _;
     let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().join("app");
-    let config = test_config(&root);
+    let config = test_config(&temp.path().join("app"));
     let runtime = IosIshRuntime::new_state(config.clone());
     let mounts = runtime.current_mounts();
-    assert_eq!(mounts.len(), 2);
-    assert_eq!(
-        mounts[0].guest_path,
-        mobile_linux_api::guest_paths::workspace(&config.stable_workspace_id)
-    );
-    assert_eq!(mounts[1].guest_path, mobile_linux_api::guest_paths::HOME);
-    assert_eq!(
-        mounts[1].host_path,
-        config.managed_root.join("persistent/root")
-    );
+    assert_eq!(mounts.len(), 3);
+    for (guest, host) in [
+        (
+            mobile_linux_api::guest_paths::HOME.to_string(),
+            config.managed_root.join("persistent/lingxi"),
+        ),
+        (
+            mobile_linux_api::guest_paths::ADMIN_HOME.to_string(),
+            config.managed_root.join("persistent/root"),
+        ),
+        (
+            mobile_linux_api::guest_paths::workspace(&config.stable_workspace_id),
+            config.workspace_host_path,
+        ),
+    ] {
+        assert!(mounts
+            .iter()
+            .any(|mount| mount.guest_path == guest && mount.host_path == host));
+    }
 }
 
 #[test]
@@ -550,11 +561,13 @@ fn merged_mounts_keep_default_workspace_and_home_binds() {
             purpose: MountPurpose::Shared,
         }])
         .expect("merged mounts");
-    assert_eq!(mounts.len(), 3);
+    assert_eq!(mounts.len(), 4);
     assert!(mounts
         .iter()
-        .any(|mount| mount.guest_path == "/workspace/default"));
-    assert!(mounts.iter().any(|mount| mount.guest_path == "/root"));
+        .any(|mount| mount.guest_path == "/home/lingxi/lingxi/default"));
+    assert!(mounts
+        .iter()
+        .any(|mount| mount.guest_path == "/home/lingxi"));
     assert!(mounts.iter().any(|mount| {
         mount.guest_path == "/exports/data" && matches!(mount.purpose, MountPurpose::Shared)
     }));
@@ -572,7 +585,7 @@ fn workspace_mount_rejects_guest_path_escape() {
     let error = validate_mount(
         &MountSpec {
             host_path: config.workspace_host_path.clone(),
-            guest_path: "/workspace/../etc".to_string(),
+            guest_path: "/home/lingxi/lingxi/../etc".to_string(),
             read_only: false,
             purpose: MountPurpose::Workspace,
         },
@@ -764,7 +777,7 @@ fn validate_pty_request_rejects_invalid_env_and_nul() {
     let mut request = PtyOpenRequest {
         command: "/bin/sh".to_string(),
         args: vec!["-i".to_string()],
-        cwd: Some("/workspace/default".to_string()),
+        cwd: Some("/home/lingxi/lingxi/default".to_string()),
         env: BTreeMap::from([(String::from("TERM"), String::from("xterm"))]),
         size: PtySize { cols: 80, rows: 24 },
         mounts: Vec::new(),
@@ -776,7 +789,7 @@ fn validate_pty_request_rejects_invalid_env_and_nul() {
     request = PtyOpenRequest {
         command: "/bin/\0sh".to_string(),
         args: vec!["-i".to_string()],
-        cwd: Some("/workspace/default".to_string()),
+        cwd: Some("/home/lingxi/lingxi/default".to_string()),
         env: BTreeMap::new(),
         size: PtySize { cols: 80, rows: 24 },
         mounts: Vec::new(),

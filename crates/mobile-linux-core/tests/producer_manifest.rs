@@ -1,34 +1,34 @@
-//! Regression against the actual published producer output, including all metadata.
+//! Regression against the actual candidate producer output, including all metadata.
 use mobile_linux_api::{MobileLinuxRuntimeMode, SandboxBackend};
 use mobile_linux_core::{RootfsManifest, RootfsManifestError, RootfsStore};
 
-const PUBLISHED_MANIFEST: &str =
-    include_str!("../../../docs/mobile-linux/releases/3.24.2/arm64-v8a/rootfs-manifest.json");
+const CANDIDATE_MANIFEST: &str =
+    include_str!("../../../docs/mobile-linux/releases/3.24.2-user1/arm64-v8a/rootfs-manifest.json");
 
-fn published() -> RootfsManifest {
-    serde_json::from_str(PUBLISHED_MANIFEST).expect("strictly deserialize actual producer manifest")
+fn candidate() -> RootfsManifest {
+    serde_json::from_str(CANDIDATE_MANIFEST).expect("strictly deserialize actual producer manifest")
 }
 
 #[test]
-fn published_producer_manifest_validates_and_retains_every_field() {
-    let manifest = published();
+fn candidate_producer_manifest_validates_and_retains_every_field() {
+    let manifest = candidate();
     manifest
         .validate()
-        .expect("published inventory and metadata");
-    assert_eq!(manifest.immutable_files.len(), 6093);
+        .expect("candidate inventory and metadata");
+    assert_eq!(manifest.immutable_files.len(), 6095);
     assert_eq!(
         manifest.calculated_content_sha256().unwrap(),
-        "81c1da1352f650418a6277d9b5fd13e74266e820d39ef636b3f4bbfdb00b77c2"
+        "6735a1ed9d575f743f4fdbc542677721e52124c044096e1fb9be1720b9a485e9"
     );
     assert_eq!(
         serde_json::to_value(&manifest).unwrap(),
-        serde_json::from_str::<serde_json::Value>(PUBLISHED_MANIFEST).unwrap()
+        serde_json::from_str::<serde_json::Value>(CANDIDATE_MANIFEST).unwrap()
     );
 }
 
 #[test]
 fn legacy_manifest_without_producer_metadata_remains_compatible() {
-    let mut value: serde_json::Value = serde_json::from_str(PUBLISHED_MANIFEST).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(CANDIDATE_MANIFEST).unwrap();
     for field in ["content_sha256", "sbom_filename", "source_pins_filename"] {
         value.as_object_mut().unwrap().remove(field);
     }
@@ -40,13 +40,13 @@ fn legacy_manifest_without_producer_metadata_remains_compatible() {
 #[test]
 fn producer_metadata_cannot_be_partial_null_unknown_or_redirected() {
     for field in ["content_sha256", "sbom_filename", "source_pins_filename"] {
-        let mut value: serde_json::Value = serde_json::from_str(PUBLISHED_MANIFEST).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(CANDIDATE_MANIFEST).unwrap();
         value[field] = serde_json::Value::Null;
         assert!(
             serde_json::from_value::<RootfsManifest>(value).is_err(),
             "null {field}"
         );
-        let mut value: serde_json::Value = serde_json::from_str(PUBLISHED_MANIFEST).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(CANDIDATE_MANIFEST).unwrap();
         value.as_object_mut().unwrap().remove(field);
         let manifest: RootfsManifest = serde_json::from_value(value).unwrap();
         assert!(matches!(
@@ -63,7 +63,7 @@ fn producer_metadata_cannot_be_partial_null_unknown_or_redirected() {
         "other.json",
     ] {
         for field in ["sbom_filename", "source_pins_filename"] {
-            let mut value: serde_json::Value = serde_json::from_str(PUBLISHED_MANIFEST).unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(CANDIDATE_MANIFEST).unwrap();
             value[field] = bad.into();
             let manifest: RootfsManifest = serde_json::from_value(value).unwrap();
             assert!(
@@ -75,7 +75,7 @@ fn producer_metadata_cannot_be_partial_null_unknown_or_redirected() {
             );
         }
     }
-    let mut value: serde_json::Value = serde_json::from_str(PUBLISHED_MANIFEST).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(CANDIDATE_MANIFEST).unwrap();
     value["unexpected_metadata"] = true.into();
     assert!(serde_json::from_value::<RootfsManifest>(value).is_err());
 }
@@ -83,7 +83,7 @@ fn producer_metadata_cannot_be_partial_null_unknown_or_redirected() {
 #[test]
 fn split_ssh_client_requires_both_real_alpine_components() {
     for missing in ["openssh-client-default", "openssh-client-common"] {
-        let mut manifest = published();
+        let mut manifest = candidate();
         manifest.packages.retain(|package| package.name != missing);
         assert!(
             matches!(manifest.validate(), Err(RootfsManifestError::MissingRequiredPackage(name)) if name == "openssh-client")
@@ -93,7 +93,7 @@ fn split_ssh_client_requires_both_real_alpine_components() {
 
 #[test]
 fn digest_attests_inventory_bytes_and_producer_order() {
-    let mut manifest = published();
+    let mut manifest = candidate();
     manifest.content_sha256 = Some("f".repeat(64));
     assert!(matches!(
         manifest.validate(),
@@ -104,7 +104,7 @@ fn digest_attests_inventory_bytes_and_producer_order() {
         manifest.validate(),
         Err(RootfsManifestError::InvalidSha256(_))
     ));
-    let mut manifest = published();
+    let mut manifest = candidate();
     manifest.immutable_files.swap(0, 1);
     manifest.content_sha256 = Some(manifest.calculated_content_sha256().unwrap());
     assert!(matches!(
@@ -114,16 +114,16 @@ fn digest_attests_inventory_bytes_and_producer_order() {
 }
 
 #[test]
-#[ignore = "requires MOBILE_LINUX_TEST_ARCHIVE pointing to the pinned published archive"]
-fn published_archive_stages_verifies_and_activates_real_tree() {
+#[ignore = "requires MOBILE_LINUX_TEST_ARCHIVE pointing to the pinned candidate archive"]
+fn candidate_archive_stages_verifies_and_activates_real_tree() {
     let archive = std::path::PathBuf::from(
         std::env::var_os("MOBILE_LINUX_TEST_ARCHIVE")
-            .expect("set MOBILE_LINUX_TEST_ARCHIVE to the published archive"),
+            .expect("set MOBILE_LINUX_TEST_ARCHIVE to the candidate archive"),
     );
     let temporary = tempfile::tempdir().unwrap();
     let prepared = temporary.path().join("prepared");
     std::fs::create_dir(&prepared).unwrap();
-    let manifest = published();
+    let manifest = candidate();
     let store = RootfsStore::new(
         temporary.path().join("managed"),
         SandboxBackend::AndroidProot,
@@ -147,7 +147,7 @@ fn published_archive_stages_verifies_and_activates_real_tree() {
     assert_eq!(status.state, mobile_linux_api::RootfsState::Ready);
     let report = store.verify_active_root(&manifest).unwrap();
     assert!(report.ok, "{:?}", report.issues);
-    assert_eq!(report.verified_files, 6093);
+    assert_eq!(report.verified_files, 6096);
     // Activation must not erase attestation when the runtime persists a manifest.
     let roundtrip: RootfsManifest =
         serde_json::from_slice(&serde_json::to_vec(&manifest).unwrap()).unwrap();

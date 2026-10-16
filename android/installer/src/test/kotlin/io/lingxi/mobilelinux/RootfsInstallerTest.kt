@@ -70,6 +70,26 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
         } finally { managed.deleteRecursively() }
     }
 
+    @Test
+    fun stage_preservesGuestDoasSuidAndPrivateConfigurationMode() {
+        val managed = Files.createTempDirectory("rootfs-doas-mode").toFile()
+        try {
+            val binary = "guest executable".toByteArray()
+            val config = "permit nopass lingxi as root\n".toByteArray()
+            val archive = tarGz(
+                TarSpec.file("bin/busybox", binary, 493), TarSpec.hardlink("bin/sh", "bin/busybox"),
+                TarSpec.file("usr/bin/doas", binary, 2541), TarSpec.file("etc/doas.conf", config, 384))
+            val inventory = listOf(immutableFile("/bin/busybox", binary), immutableFile("/bin/sh", binary),
+                immutableFile("/etc/doas.conf", config), immutableFile("/usr/bin/doas", binary))
+            val manifest = manifestJson("rootfs.tar.gz", archive, inventory,
+                listOf(RootfsAllowlistEntryData("/bin/busybox", sha256(binary), "interpreter", binary.size.toLong())))
+            val result = RootfsInstaller.stage(managed, "3.21.3", sha256(archive), "arm64", "rootfs.tar.gz", manifest,
+                sbomJson("busybox"), { it.writeBytes(archive) })
+            assertEquals(2541, (Files.getAttribute(File(result.stagedRoot, "usr/bin/doas").toPath(), "unix:mode") as Int) and 4095)
+            assertEquals(384, (Files.getAttribute(File(result.stagedRoot, "etc/doas.conf").toPath(), "unix:mode") as Int) and 4095)
+        } finally { managed.deleteRecursively() }
+    }
+
     private companion object {
         const val manifestFileName = "rootfs-manifest.json"
         const val sbomFileName = "rootfs.spdx.json"
@@ -362,7 +382,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
               "packages": $packagesJson,
               "executable_allowlist": $allowlistJson,
               "immutable_files": $immutableJson,
-              "writable_paths": ["/root", "/tmp", "/var/tmp", "/workspace"]
+              "writable_paths": ["/home/lingxi", "/root", "/tmp", "/var/tmp", "/home/lingxi/lingxi"]
             }
         """.trimIndent()
     }

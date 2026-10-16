@@ -102,10 +102,15 @@ impl IosIshRuntime {
     pub(super) fn new_state(config: IosIshRuntimeConfig) -> Self {
         let workspace_mount = config.default_workspace_mount();
         let persistent_home_mount = config.persistent_home_mount();
+        let admin_home_mount = config.persistent_admin_home_mount();
         Self {
             state: Arc::new(RuntimeState {
                 config,
-                mounts: RwLock::new(vec![workspace_mount, persistent_home_mount]),
+                mounts: RwLock::new(vec![
+                    persistent_home_mount,
+                    admin_home_mount,
+                    workspace_mount,
+                ]),
                 tasks: Mutex::new(HashMap::new()),
                 events: Mutex::new(VecDeque::new()),
                 next_id: AtomicU64::new(1),

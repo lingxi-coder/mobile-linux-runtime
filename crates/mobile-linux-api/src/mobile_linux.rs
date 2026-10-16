@@ -22,11 +22,17 @@ pub const MAX_MOBILE_LINUX_EVENT_BATCH: usize = 512;
 /// Default guest path conventions shared by portable backends.
 pub mod guest_paths {
     /// Default guest home directory.
-    pub const HOME: &str = "/root";
+    pub const HOME: &str = "/home/lingxi";
+    /// Default guest account (virtual inside the mobile runtime).
+    pub const USER: &str = "lingxi";
+    /// Default numeric user and group identity.
+    pub const UID: u32 = 1000;
+    /// Administrator home used by elevated commands.
+    pub const ADMIN_HOME: &str = "/root";
     /// Default writable scratch directories.
     pub const SCRATCH: &[&str] = &["/tmp", "/var/tmp"];
     /// Default parent of workspace mounts.
-    pub const WORKSPACE_ROOT: &str = "/workspace";
+    pub const WORKSPACE_ROOT: &str = "/home/lingxi/lingxi";
     /// Guest path for a stable workspace identifier.
     #[must_use]
     pub fn workspace(stable_workspace_id: &str) -> String {
@@ -34,8 +40,8 @@ pub mod guest_paths {
     }
     /// Default writable guest roots.
     #[must_use]
-    pub fn writable_roots() -> [&'static str; 4] {
-        [HOME, SCRATCH[0], SCRATCH[1], WORKSPACE_ROOT]
+    pub fn writable_roots() -> [&'static str; 5] {
+        [HOME, ADMIN_HOME, SCRATCH[0], SCRATCH[1], WORKSPACE_ROOT]
     }
 }
 
@@ -394,13 +400,13 @@ mod map_guest_path_tests {
         vec![
             MountSpec {
                 host_path: host_path("ws"),
-                guest_path: "/workspace/abc".into(),
+                guest_path: "/home/lingxi/lingxi/abc".into(),
                 read_only: false,
                 purpose: MountPurpose::Workspace,
             },
             MountSpec {
                 host_path: host_path("ext"),
-                guest_path: "/workspace/abc/ext".into(),
+                guest_path: "/home/lingxi/lingxi/abc/ext".into(),
                 read_only: false,
                 purpose: MountPurpose::External,
             },
@@ -411,19 +417,25 @@ mod map_guest_path_tests {
     fn maps_longest_prefix_and_rejects_dirty_or_uncovered_paths() {
         let m = mounts();
         assert_eq!(
-            map_guest_path_to_host("/workspace/abc/src/a.rs", &m),
+            map_guest_path_to_host("/home/lingxi/lingxi/abc/src/a.rs", &m),
             Some(host_path("ws/src/a.rs"))
         );
         assert_eq!(
-            map_guest_path_to_host("/workspace/abc", &m),
+            map_guest_path_to_host("/home/lingxi/lingxi/abc", &m),
             Some(host_path("ws"))
         );
         assert_eq!(
-            map_guest_path_to_host("/workspace/abc/ext/d.txt", &m),
+            map_guest_path_to_host("/home/lingxi/lingxi/abc/ext/d.txt", &m),
             Some(host_path("ext/d.txt"))
         );
-        assert_eq!(map_guest_path_to_host("/workspace/other/x", &m), None);
-        assert_eq!(map_guest_path_to_host("/workspace/abc/../abc/x", &m), None);
+        assert_eq!(
+            map_guest_path_to_host("/home/lingxi/lingxi/other/x", &m),
+            None
+        );
+        assert_eq!(
+            map_guest_path_to_host("/home/lingxi/lingxi/abc/../abc/x", &m),
+            None
+        );
         assert_eq!(map_guest_path_to_host("relative", &m), None);
         assert_eq!(map_guest_path_to_host("/tmp/x", &m), None);
     }
@@ -433,11 +445,11 @@ mod map_guest_path_tests {
         let m = mounts();
         assert_eq!(
             map_host_path_to_guest(&host_path("ws/src/a.rs"), &m).as_deref(),
-            Some("/workspace/abc/src/a.rs")
+            Some("/home/lingxi/lingxi/abc/src/a.rs")
         );
         assert_eq!(
             map_host_path_to_guest(&host_path("ext/d.txt"), &m).as_deref(),
-            Some("/workspace/abc/ext/d.txt")
+            Some("/home/lingxi/lingxi/abc/ext/d.txt")
         );
         assert_eq!(map_host_path_to_guest(&host_path("other"), &m), None);
         assert_eq!(map_host_path_to_guest(&host_path("ws/../escape"), &m), None);

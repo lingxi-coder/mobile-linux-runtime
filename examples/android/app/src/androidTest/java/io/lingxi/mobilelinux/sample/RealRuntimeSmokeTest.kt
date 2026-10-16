@@ -39,7 +39,7 @@ class RealRuntimeSmokeTest {
                         python: Boolean = false, raw: Boolean = false) = MobileLinuxCommandRequestFfi(
         command = if (python) "/usr/bin/python3" else "/bin/sh",
         args = if (python) listOf("-u", "-c", script) else listOf("-c", script),
-        cwd = "/root", env = emptyList(), stdin = null,
+        cwd = null, env = emptyList(), stdin = null,
         timeoutMs = if (raw) null else 15_000uL, network = network,
         resourceLimits = ResourceLimitsFfi(null, null, null, null), mounts = emptyList(),
     )
@@ -117,6 +117,15 @@ class RealRuntimeSmokeTest {
         try {
             assertEquals(MobileLinuxRootfsStateFfi.READY, runtime.handle.repairRootfs().state)
             assertEquals(MobileLinuxRootfsStateFfi.READY, runtime.boot().state)
+            val user = runtime.execute(command("""
+                id -un; id -u; id -g; printf '%s\n' "${'$'}HOME" "${'$'}USER"; pwd
+                sudo -n id -u
+                sudo -i /bin/sh -c 'printf %s "${'$'}HOME"'
+            """.trimIndent()))
+            assertEquals(user.stderr, 0, user.exitCode)
+            assertEquals("lingxi\n1000\n1000\n/home/lingxi\nlingxi\n/home/lingxi/lingxi\n0\n/root", user.stdout)
+            assertEquals(0, runtime.execute(command("printf retained > ~/default-user-check; test -w ~/lingxi")).exitCode)
+            passed("default-user-home-cwd-and-elevation")
             val hello = runtime.execute(command("printf SDK_REAL_GUEST; uname -m"))
             assertEquals(hello.stderr, 0, hello.exitCode)
             assertTrue(hello.stdout.contains("SDK_REAL_GUEST"))
@@ -195,7 +204,7 @@ class RealRuntimeSmokeTest {
             passed("blocked-stdin-timeout-and-reap")
 
             val memorySession = runtime.handle.openRawStdio(command(
-                "import os,time; print(os.getpid(),flush=True); time.sleep(0.3); allocation=bytearray(128*1024*1024); time.sleep(60)",
+                "import os,time; assert os.getuid() == 1000; print(os.getpid(),flush=True); time.sleep(0.3); allocation=bytearray(128*1024*1024); time.sleep(60)",
                 python = true, raw = true,
             ).copy(resourceLimits = ResourceLimitsFfi(null, 32u, null, null)))
             assertTrue("raw memory receipt must reflect an active watchdog", memorySession.enforcement.memoryLimitEnforced)
@@ -227,7 +236,7 @@ class RealRuntimeSmokeTest {
 
             val pty = runtime.handle.openPty(MobileLinuxPtyOpenRequestFfi(
                 command = "/bin/sh", args = listOf("-c", "printf 'SDK_PTY_READY\\n'; sleep 60"),
-                cwd = "/root", env = emptyList(), size = MobileLinuxPtySizeFfi(80u, 24u), mounts = emptyList(),
+                cwd = null, env = emptyList(), size = MobileLinuxPtySizeFfi(80u, 24u), mounts = emptyList(),
             ))
             eventsUntil(runtime.handle) { it.sessionId == pty.id && it.kind == MobileLinuxEventKindFfi.PTY_OUTPUT &&
                 it.data?.toString(Charsets.UTF_8)?.contains("SDK_PTY_READY") == true }
@@ -237,7 +246,7 @@ class RealRuntimeSmokeTest {
             passed("pty-output-resize-close")
 
             val background = runtime.handle.spawnBackground(command(
-                "import os,time; print(os.getpid(),flush=True); time.sleep(60)", python = true,
+                "import os,time; assert os.getuid() == 1000; print(os.getpid(),flush=True); time.sleep(60)", python = true,
             ).copy(timeoutMs = null))
             val pidEvent = eventsUntil(runtime.handle) { it.taskId == background.id && it.kind == MobileLinuxEventKindFfi.STDOUT_LINE }
             val pid = checkNotNull(pidEvent.text).trim().toInt()
@@ -256,6 +265,7 @@ class RealRuntimeSmokeTest {
             val restarted = runtime.execute(command("printf SDK_RESTARTED"))
             assertEquals(0, restarted.exitCode)
             assertEquals("SDK_RESTARTED", restarted.stdout)
+            assertEquals("retained", runtime.execute(command("cat ~/default-user-check")).stdout)
             passed("shutdown-recreate-restart")
             val evidence = JSONObject().apply {
                 put("deviceAbi", Build.SUPPORTED_ABIS.first()); put("sdkInt", Build.VERSION.SDK_INT)

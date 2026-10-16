@@ -115,6 +115,7 @@ mkdir -p "${NODE_SOURCE_CACHE}"
   -e LINGXI_TYPESCRIPT_SHA512="${TS_SHA512}" \
   -e LINGXI_TYPESCRIPT_TSC_SHA256="${TS_TSC_SHA256}" \
   -v "${INNER}:/inner.sh:ro" \
+  -v "${SCRIPT_DIR}/guest_user.py:/guest-user.py:ro" \
   -v "${SCRIPT_DIR}/install-local-app-toolchains.py:/install-toolchains.py:ro" \
   -v "${NODE_SOURCE_CACHE}:/node-source-cache" \
   -v "${PINS}:/pins.json:ro" \

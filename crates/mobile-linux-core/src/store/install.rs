@@ -68,6 +68,7 @@ impl RootfsStore {
             )));
         }
 
+        self.preserve_guest_homes()?;
         let active = self.active_root();
         let next = self.managed_root.join("active.next");
         let rollback = self.managed_root.join("active.rollback");
@@ -98,4 +99,80 @@ impl RootfsStore {
         }
         Ok(self.status(manifest))
     }
+}
+
+impl RootfsStore {
+    /// Preserve guest homes outside replaceable images. Existing files win;
+    /// a failed copy is retried before activation and never removes the source.
+    pub fn preserve_guest_homes(&self) -> Result<(), RootfsStoreError> {
+        let marker = self.managed_root.join("persistent/.user-home-migrated");
+        if marker.exists() {
+            return Ok(());
+        }
+        let active = self.active_root();
+        for (source, target) in [
+            (
+                active.join("root"),
+                self.managed_root.join("persistent/root"),
+            ),
+            (
+                active.join("home/lingxi"),
+                self.managed_root.join("persistent/lingxi"),
+            ),
+        ] {
+            merge_home(&source, &target).map_err(|error| RootfsStoreError::Io {
+                path: target,
+                message: error.to_string(),
+            })?;
+        }
+        if !marker.exists() {
+            merge_home(
+                &self.managed_root.join("persistent/root"),
+                &self.managed_root.join("persistent/lingxi"),
+            )
+            .map_err(|error| RootfsStoreError::Io {
+                path: marker.clone(),
+                message: error.to_string(),
+            })?;
+            fs::create_dir_all(marker.parent().expect("persistent parent"))
+                .and_then(|()| fs::write(&marker, b"1\n"))
+                .map_err(|error| RootfsStoreError::Io {
+                    path: marker,
+                    message: error.to_string(),
+                })?;
+        }
+        Ok(())
+    }
+}
+
+fn merge_home(source: &Path, target: &Path) -> std::io::Result<()> {
+    let metadata = match fs::symlink_metadata(source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if fs::symlink_metadata(target).is_ok() {
+        if !metadata.is_dir()
+            || !fs::symlink_metadata(target)?.is_dir()
+            || fs::symlink_metadata(target)?.file_type().is_symlink()
+        {
+            return Ok(());
+        }
+    } else if metadata.file_type().is_symlink() {
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(fs::read_link(source)?, target)?;
+        return Ok(());
+    } else if metadata.is_dir() {
+        fs::create_dir_all(target)?;
+    } else if metadata.is_file() {
+        fs::copy(source, target)?;
+        return Ok(());
+    } else {
+        return Ok(());
+    }
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        merge_home(&entry.path(), &target.join(entry.file_name()))?;
+    }
+    Ok(())
 }

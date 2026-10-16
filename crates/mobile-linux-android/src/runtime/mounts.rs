@@ -171,6 +171,21 @@ pub(super) fn snapshot_read_only_mounts(
 }
 
 impl AndroidProotRuntime {
+    pub(super) fn home_mounts(&self) -> Vec<MountSpec> {
+        [
+            ("persistent/lingxi", mobile_linux_api::guest_paths::HOME),
+            ("persistent/root", mobile_linux_api::guest_paths::ADMIN_HOME),
+        ]
+        .into_iter()
+        .map(|(host, guest)| MountSpec {
+            host_path: self.state.config.managed_root.join(host),
+            guest_path: guest.to_string(),
+            read_only: false,
+            purpose: MountPurpose::Shared,
+        })
+        .collect()
+    }
+
     pub(super) fn execution_mounts(
         &self,
         request_mounts: &[MountSpec],
@@ -185,6 +200,11 @@ impl AndroidProotRuntime {
                 .clone(),
             ForegroundMountMode::ExplicitOnly => Vec::with_capacity(request_mounts.len()),
         };
+        if matches!(mode, ForegroundMountMode::Merged) {
+            let mut homes = self.home_mounts();
+            homes.extend(mounts);
+            mounts = homes;
+        }
         for mount in request_mounts {
             validate_mount(mount, &self.state.config.managed_root)?;
             mounts.retain(|existing| existing.guest_path != mount.guest_path);
@@ -206,7 +226,12 @@ pub(super) fn validate_request(request: &LinuxCommandRequest) -> Result<(), Mobi
         ));
     }
     let _ = requested_memory_limit_bytes(request)?;
-    validate_guest_path(request.cwd.as_deref().unwrap_or("/root"))?;
+    validate_guest_path(
+        request
+            .cwd
+            .as_deref()
+            .unwrap_or(mobile_linux_api::guest_paths::WORKSPACE_ROOT),
+    )?;
     for value in &request.args {
         if value.as_bytes().contains(&0) {
             return Err(MobileLinuxError::InvalidRequest(
@@ -234,7 +259,12 @@ pub(super) fn validate_pty_request(request: &PtyOpenRequest) -> Result<(), Mobil
             ));
         }
     }
-    validate_guest_path(request.cwd.as_deref().unwrap_or("/root"))?;
+    validate_guest_path(
+        request
+            .cwd
+            .as_deref()
+            .unwrap_or(mobile_linux_api::guest_paths::WORKSPACE_ROOT),
+    )?;
     validate_env_map(&request.env)
 }
 
@@ -253,6 +283,18 @@ pub(super) fn validate_mount(
         ));
     }
     validate_guest_path(&mount.guest_path)?;
+    if [
+        "/",
+        "/home",
+        mobile_linux_api::guest_paths::HOME,
+        mobile_linux_api::guest_paths::ADMIN_HOME,
+    ]
+    .contains(&mount.guest_path.as_str())
+    {
+        return Err(MobileLinuxError::InvalidRequest(
+            "request mount may not replace a managed guest home".into(),
+        ));
+    }
     let host = mount.host_path.canonicalize().map_err(|error| {
         MobileLinuxError::InvalidRequest(format!(
             "mount host path is unavailable ({}): {error}",

@@ -108,7 +108,11 @@ pub(super) fn validate_mount(
     validate_guest_path(&mount.guest_path, "guest_path", false)?;
     let managed_root = normalize_host_path(&config.managed_root, "managed_root")?;
     let app_root = normalize_host_path(&config.app_sandbox_root, "app_sandbox_root")?;
-    if guest_path_has_prefix(&mount.guest_path, mobile_linux_api::guest_paths::HOME) {
+    if ["/", "/home"].contains(&mount.guest_path.as_str())
+        || (guest_path_has_prefix(&mount.guest_path, mobile_linux_api::guest_paths::HOME)
+            && !matches!(mount.purpose, MountPurpose::Workspace))
+        || guest_path_has_prefix(&mount.guest_path, mobile_linux_api::guest_paths::ADMIN_HOME)
+    {
         return Err(MobileLinuxError::InvalidRequest(
             "request mounts may not replace the persistent guest home".into(),
         ));

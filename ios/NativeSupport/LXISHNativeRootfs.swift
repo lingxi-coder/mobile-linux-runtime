@@ -58,7 +58,7 @@ struct LXISHRootfsStatus: Codable {
 /// workspace, so they are the same machine rather than two.
 /// The Swift twin of Rust's guest-path atlas
 /// (`traits::mobile_linux::guest_paths`) — the ONE definition on this side of
-/// the FFI of the well-known guest paths and the `/workspace/<id>` format.
+/// the FFI of the well-known guest paths and the `/home/lingxi/lingxi/<id>` format.
 /// Seven Swift sites used to restate these as independent string literals.
 /// The two twins are byte-pinned against each other:
 /// `guest_paths::tests::atlas_atoms_are_pinned` (Rust) and
@@ -66,13 +66,16 @@ struct LXISHRootfsStatus: Codable {
 /// drift on either side fails one of the pins.
 public enum LXISHGuestPaths {
     /// The guest home (`~` of the interactive shell), host-backed by the
-    /// rootfs manager's `persistent/root` bind mount.
-    public static let home = "/root"
+    /// rootfs manager's `persistent/lingxi` bind mount.
+    public static let home = "/home/lingxi"
+    public static let adminHome = "/root"
+    public static let user = "lingxi"
+    public static let uid = 1000
     /// Scratch areas writable inside the guest.
     public static let scratch = ["/tmp", "/var/tmp"]
     /// Parent of every per-workspace mount.
-    public static let workspaceRoot = "/workspace"
-    /// THE `/workspace/<id>` format.
+    public static let workspaceRoot = "/home/lingxi/lingxi"
+    /// THE `/home/lingxi/lingxi/<id>` format.
     public static func workspace(_ stableWorkspaceId: String) -> String {
         "\(workspaceRoot)/\(stableWorkspaceId)"
     }
@@ -127,6 +130,10 @@ struct LXISHNativeConfig: Codable, Hashable {
     }
 
     var persistentHomeURL: URL {
+        normalizedManagedRoot.appendingPathComponent("persistent/lingxi", isDirectory: true)
+    }
+
+    var persistentAdminHomeURL: URL {
         normalizedManagedRoot.appendingPathComponent("persistent/root", isDirectory: true)
     }
 
@@ -212,7 +219,7 @@ final class LXISHNativeRootfsManager {
             stagedRoot: nil,
             archiveSha256: installedMetadata?.archiveSha256 ?? config.archiveSha256,
             installedSizeBytes: state == "ready" ? directorySize(at: rootfsURL) : nil,
-            writableGuestPaths: [LXISHGuestPaths.workspace(config.stableWorkspaceId)] + LXISHGuestPaths.scratch + [LXISHGuestPaths.home],
+            writableGuestPaths: [LXISHGuestPaths.workspace(config.stableWorkspaceId)] + LXISHGuestPaths.scratch + [LXISHGuestPaths.home, LXISHGuestPaths.adminHome],
             lastError: lastError
         )
     }
@@ -268,6 +275,7 @@ final class LXISHNativeRootfsManager {
 
     @discardableResult
     func reset(for config: LXISHNativeConfig) throws -> LXISHRootfsStatus {
+        try migrateLegacyHomeIfNeeded(for: config)
         if fileManager.fileExists(atPath: config.rootfsURL.path) {
             try fileManager.removeItem(at: config.rootfsURL)
         }
@@ -310,7 +318,7 @@ final class LXISHNativeRootfsManager {
 
     private func ensureGuestDirectories(at dataRoot: URL, for config: LXISHNativeConfig) throws {
         let directories = [
-            "workspace/\(config.stableWorkspaceId)",
+
             "tmp",
             "var/tmp"
         ]
@@ -347,7 +355,8 @@ final class LXISHNativeRootfsManager {
 
     private func ensurePersistentHome(for config: LXISHNativeConfig) throws {
         try fileManager.createDirectory(at: config.persistentHomeURL, withIntermediateDirectories: true)
-        let childDirectories = [".cache", ".cache/pip", ".npm", ".local"]
+        try fileManager.createDirectory(at: config.persistentAdminHomeURL, withIntermediateDirectories: true)
+        let childDirectories = [".cache", ".cache/pip", ".npm", ".local", "lingxi"]
         for relative in childDirectories {
             try fileManager.createDirectory(
                 at: config.persistentHomeURL.appendingPathComponent(relative, isDirectory: true),
@@ -357,25 +366,34 @@ final class LXISHNativeRootfsManager {
     }
 
     private func migrateLegacyHomeIfNeeded(for config: LXISHNativeConfig) throws {
-        let legacyHomeURL = config.rootfsDataURL.appendingPathComponent("root", isDirectory: true)
-        guard fileManager.fileExists(atPath: legacyHomeURL.path) else { return }
-        guard isDirectoryEmpty(config.persistentHomeURL) else { return }
-        guard let enumerator = fileManager.enumerator(at: legacyHomeURL, includingPropertiesForKeys: [.isDirectoryKey]) else {
-            return
-        }
-        for case let sourceURL as URL in enumerator {
-            let values = try sourceURL.resourceValues(forKeys: [.isDirectoryKey])
-            guard let relativePath = Self.relativePath(of: sourceURL, under: legacyHomeURL) else { continue }
-            let destinationURL = config.persistentHomeURL.appendingPathComponent(relativePath)
-            if values.isDirectory == true {
-                try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
-                continue
+        let marker = config.normalizedManagedRoot.appendingPathComponent("persistent/.user-home-migrated")
+        guard !fileManager.fileExists(atPath: marker.path) else { return }
+        try mergeHome(from: config.rootfsDataURL.appendingPathComponent("root", isDirectory: true),
+                      into: config.persistentAdminHomeURL)
+        try mergeHome(from: config.rootfsDataURL.appendingPathComponent("home/lingxi", isDirectory: true),
+                      into: config.persistentHomeURL)
+        try mergeHome(from: config.persistentAdminHomeURL, into: config.persistentHomeURL)
+        try fileManager.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("1\n".utf8).write(to: marker, options: .atomic)
+    }
+
+    /// Copy once before replacing the image. Existing user files and symlinks
+    /// win, and interrupted copies can be retried without changing the source.
+    private func mergeHome(from source: URL, into destination: URL) throws {
+        guard fileManager.fileExists(atPath: source.path),
+              source.resolvingSymlinksInPath() != destination.resolvingSymlinksInPath() else { return }
+        try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        for child in try fileManager.contentsOfDirectory(at: source, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]) {
+            let target = destination.appendingPathComponent(child.lastPathComponent)
+            let values = try child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            let existing = try? fileManager.attributesOfItem(atPath: target.path)
+            if values.isDirectory == true && values.isSymbolicLink != true {
+                if existing == nil || existing?[.type] as? FileAttributeType == .typeDirectory {
+                    try mergeHome(from: child, into: target)
+                }
+            } else if existing == nil {
+                try fileManager.copyItem(at: child, to: target)
             }
-            try fileManager.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if fileManager.fileExists(atPath: destinationURL.path) {
-                continue
-            }
-            try fileManager.copyItem(at: sourceURL, to: destinationURL)
         }
     }
 

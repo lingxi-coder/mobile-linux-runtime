@@ -1,0 +1,84 @@
+--- a/fs/fake.c
++++ b/fs/fake.c
+@@ -339,6 +339,14 @@
+ 
+ /* Auto-create a meta.db entry for a path under a bind mount.
+  * Probes the host filesystem to determine if it's a file or directory. */
++/* Mobile host-backed files belong to the guest account, never the host UID.
++ * Root's administrative home retains root ownership. */
++static unsigned lx_guest_path_owner(const char *path) {
++    if (path[0] == '/') path++;
++    return (!strcmp(path, "home/lingxi") || !strncmp(path, "home/lingxi/", 12)
++        || !strncmp(path, "var/lingxi/", 11)) ? 1000 : 0;
++}
++
+ static inode_t bind_mount_ensure_inode(struct fakefs_db *fs, struct mount *mount,
+                                        const char *path) {
+     db_begin_read(fs);
+@@ -366,7 +374,8 @@
+     else
+         mode = S_IFREG | 0644;
+ 
+-    struct ish_stat ishstat = {.mode = mode, .uid = 0, .gid = 0, .rdev = 0};
++    unsigned owner = lx_guest_path_owner(path);
++    struct ish_stat ishstat = {.mode = mode, .uid = owner, .gid = owner, .rdev = 0};
+     db_begin_write(fs);
+     ino = path_create(fs, path, &ishstat);
+     db_commit(fs);
+@@ -725,8 +734,8 @@
+         /* Pick a sensible mode: keep host's S_IFMT, default to 0644/0755. */
+         mode_t_ type = host_stat.st_mode & S_IFMT;
+         fake_stat->mode = type | (S_ISDIR(host_stat.st_mode) ? 0755 : 0644);
+-        fake_stat->uid = 0;
+-        fake_stat->gid = 0;
++        fake_stat->uid = lx_guest_path_owner(path);
++        fake_stat->gid = fake_stat->uid;
+         fake_stat->size = host_stat.st_size;
+         fake_stat->blocks = host_stat.st_blocks;
+         fake_stat->mtime = host_stat.st_mtimespec.tv_sec;
+@@ -816,8 +825,8 @@
+             if (bind_mount_translate_path_ex(fd_path, host_chk, sizeof(host_chk), &via_hook) && via_hook) {
+                 mode_t_ type = fake_stat->mode & S_IFMT;
+                 fake_stat->mode = type | (S_ISDIR(fake_stat->mode) ? 0755 : 0644);
+-                fake_stat->uid = 0;
+-                fake_stat->gid = 0;
++                fake_stat->uid = lx_guest_path_owner(fd_path);
++                fake_stat->gid = fake_stat->uid;
+                 fake_stat->rdev = 0;
+                 return 0;
+             }
+@@ -1207,13 +1216,15 @@
+                     struct ish_stat prev;
+                     if (inode_read_stat_if_exist(fs, existing, &prev)) {
+                         prev.mode = top_mode;
++                        prev.uid = prev.gid = lx_guest_path_owner(linux_path);
+                         inode_write_stat(fs, existing, &prev);
+                         fprintf(stderr, "fakefs_bind_mount: slot[%d] updated meta.db mode to 0%o\n",
+                                 i, top_mode & 07777);
+                     }
+                 } else {
+                     struct ish_stat ishstat = {
+-                        .mode = top_mode, .uid = 0, .gid = 0, .rdev = 0
++                        .mode = top_mode, .uid = lx_guest_path_owner(linux_path),
++                        .gid = lx_guest_path_owner(linux_path), .rdev = 0
+                     };
+                     path_create(fs, linux_path, &ishstat);
+                     fprintf(stderr, "fakefs_bind_mount: slot[%d] created meta.db entry with mode 0%o\n",
+@@ -1300,7 +1311,8 @@
+             inode_t ino = path_get_inode(fs, linux_path);
+             if (ino == 0) {
+                 struct ish_stat ishstat = {
+-                    .mode = top_mode, .uid = 0, .gid = 0, .rdev = 0
++                    .mode = top_mode, .uid = lx_guest_path_owner(linux_path),
++                        .gid = lx_guest_path_owner(linux_path), .rdev = 0
+                 };
+                 path_create(fs, linux_path, &ishstat);
+                 fprintf(stderr, "fakefs_bind_mount: slot[%d] created meta.db entry for \"%s\" mode=0%o\n",
+@@ -1309,6 +1321,7 @@
+                 struct ish_stat prev;
+                 if (inode_read_stat_if_exist(fs, ino, &prev)) {
+                     prev.mode = top_mode;
++                        prev.uid = prev.gid = lx_guest_path_owner(linux_path);
+                     inode_write_stat(fs, ino, &prev);
+                 }
+                 fprintf(stderr, "fakefs_bind_mount: slot[%d] meta.db entry refreshed for \"%s\" (inode=%lld) mode=0%o\n",

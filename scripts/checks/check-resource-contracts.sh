@@ -18,6 +18,7 @@ echo "rootfs manifest validator rejects the incomplete documentation sample"
 # Actual arm64 candidate evidence is mandatory. Archive bytes are additionally
 # required by rootfs-build.yml and release packaging; source gates verify the
 # committed real inventory rather than substituting the documentation sample.
-evidence=docs/mobile-linux/releases/3.24.2/arm64-v8a
+version="$(python3 -c 'import json; print(json.load(open("docs/toolchains/runtime-pins.json"))["rootfs_version"])')"
+evidence="docs/mobile-linux/releases/$version/arm64-v8a"
 bash scripts/rootfs/check-rootfs-manifest.sh "$evidence/rootfs-manifest.json"
 python3 scripts/rootfs/verify-evidence.py --evidence-dir "$evidence"

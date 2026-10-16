@@ -3,12 +3,12 @@
     "branch": "v3.24",
     "minirootfs": {
       "aarch64": {
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz",
-        "sha256": "9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773"
+        "sha256": "9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz"
       },
       "x86_64": {
-        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-3.24.2-x86_64.tar.gz",
-        "sha256": "c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677"
+        "sha256": "c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-3.24.2-x86_64.tar.gz"
       }
     },
     "repositories": [
@@ -600,6 +600,26 @@
           "sha256": "2bb5136c89f5b0bbe1554c8915a3b520d5aa63ae2a51d4d821eb81698db5a818",
           "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/zstd-libs-1.5.7-r2.apk",
           "version": "1.5.7-r2"
+        },
+        {
+          "arch": "aarch64",
+          "availability": "available",
+          "name": "doas",
+          "repository": "main",
+          "role": "primary",
+          "sha256": "7d35ce1a0a76de43f7621e2099e45bfd83e6d8cf667db657633ab1f374d05f72",
+          "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/doas-6.8.2-r8.apk",
+          "version": "6.8.2-r8"
+        },
+        {
+          "arch": "aarch64",
+          "availability": "available",
+          "name": "doas-sudo-shim",
+          "repository": "main",
+          "role": "primary",
+          "sha256": "731e5a2b9e564c66c10fa98f5db2dc8f8c55ae31017ec5068744d31116691822",
+          "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/doas-sudo-shim-0.2.0-r0.apk",
+          "version": "0.2.0-r0"
         }
       ],
       "closure_status": "complete"
@@ -1186,6 +1206,26 @@
           "sha256": "23c6065b0049b2406441564bcf0032515a43f78e80d76fcb85535a3803ef5d4e",
           "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/zstd-libs-1.5.7-r2.apk",
           "version": "1.5.7-r2"
+        },
+        {
+          "arch": "x86_64",
+          "availability": "available",
+          "name": "doas",
+          "repository": "main",
+          "role": "primary",
+          "sha256": "1b0198d957fee06b484fc0e23783f03213cc97d8003c5f46b8d940d8ca9f57c8",
+          "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/doas-6.8.2-r8.apk",
+          "version": "6.8.2-r8"
+        },
+        {
+          "arch": "x86_64",
+          "availability": "available",
+          "name": "doas-sudo-shim",
+          "repository": "main",
+          "role": "primary",
+          "sha256": "74361be22e06e395703ea5bef1f53a8f21a3350a06748ab6eb404c2c916bb35b",
+          "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/doas-sudo-shim-0.2.0-r0.apk",
+          "version": "0.2.0-r0"
         }
       ],
       "closure_status": "complete"
@@ -1199,23 +1239,119 @@
     "corepack",
     "yarn"
   ],
+  "guest_user_doas_sha256": {
+    "aarch64": "7e5b784b1fa03a1ed84665bcd533838e581107070c96d5d6c9b495867569e1b3",
+    "x86_64": "d6446533e6784b3158977026d285280788931ed9244f693acf8c296466230c68"
+  },
+  "guest_user_packages": {
+    "aarch64": [
+      {
+        "arch": "aarch64",
+        "installed_record": "C:Q1rnV8oYeCQEfak3LMUyM0onHOLZA=\nP:doas\nV:6.8.2-r8\nA:aarch64\nS:17552\nI:67693\nT:OpenBSD's temporary privilege escalation tool\nU:https://github.com/Duncaen/OpenDoas\nL:ISC\no:doas\nm:Natanael Copa <ncopa@alpinelinux.org>\nt:1728635393\nc:3a55d7eb7b4b1e865bb0742590c2090e16f25fb9\nD:/bin/sh so:libc.musl-aarch64.so.1\np:cmd:doas=6.8.2-r8\nF:etc\nR:doas.conf\na:0:0:640\nZ:Q15kXpzjc3isr/R4NEY5gaNWi0wDA=\nF:etc/doas.d\nM:0:0:750\nF:usr\nF:usr/bin\nR:doas\na:0:0:4755\nZ:Q1bzXztHPZ1099ODLG25UzH8nuizA=\n\n",
+        "name": "doas",
+        "sha256": "7d35ce1a0a76de43f7621e2099e45bfd83e6d8cf667db657633ab1f374d05f72",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/doas-6.8.2-r8.apk",
+        "version": "6.8.2-r8"
+      },
+      {
+        "arch": "aarch64",
+        "installed_record": "C:Q11faV99mJI/2PErW5xVHEkEjUZ1I=\nP:doas-sudo-shim\nV:0.2.0-r0\nA:aarch64\nS:3265\nI:3764\nT:A shim for the sudo command that utilizes doas\nU:https://github.com/jirutka/doas-sudo-shim\nL:ISC\no:doas-sudo-shim\nm:Jakub Jirutka <jakub@jirutka.cz>\nt:1781027237\nc:7d542baf1918b3245e8b7283ea2559064136eba8\nk:1\nD:cmd:doas !sudo\np:sudo-virt cmd:sudo=0.2.0-r0\nF:usr\nF:usr/bin\nR:sudo\na:0:0:755\nZ:Q17CR1PArHL88OUALtFh7V7MOI0Gw=\n\n",
+        "name": "doas-sudo-shim",
+        "sha256": "731e5a2b9e564c66c10fa98f5db2dc8f8c55ae31017ec5068744d31116691822",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/aarch64/doas-sudo-shim-0.2.0-r0.apk",
+        "version": "0.2.0-r0"
+      }
+    ],
+    "x86_64": [
+      {
+        "arch": "x86_64",
+        "installed_record": "C:Q1+vNXrvYlQ2Bs3kKdcB26EzS0wXQ=\nP:doas\nV:6.8.2-r8\nA:x86_64\nS:16556\nI:35037\nT:OpenBSD's temporary privilege escalation tool\nU:https://github.com/Duncaen/OpenDoas\nL:ISC\no:doas\nm:Natanael Copa <ncopa@alpinelinux.org>\nt:1728635393\nc:3a55d7eb7b4b1e865bb0742590c2090e16f25fb9\nD:/bin/sh so:libc.musl-x86_64.so.1\np:cmd:doas=6.8.2-r8\nF:etc\nR:doas.conf\na:0:0:640\nZ:Q15kXpzjc3isr/R4NEY5gaNWi0wDA=\nF:etc/doas.d\nM:0:0:750\nF:usr\nF:usr/bin\nR:doas\na:0:0:4755\nZ:Q1e3yxV5PoBHH8lJbwCdz0VrpdmRk=\n\n",
+        "name": "doas",
+        "sha256": "1b0198d957fee06b484fc0e23783f03213cc97d8003c5f46b8d940d8ca9f57c8",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/doas-6.8.2-r8.apk",
+        "version": "6.8.2-r8"
+      },
+      {
+        "arch": "x86_64",
+        "installed_record": "C:Q1jeq3KZ3JIhzTKtcser86fXA8bec=\nP:doas-sudo-shim\nV:0.2.0-r0\nA:x86_64\nS:3286\nI:3764\nT:A shim for the sudo command that utilizes doas\nU:https://github.com/jirutka/doas-sudo-shim\nL:ISC\no:doas-sudo-shim\nm:Jakub Jirutka <jakub@jirutka.cz>\nt:1781027237\nc:7d542baf1918b3245e8b7283ea2559064136eba8\nk:1\nD:cmd:doas !sudo\np:sudo-virt cmd:sudo=0.2.0-r0\nF:usr\nF:usr/bin\nR:sudo\na:0:0:755\nZ:Q17CR1PArHL88OUALtFh7V7MOI0Gw=\n\n",
+        "name": "doas-sudo-shim",
+        "sha256": "74361be22e06e395703ea5bef1f53a8f21a3350a06748ab6eb404c2c916bb35b",
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/doas-sudo-shim-0.2.0-r0.apk",
+        "version": "0.2.0-r0"
+      }
+    ]
+  },
+  "node_source": {
+    "build_packages": {
+      "g++": "15.2.0-r5",
+      "linux-headers": "7.0.0-r1",
+      "make": "4.4.1-r4",
+      "python3": "3.14.7-r1"
+    },
+    "builder_images": {
+      "aarch64": "docker.io/library/alpine:3.24.2@sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
+      "x86_64": "docker.io/library/alpine:3.24.2@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395"
+    },
+    "configure_args": [
+      "--prefix=/usr",
+      "--without-npm"
+    ],
+    "license": "MIT",
+    "sha256": "47b970d88511b429e587b740fa733176909d2a2005a29662f01b05205f58468b",
+    "url": "https://nodejs.org/dist/v26.9.0/node-v26.9.0.tar.xz",
+    "version": "26.9.0"
+  },
+  "npm": {
+    "sha512": "uIXokLlBj6FpNUTQX1PmT5pz7BlIN9QlixX+zdaSNHsd0qUXsbDLr50xzY6Sw7cJVr0uzHKDOle0swmPW/p5Qw==",
+    "url": "https://registry.npmjs.org/npm/-/npm-12.0.2.tgz",
+    "version": "12.0.2"
+  },
   "pnpm": {
-    "version": "12.5.1",
-    "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.5.1.tgz",
-    "sha512": "4/MFvHhKK8ifWtO2E4iJRw+ujSr182thIW7JHCw9ZAiXdfneOKrDMQROpA8kXLDVZmOS399lgk4ZB+9qLGLeXw==",
     "packages": {
       "aarch64": {
         "name": "@pnpm/exe.linux-arm64-musl",
-        "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64-musl/-/exe.linux-arm64-musl-12.5.1.tgz",
-        "sha512": "zupuxYZBuBEGjUz805/4/Asq01UNziFADANt8yp+LdUjU9bbMa3xY78Bx1PsGDqBy7aiad4sdUMK8ZxH4n4gmQ=="
+        "sha512": "zupuxYZBuBEGjUz805/4/Asq01UNziFADANt8yp+LdUjU9bbMa3xY78Bx1PsGDqBy7aiad4sdUMK8ZxH4n4gmQ==",
+        "url": "https://registry.npmjs.org/@pnpm/exe.linux-arm64-musl/-/exe.linux-arm64-musl-12.5.1.tgz"
       },
       "x86_64": {
         "name": "@pnpm/exe.linux-x64-musl",
-        "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64-musl/-/exe.linux-x64-musl-12.5.1.tgz",
-        "sha512": "kHCbegdTNHpzmPtUD4S5fqkVkqgdQR47spF9p2VPP3dIIkZl6Ytk8w0vhlAsAGgge8FmucfwX+vvPKgm0NtOCQ=="
+        "sha512": "kHCbegdTNHpzmPtUD4S5fqkVkqgdQR47spF9p2VPP3dIIkZl6Ytk8w0vhlAsAGgge8FmucfwX+vvPKgm0NtOCQ==",
+        "url": "https://registry.npmjs.org/@pnpm/exe.linux-x64-musl/-/exe.linux-x64-musl-12.5.1.tgz"
       }
-    }
+    },
+    "sha512": "4/MFvHhKK8ifWtO2E4iJRw+ujSr182thIW7JHCw9ZAiXdfneOKrDMQROpA8kXLDVZmOS399lgk4ZB+9qLGLeXw==",
+    "url": "https://registry.npmjs.org/pnpm/-/pnpm-12.5.1.tgz",
+    "version": "12.5.1"
   },
+  "release_ready": true,
+  "rootfs_version": "3.24.2-user1",
+  "runtime_packages": {
+    "ada-libs": "3.3.0-r0",
+    "brotli-libs": "1.2.0-r1",
+    "c-ares": "1.34.8-r0",
+    "ca-certificates": "20260909-r0",
+    "doas": "6.8.2-r8",
+    "doas-sudo-shim": "0.2.0-r0",
+    "git": "2.54.0-r0",
+    "icu-data-en": "78.1-r0",
+    "icu-libs": "78.1-r0",
+    "libcrypto3": "3.5.8-r0",
+    "libgcc": "15.2.0-r5",
+    "libssl3": "3.5.8-r0",
+    "libstdc++": "15.2.0-r5",
+    "musl": "1.2.6-r2",
+    "nghttp2-libs": "1.69.0-r0",
+    "openssh-client-default": "10.3_p1-r1",
+    "py3-pip": "26.1.2-r0",
+    "py3-virtualenv": "21.3.3-r0",
+    "python3": "3.14.7-r1",
+    "simdjson": "4.2.4-r0",
+    "simdutf": "9.0.0-r0",
+    "sqlite-libs": "3.53.4-r0",
+    "zlib": "1.3.2-r0",
+    "zstd-libs": "1.5.7-r2"
+  },
+  "schema_version": 2,
   "typescript_native": {
     "install_root": "/opt/lingxi/toolchains/typescript/7.0.2",
     "license": "Apache-2.0",
@@ -1234,56 +1370,5 @@
       }
     },
     "version": "7.0.2"
-  },
-  "release_ready": true,
-  "runtime_packages": {
-    "ca-certificates": "20260909-r0",
-    "git": "2.54.0-r0",
-    "openssh-client-default": "10.3_p1-r1",
-    "py3-pip": "26.1.2-r0",
-    "py3-virtualenv": "21.3.3-r0",
-    "python3": "3.14.7-r1",
-    "libstdc++": "15.2.0-r5",
-    "ada-libs": "3.3.0-r0",
-    "brotli-libs": "1.2.0-r1",
-    "c-ares": "1.34.8-r0",
-    "libcrypto3": "3.5.8-r0",
-    "libgcc": "15.2.0-r5",
-    "icu-libs": "78.1-r0",
-    "icu-data-en": "78.1-r0",
-    "nghttp2-libs": "1.69.0-r0",
-    "simdjson": "4.2.4-r0",
-    "simdutf": "9.0.0-r0",
-    "sqlite-libs": "3.53.4-r0",
-    "libssl3": "3.5.8-r0",
-    "zlib": "1.3.2-r0",
-    "zstd-libs": "1.5.7-r2",
-    "musl": "1.2.6-r2"
-  },
-  "schema_version": 2,
-  "npm": {
-    "version": "12.0.2",
-    "url": "https://registry.npmjs.org/npm/-/npm-12.0.2.tgz",
-    "sha512": "uIXokLlBj6FpNUTQX1PmT5pz7BlIN9QlixX+zdaSNHsd0qUXsbDLr50xzY6Sw7cJVr0uzHKDOle0swmPW/p5Qw=="
-  },
-  "node_source": {
-    "version": "26.9.0",
-    "url": "https://nodejs.org/dist/v26.9.0/node-v26.9.0.tar.xz",
-    "sha256": "47b970d88511b429e587b740fa733176909d2a2005a29662f01b05205f58468b",
-    "configure_args": [
-      "--prefix=/usr",
-      "--without-npm"
-    ],
-    "license": "MIT",
-    "build_packages": {
-      "g++": "15.2.0-r5",
-      "make": "4.4.1-r4",
-      "python3": "3.14.7-r1",
-      "linux-headers": "7.0.0-r1"
-    },
-    "builder_images": {
-      "aarch64": "docker.io/library/alpine:3.24.2@sha256:260479a1cfaf304c4c20da7f8405d3ce313513dcd534bb743257bdd2fe0f3e2d",
-      "x86_64": "docker.io/library/alpine:3.24.2@sha256:d56c381f961d307a21b3ca004cf1e3910f106644aefb1f43e654c8a56c4fd395"
-    }
   }
 }

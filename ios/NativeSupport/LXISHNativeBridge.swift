@@ -304,6 +304,12 @@ private struct LXISHShellExecutionResultBox {
     var durationSeconds: Double
 }
 
+enum LXISHPtyExitIdentity {
+    static func matches(pid: Int32, generation: UInt64, currentGeneration: UInt64) -> Bool {
+        pid == 1 || (generation != 0 && generation == currentGeneration)
+    }
+}
+
 struct LXISHGuestEnvironment {
     static func merged(
         requestEnvironment: [String: String],
@@ -314,9 +320,11 @@ struct LXISHGuestEnvironment {
         let workspaceGuestPath = LXISHGuestPaths.workspace(stableWorkspaceId)
         let defaultHome = LXISHGuestPaths.home
         let defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        let resolvedCwd = cwd?.isEmpty == false ? cwd! : workspaceGuestPath
+        let resolvedCwd = cwd?.isEmpty == false ? cwd! : LXISHGuestPaths.workspaceRoot
         let defaults: [String: String] = [
             "HOME": defaultHome,
+            "USER": LXISHGuestPaths.user,
+            "LOGNAME": LXISHGuestPaths.user,
             "PWD": resolvedCwd,
             "PATH": defaultPath,
             "TMPDIR": "/tmp",
@@ -423,7 +431,9 @@ struct LXISHRuntimeMountPlanner {
                 guestPath: LXISHGuestPaths.home,
                 readOnly: false,
                 purpose: "home"
-            )
+            ),
+            LXISHMountSpec(hostPath: config.persistentAdminHomeURL.path,
+                guestPath: LXISHGuestPaths.adminHome, readOnly: false, purpose: "admin-home")
         ]
         if !config.workspaceHostPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             mounts.append(
@@ -437,7 +447,7 @@ struct LXISHRuntimeMountPlanner {
                 )
             )
         }
-        for mount in requestedMounts where mount.guestPath != LXISHGuestPaths.home && mount.guestPath != workspaceGuestPath {
+        for mount in requestedMounts where mount.guestPath != LXISHGuestPaths.home && mount.guestPath != LXISHGuestPaths.adminHome && mount.guestPath != workspaceGuestPath {
             mounts.append(
                 LXISHMountSpec(
                     hostPath: URL(fileURLWithPath: mount.hostPath, isDirectory: true)
@@ -574,17 +584,17 @@ private final class LXISHKernelRuntimeBridge {
         }
     }
 
-    func configureMounts(_ mounts: [[String: Any]]) throws {
+    func configureMounts(_ mounts: [[String: Any]], replacing: Bool = true) throws {
         let kernel = try resolveKernel()
         let unmountSelector = NSSelectorFromString("bindUnmountPath:")
         if let method = class_getInstanceMethod(type(of: kernel), unmountSelector) {
             typealias Fn = @convention(c) (AnyObject, Selector, NSString) -> Int32
             let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
-            for guestPath in mountedGuestPaths.reversed() {
+            for guestPath in (replacing ? Array(mountedGuestPaths.reversed()) : []) {
                 _ = fn(kernel, unmountSelector, guestPath as NSString)
             }
         }
-        mountedGuestPaths.removeAll()
+        if replacing { mountedGuestPaths.removeAll() }
 
         let mountSelector = NSSelectorFromString("bindMountPath:toHostPath:readOnly:")
         guard let method = class_getInstanceMethod(type(of: kernel), mountSelector) else {
@@ -606,6 +616,8 @@ private final class LXISHKernelRuntimeBridge {
             mountedGuestPaths.append(guestPath)
         }
     }
+
+    private(set) var interactiveShellGeneration: UInt64 = 0
 
     func openInteractiveShell(
         withCommand command: [String],
@@ -633,6 +645,13 @@ private final class LXISHKernelRuntimeBridge {
         guard result >= 0 else {
             throw LXISHBridgeError.unavailable("interactive shell launch failed: \(result)")
         }
+        let generationSelector = NSSelectorFromString("interactiveShellGeneration")
+        guard let method = class_getInstanceMethod(type(of: kernel), generationSelector) else {
+            throw LXISHBridgeError.unavailable("ISHKernel is missing interactiveShellGeneration")
+        }
+        typealias GenerationFn = @convention(c) (AnyObject, Selector) -> UInt64
+        let generation = unsafeBitCast(method_getImplementation(method), to: GenerationFn.self)
+        interactiveShellGeneration = generation(kernel, generationSelector)
         interactiveShellOpen = true
     }
 
@@ -1505,27 +1524,26 @@ private final class LXISHNativeCoordinator {
         ) { [weak self] note in
             guard let pid = (note.userInfo?["pid"] as? NSNumber)?.int32Value else { return }
             let code = (note.userInfo?["code"] as? NSNumber)?.int32Value ?? 0
-            self?.handleGuestProcessExit(pid: pid, waitStatus: code)
+            let generation = (note.userInfo?["interactive_generation"] as? NSNumber)?.uint64Value ?? 0
+            self?.handleGuestProcessExit(pid: pid, waitStatus: code, generation: generation)
         }
     }
 
     /// A guest init-or-direct-child process exited. Background executor
     /// children settle through their own completion callbacks and are
-    /// excluded by pid; whatever remains while a PTY session is open is the
+    /// excluded by the native launch identity; only that exact PTY is the
     /// interactive shell itself (pid 1 means guest init died, which the shell
     /// cannot survive either). Emit the `pty_closed` the Rust reader already
     /// understands, carrying the REAL exit code, and free the one-PTY slot so
     /// the restart link actually works.
-    private func handleGuestProcessExit(pid: Int32, waitStatus: Int32) {
+    private func handleGuestProcessExit(pid: Int32, waitStatus: Int32, generation: UInt64) {
         NSLog("LXISHBridge: guest process exit pid=%d rawStatus=0x%x", pid, waitStatus)
         queue.async {
             for (key, runtime) in self.runtimes {
                 var runtime = runtime
                 guard let sessionId = runtime.ptySessionId else { continue }
-                if pid != 1,
-                   runtime.backgroundProcesses.values.contains(where: { $0.guestPid == pid }) {
-                    continue
-                }
+                guard LXISHPtyExitIdentity.matches(pid: pid, generation: generation,
+                    currentGeneration: runtime.kernel.interactiveShellGeneration) else { continue }
                 let status = LXISHGuestWaitStatus.decode(waitStatus)
                 NSLog(
                     "LXISHBridge: attributing exit pid=%d to PTY session %@ (code=%d detail=%@)",
@@ -1726,7 +1744,7 @@ private final class LXISHNativeCoordinator {
                         arguments: request.args,
                         environment: environment,
                         stdin: request.stdin,
-                        cwd: request.cwd,
+                        cwd: request.cwd ?? environment["PWD"],
                         timeout: self.timeoutSeconds(from: request),
                         networkPolicy: executionPolicy.networkPolicy,
                         memoryLimitBytes: executionPolicy.memoryLimitBytes
@@ -1793,7 +1811,7 @@ private final class LXISHNativeCoordinator {
                 arguments: request.args,
                 environment: environment,
                 stdin: request.stdin,
-                cwd: request.cwd,
+                cwd: request.cwd ?? environment["PWD"],
                 networkPolicy: executionPolicy.networkPolicy,
                 memoryLimitBytes: executionPolicy.memoryLimitBytes,
                 lineSink: { [weak self] line, isStdErr in
@@ -1897,7 +1915,7 @@ private final class LXISHNativeCoordinator {
                 request.command,
                 arguments: request.args,
                 environment: environment,
-                cwd: request.cwd,
+                cwd: request.cwd ?? environment["PWD"],
                 networkPolicy: executionPolicy.networkPolicy,
                 memoryLimitBytes: executionPolicy.memoryLimitBytes,
                 dataSink: { [weak self] data, isStdErr in
@@ -2129,7 +2147,7 @@ private final class LXISHNativeCoordinator {
                 from: LXISHPtyOpenRequest(
                     command: request.command,
                     args: request.args,
-                    cwd: request.cwd,
+                    cwd: request.cwd ?? environment["PWD"],
                     env: environment,
                     cols: request.cols,
                     rows: request.rows,
@@ -2386,9 +2404,11 @@ private final class LXISHNativeCoordinator {
             includeDefaultMounts: includeDefaultMounts
         )
         try ensureHostEndpointsExist(mounts)
-        try ensureGuestMountParentsExist(mounts, runtime: &runtime)
-        guard !mounts.isEmpty else { return }
-        try runtime.kernel.configureMounts(mounts.map(dictionary(from:)))
+        try runtime.kernel.configureMounts([])
+        for mount in mounts.sorted(by: { LXISHRuntimeMountPlanner.shallowestFirst($0.guestPath, $1.guestPath) }) {
+            try ensureGuestMountParentsExist([mount], runtime: &runtime)
+            try runtime.kernel.configureMounts([dictionary(from: mount)], replacing: false)
+        }
     }
 
     /// The host half of every bind: the directory actually being shared.
@@ -2410,7 +2430,7 @@ private final class LXISHNativeCoordinator {
     /// `/var/lingxi/project-mounts/<id>/store/project` would otherwise leave
     /// its intermediate directories unknown to the guest and every lookup
     /// through them would return ENOENT. Mount points one level under a
-    /// directory baked into the rootfs image (`/workspace/<id>`) were the only
+    /// directory baked into the rootfs image (`/home/lingxi/lingxi/<id>`) were the only
     /// ones that ever worked, and they worked by accident.
     ///
     /// Creating the parents with `FileManager` — which is what this used to do
@@ -2474,7 +2494,7 @@ private final class LXISHNativeCoordinator {
         let result = try runtime.executor.runExecutable(
             "/bin/sh",
             arguments: arguments,
-            environment: ["PATH": "/bin:/usr/bin:/sbin:/usr/sbin"],
+            environment: ["PATH": "/bin:/usr/bin:/sbin:/usr/sbin", "LX_RUNTIME_ADMIN": "1", "HOME": "/root"],
             stdin: nil,
             cwd: "/",
             timeout: 30,
@@ -2554,7 +2574,7 @@ private final class LXISHNativeCoordinator {
 
     private func validateEnvironment(_ environment: [String: String]) throws {
         for (key, value) in environment {
-            guard !key.isEmpty,
+            guard key != "LX_RUNTIME_ADMIN", !key.isEmpty,
                   !key.contains("="),
                   !key.utf8.contains(0),
                   !value.utf8.contains(0)

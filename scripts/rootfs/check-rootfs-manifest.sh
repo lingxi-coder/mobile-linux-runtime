@@ -251,7 +251,7 @@ for entry in immutable_files:
         "/root",
         "/tmp",
         "/var/tmp",
-        "/workspace",
+        "/home/lingxi/lingxi", "/home/lingxi",
     }):
         print(f"writable path is forbidden in immutable inventory: {path}", file=sys.stderr)
         sys.exit(1)
@@ -288,13 +288,13 @@ if not isinstance(writable_paths, list) or not writable_paths:
     print("writable_paths must be a non-empty list", file=sys.stderr)
     sys.exit(1)
 
-allowed_writable_roots = {"/root", "/tmp", "/var/tmp", "/workspace"}
+allowed_writable_roots = {"/root", "/tmp", "/var/tmp", "/home/lingxi/lingxi", "/home/lingxi"}
 if len(writable_paths) != len(set(writable_paths)):
     print("writable_paths contains duplicates", file=sys.stderr)
     sys.exit(1)
 if set(writable_paths) != allowed_writable_roots:
     print(
-        "writable_paths must be exactly /root, /tmp, /var/tmp, and /workspace",
+        "writable_paths must contain user home, administrator home, scratch areas, and workspace root",
         file=sys.stderr,
     )
     sys.exit(1)

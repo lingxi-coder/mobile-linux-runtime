@@ -1,0 +1,58 @@
+--- a/src/ios/iSH/ISHKernel.m
++++ b/src/ios/iSH/ISHKernel.m
+@@ -64,6 +64,8 @@
+ 
+ // Global reference to shared instance for C callbacks
+ static ISHKernel *g_sharedKernel = nil;
++static _Atomic(int) g_interactive_shell_pid = 0;
++static _Atomic(uint64_t) g_interactive_shell_generation = 0;
+ 
+ // External hooks
+ extern void (*exit_hook)(struct task *task, int code);
+@@ -282,11 +284,15 @@
+         return;
+ 
+     pid_t pid = task->pid;
++    // Capture identity before dispatch: a mount helper may exit just before a
++    // new PTY opens, and its notification can arrive after that open.
++    uint64_t generation = atomic_load(&g_interactive_shell_pid) == pid
++        ? atomic_load(&g_interactive_shell_generation) : 0;
+     dispatch_async(dispatch_get_main_queue(), ^{
+         [[NSNotificationCenter defaultCenter]
+             postNotificationName:ISHProcessExitedNotification
+             object:nil
+-            userInfo:@{@"pid": @(pid), @"code": @(code)}];
++            userInfo:@{@"pid": @(pid), @"code": @(code), @"interactive_generation": @(generation)}];
+     });
+ }
+ 
+@@ -649,6 +655,8 @@
+ 
+     // Spawn shell as a child of init process
+     // This must be done in a background thread
++    atomic_store(&g_interactive_shell_pid, 0);
++    uint64_t generation = atomic_fetch_add(&g_interactive_shell_generation, 1) + 1;
+     NSArray<NSString *> *commandCopy = [command copy];
+     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+         // Create a new child process of init
+@@ -657,6 +665,9 @@
+             NSLog(@"ISHKernel: become_new_init_child failed: %d", err);
+             return;
+         }
++
++        if (atomic_load(&g_interactive_shell_generation) != generation) return;
++        atomic_store(&g_interactive_shell_pid, current->pid);
+ 
+         // Create a pseudo-terminal (PTY) for the shell session.
+         // This gives the shell a proper controlling terminal with job control,
+@@ -829,6 +840,10 @@
+     return 0;
+ }
+ 
++- (uint64_t)interactiveShellGeneration {
++    return atomic_load(&g_interactive_shell_generation);
++}
++
+ - (void)sendInput:(NSData *)data {
+     if (_consoleTTY && data.length > 0) {
+         tty_input(_consoleTTY, data.bytes, data.length, false);

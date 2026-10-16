@@ -46,8 +46,8 @@ fn runtime() -> (TempDir, AndroidProotRuntime) {
         b"#!/bin/sh\n\
               while [ \"$#\" -gt 0 ]; do\n\
                 case \"$1\" in\n\
-                  -0|--link2symlink) shift ;;\n\
-                  -r|-b|-w) shift 2 ;;\n\
+                  --link2symlink) shift ;;\n\
+                  -i|-r|-b|-w) shift 2 ;;\n\
                   *) break ;;\n\
                 esac\n\
               done\n\
@@ -381,7 +381,7 @@ async fn cancel_pending_handle_startup(raw: bool, shutdown: bool) {
             request.network = NetworkPolicy::Disabled;
             request.mounts.push(MountSpec {
                 host_path: source,
-                guest_path: "/workspace/source".into(),
+                guest_path: "/home/lingxi/lingxi/source".into(),
                 read_only: true,
                 purpose: MountPurpose::External,
             });
@@ -466,7 +466,7 @@ fn cancel_queued_raw_snapshot(shutdown: bool) {
         let mut request = raw_request("sleep 30");
         request.mounts.push(MountSpec {
             host_path: source,
-            guest_path: "/workspace/source".into(),
+            guest_path: "/home/lingxi/lingxi/source".into(),
             read_only: true,
             purpose: MountPurpose::External,
         });
@@ -1015,7 +1015,7 @@ async fn mount_validation_rejects_managed_root_and_traversal() {
     let result = runtime
         .configure_mounts(vec![MountSpec {
             host_path: runtime.state.config.managed_root.clone(),
-            guest_path: "/workspace/../root".to_string(),
+            guest_path: "/home/lingxi/lingxi/../root".to_string(),
             read_only: false,
             purpose: MountPurpose::Workspace,
         }])
@@ -1036,7 +1036,7 @@ fn merged_execution_mounts_keep_configured_binds() {
         .expect("mounts rwlock")
         .push(MountSpec {
             host_path: workspace_host,
-            guest_path: "/workspace/default".to_string(),
+            guest_path: "/home/lingxi/lingxi/default".to_string(),
             read_only: false,
             purpose: MountPurpose::Workspace,
         });
@@ -1044,19 +1044,20 @@ fn merged_execution_mounts_keep_configured_binds() {
         .execution_mounts(
             &[MountSpec {
                 host_path: build_host,
-                guest_path: "/workspace/extra".to_string(),
+                guest_path: "/home/lingxi/lingxi/extra".to_string(),
                 read_only: false,
                 purpose: MountPurpose::External,
             }],
             ForegroundMountMode::Merged,
         )
         .expect("merged mounts");
-    assert_eq!(mounts.len(), 2);
+    assert_eq!(mounts.len(), 4);
     assert!(mounts
         .iter()
-        .any(|mount| mount.guest_path == "/workspace/default"));
+        .any(|mount| mount.guest_path == "/home/lingxi/lingxi/default"));
     assert!(mounts.iter().any(|mount| {
-        mount.guest_path == "/workspace/extra" && matches!(mount.purpose, MountPurpose::External)
+        mount.guest_path == "/home/lingxi/lingxi/extra"
+            && matches!(mount.purpose, MountPurpose::External)
     }));
 }
 
@@ -1076,7 +1077,7 @@ fn raw_stdio_read_only_mounts_use_isolated_snapshots() {
     let (mounts, roots) = snapshot_read_only_mounts(
         vec![MountSpec {
             host_path: source.clone(),
-            guest_path: "/workspace/lingxi-lsp-test".to_string(),
+            guest_path: "/home/lingxi/lingxi/lingxi-lsp-test".to_string(),
             read_only: true,
             purpose: MountPurpose::External,
         }],
@@ -1090,7 +1091,7 @@ fn raw_stdio_read_only_mounts_use_isolated_snapshots() {
     assert_eq!(mounts[1].host_path, source.join("node_modules"));
     assert_eq!(
         mounts[1].guest_path,
-        "/workspace/lingxi-lsp-test/node_modules"
+        "/home/lingxi/lingxi/lingxi-lsp-test/node_modules"
     );
     assert_eq!(roots, vec![snapshot.clone()]);
     fs::write(mounts[0].host_path.join("src/app.jsx"), b"changed in guest")
@@ -1211,7 +1212,7 @@ fn ordinary_requests_reject_build_state_env_overrides() {
     let mut request = request();
     request
         .env
-        .insert("HOME".into(), "/workspace/extra/home".into());
+        .insert("HOME".into(), "/home/lingxi/lingxi/extra/home".into());
     let error = validate_request(&request).expect_err("ordinary requests must reject HOME");
     assert!(error
         .to_string()
@@ -1279,4 +1280,28 @@ fn terminal_transition_is_emitted_once() {
         })
         .count();
     assert_eq!(terminal, 1);
+}
+
+#[test]
+fn normal_and_pty_launches_use_the_same_nonroot_identity_and_default_cwd() {
+    let (_temp, runtime) = runtime();
+    let request = request();
+    let command = runtime
+        .build_command(&request, None, &BTreeMap::new(), &[], None)
+        .unwrap();
+    let args: Vec<_> = command
+        .as_std()
+        .get_args()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(&args[..2], ["-i", "1000:1000"]);
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["-w", mobile_linux_api::guest_paths::WORKSPACE_ROOT]));
+    let (_, pty_args, env) = runtime
+        .build_pty_invocation("/bin/sh", &[], None, &BTreeMap::new(), &[])
+        .unwrap();
+    assert_eq!(&pty_args[..2], ["-i", "1000:1000"]);
+    assert_eq!(env.get("HOME").unwrap(), "/home/lingxi");
+    assert_eq!(env.get("USER").unwrap(), "lingxi");
 }

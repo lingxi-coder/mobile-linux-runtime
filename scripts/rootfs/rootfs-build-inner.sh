@@ -162,7 +162,7 @@ echo "[rootfs:${ARCH}] configuring guest shell"
 # author the profile instead of inheriting that. Nothing here changes directory.
 cat > "${TARGET}/etc/profile" <<'PROFILE'
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export HOME=${HOME:-/root}
+export HOME=${HOME:-/home/lingxi}
 export TMPDIR=${TMPDIR:-/tmp}
 export SSL_CERT_FILE=${SSL_CERT_FILE:-/etc/ssl/cert.pem}
 export SSL_CERT_DIR=${SSL_CERT_DIR:-/etc/ssl/certs}
@@ -177,7 +177,7 @@ PROFILE
 sed -i 's|^root:.*|root:x:0:0:root:/root:/bin/sh|' "${TARGET}/etc/passwd"
 mkdir -p "${TARGET}/dev" "${TARGET}/proc" "${TARGET}/sys" "${TARGET}/run" \
          "${TARGET}/tmp" "${TARGET}/var/tmp" "${TARGET}/root" "${TARGET}/home" \
-         "${TARGET}/workspace" "${TARGET}/var/lingxi" "${TARGET}/opt/lingxi"
+         "${TARGET}/home/lingxi/lingxi" "${TARGET}/var/lingxi" "${TARGET}/opt/lingxi"
 chmod 1777 "${TARGET}/tmp" "${TARGET}/var/tmp"
 
 # resolv.conf is replaced at boot by the native bridge's refreshDns(); ship a
@@ -334,6 +334,7 @@ print(f"   {len(artifacts)} pinned artifacts")
 PY
 
 python3 /sdk/scripts/rootfs/normalize-interpreter-aliases.py --root "${TARGET}" --record "${OUT}/interpreter-alias-transformations.json"
+python3 /guest-user.py --root "${TARGET}"
 echo "[rootfs:${ARCH}] packing rootfs tarball"
 python3 /sdk/scripts/rootfs/rootfs_tool.py build-archive --root "${TARGET}" --output "${OUT}/rootfs.tar" --source-date-epoch 0
 gzip -n -9 -c "${OUT}/rootfs.tar" > "${OUT}/rootfs.tar.gz"

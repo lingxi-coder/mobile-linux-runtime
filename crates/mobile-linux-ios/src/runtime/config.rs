@@ -11,9 +11,9 @@ pub struct IosIshRuntimeConfig {
     pub managed_root: PathBuf,
     /// Canonical app sandbox root used to protect `.lingxi` and config trees.
     pub app_sandbox_root: PathBuf,
-    /// Host workspace path exposed as the default `/workspace/<id>` mount.
+    /// Host workspace path exposed as the default `/home/lingxi/lingxi/<id>` mount.
     pub workspace_host_path: PathBuf,
-    /// Stable guest workspace identifier appended under `/workspace`.
+    /// Stable guest workspace identifier appended under `/home/lingxi/lingxi`.
     pub stable_workspace_id: String,
     /// Guest ABI label surfaced in status responses.
     pub abi: String,
@@ -47,7 +47,7 @@ impl IosIshRuntimeConfig {
     }
 
     pub(super) fn persistent_home_host_path(&self) -> PathBuf {
-        self.managed_root.join("persistent/root")
+        self.managed_root.join("persistent/lingxi")
     }
 
     pub(super) fn default_workspace_mount(&self) -> MountSpec {
@@ -63,6 +63,15 @@ impl IosIshRuntimeConfig {
         MountSpec {
             host_path: self.persistent_home_host_path(),
             guest_path: mobile_linux_api::guest_paths::HOME.to_string(),
+            read_only: false,
+            purpose: MountPurpose::Shared,
+        }
+    }
+
+    pub(super) fn persistent_admin_home_mount(&self) -> MountSpec {
+        MountSpec {
+            host_path: self.managed_root.join("persistent/root"),
+            guest_path: mobile_linux_api::guest_paths::ADMIN_HOME.to_string(),
             read_only: false,
             purpose: MountPurpose::Shared,
         }

@@ -43,7 +43,8 @@ def verify(archive, arch, profile, expected_sha256, receipt=None):
             if member.isdev() or member.isfifo() or not (member.isdir() or member.issym() or member.isreg() or member.islnk()):
                 raise ValueError(f"unsafe archive entry type: {path}")
             if member.mode & (stat.S_ISUID | stat.S_ISGID):
-                raise ValueError(f"privileged archive mode: {path}")
+                if not member.isreg() or member.uid != 0 or member.gid != 0 or not tool.permitted_doas(path, member.mode, tar.extractfile(member).read()):
+                    raise ValueError(f"privileged archive mode: {path}")
             if not member.issym() and member.mode & stat.S_IWOTH and path not in tool.WORLD_WRITABLE_ALLOWED:
                 raise ValueError(f"unsafe writable archive entry: {path}")
             if member.issym():

@@ -42,6 +42,54 @@ struct SDKDeviceSmoke {
         try require(capability.available, "device kernel unavailable: \(capability.reason ?? "unknown")")
         print("SDK_SMOKE_PHASE install-boot")
         _ = try await runtime.boot()
+        print("SDK_SMOKE_PHASE default-user")
+        let identity = try await runtime.handle.runCommand(request: command(#"id -un; id -u; id -g; printf '%s\n' "$HOME" "$USER"; pwd; sudo -n id -u; sudo -i /bin/sh -c 'printf %s "$HOME"'"#))
+        try require(identity.exitCode == 0 && identity.stdout == "lingxi\n1000\n1000\n/home/lingxi\nlingxi\n/home/lingxi/lingxi\n0\n/root", "default guest identity/cwd/elevation: \(identity.stdout) \(identity.stderr)")
+        let homeWrite = try await runtime.handle.runCommand(request: command("printf retained > ~/default-user-check; test -d ~/lingxi; test -w ~/lingxi"))
+        try require(homeWrite.exitCode == 0, "user home is not writable: \(homeWrite.stderr)")
+        var workspaceWrite = command("printf workspace > proof.txt")
+        workspaceWrite.cwd = "/home/lingxi/lingxi/one"
+        let written = try await runtime.handle.runCommand(request: workspaceWrite)
+        try require(written.exitCode == 0 && FileManager.default.fileExists(atPath: workspace.appendingPathComponent("proof.txt").path), "nested workspace is not writable: \(written.stderr)")
+        print("SDK_SMOKE_PHASE user-raw-background-pty")
+        let rawUser = try await runtime.handle.openRawStdio(request: command("printf '%s:%s' \"$(id -u)\" \"$HOME\"", timeout: nil))
+        var rawIdentity = Data(), rawDone = false
+        for _ in 0..<500 {
+            let chunk = try await runtime.handle.readRawStdio(id: rawUser.id, maxBytes: 4096)
+            rawIdentity.append(chunk.stdout)
+            if chunk.closed { rawDone = true; break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try require(rawDone && String(data: rawIdentity, encoding: .utf8) == "1000:/home/lingxi", "raw stdio user identity")
+        try await runtime.handle.closeRawStdio(id: rawUser.id)
+        let backgroundUser = try await runtime.handle.spawnBackground(request: command("id -u > ~/background-user-check", timeout: nil))
+        var backgroundDone = false
+        for _ in 0..<500 {
+            if try await runtime.handle.taskStatus(taskId: backgroundUser.id)?.status == .completed { backgroundDone = true; break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try require(backgroundDone, "background user command did not complete")
+        let backgroundIdentity = try await runtime.handle.runCommand(request: command("cat ~/background-user-check"))
+        try require(backgroundIdentity.stdout == "1000\n", "background task user identity")
+        let userPty = try await runtime.handle.openPty(request: MobileLinuxPtyOpenRequestFfi(
+            command: "/bin/sh", args: ["-l", "-c", "printf 'SDK_USER_%s_%s' \"$(id -u)\" \"$HOME\"; sleep 1"], cwd: nil,
+            env: [], size: MobileLinuxPtySizeFfi(cols: 80, rows: 24), mounts: []))
+        var ptyIdentity = Data(), lastSequence: UInt64? = nil
+        for _ in 0..<500 {
+            for event in try await runtime.handle.readEvents(afterSequence: lastSequence, limit: 512) {
+                lastSequence = event.sequence
+                if event.sessionId == userPty.id, let data = event.data { ptyIdentity.append(data) }
+            }
+            if String(data: ptyIdentity, encoding: .utf8)?.contains("SDK_USER_1000_/home/lingxi") == true { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try await runtime.handle.closePty(handle: userPty)
+        try require(String(data: ptyIdentity, encoding: .utf8)?.contains("SDK_USER_1000_/home/lingxi") == true, "PTY login user identity: \(String(data: ptyIdentity, encoding: .utf8) ?? "invalid utf8")")
+        if ProcessInfo.processInfo.arguments.contains("--sdk-default-user-smoke") {
+            try await runtime.shutdown()
+            print("SDK_DEFAULT_USER_RESULT PASS")
+            return
+        }
         print("SDK_SMOKE_PHASE foreground")
         let first = try await runtime.handle.runCommand(request: command("printf sdk-ready"))
         try require(first.stdout == "sdk-ready", "foreground stdout mismatch")

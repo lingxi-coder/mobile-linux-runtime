@@ -92,6 +92,14 @@ impl AndroidProotRuntime {
 impl AndroidProotRuntime {
     pub(super) fn prepare_execution(&self) -> Result<(), MobileLinuxError> {
         self.readiness()?;
+        self.rootfs_store()
+            .preserve_guest_homes()
+            .map_err(rootfs_store_error)?;
+        for path in ["persistent/lingxi/lingxi", "persistent/root"] {
+            fs::create_dir_all(self.state.config.managed_root.join(path)).map_err(|error| {
+                MobileLinuxError::Io(format!("create persistent home: {error}"))
+            })?;
+        }
         fs::create_dir_all(self.state.config.managed_root.join("tmp"))
             .map_err(|error| MobileLinuxError::Io(format!("create PRoot tmp: {error}")))?;
         self.state.booted.store(true, Ordering::Release);
@@ -191,11 +199,9 @@ impl AndroidProotRuntime {
             staged_root: path_present(&staged).then_some(staged),
             archive_sha256: self.state.config.archive_sha256.clone(),
             installed_size_bytes: directory_size(&active).ok(),
-            writable_guest_paths: vec![
-                "/root".to_string(),
-                "/tmp".to_string(),
-                "/var/tmp".to_string(),
-            ],
+            writable_guest_paths: mobile_linux_api::guest_paths::writable_roots()
+                .map(str::to_string)
+                .to_vec(),
             last_error,
         }
     }

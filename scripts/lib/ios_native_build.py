@@ -69,9 +69,9 @@ def prepare(cache):
         copytree(source('ish',pins,cache),ish)
         for name in ['libapps','libarchive']: copytree(source(name,pins,cache),ish/'deps'/name)
         copytree(SDK/'native/ios/upstream/openminis',glue)
-        for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch'):
+        for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch','ish-mobile-mount-owner.patch'):
             apply_source_patch(ish,name)
-        for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch'):
+        for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch','openminis-default-user.patch','openminis-pty-exit-identity.patch'):
             apply_source_patch(glue,name)
         (work/'prepared').write_text(identity)
         if not prepared_work_matches(work,identity):
@@ -174,7 +174,10 @@ def rootfs(archive,output,cache,native_output,profile,expected_sha256):
     output.mkdir(parents=True,exist_ok=True);resources=output/'resources';resources.mkdir(exist_ok=True)
     dest=resources/'alpine-rootfs'
     if dest.exists():shutil.rmtree(dest)
-    run([build/'tools/fakefsify',archive,dest],env=env)
+    # Verify the official input first, then apply the shared, hashed account layer.
+    user_archive=output/'guest-user-rootfs.tar.gz'
+    run(['python3',SDK/'scripts/rootfs/guest_user.py','--archive',archive,'--output',user_archive,'--arch','aarch64','--cache',cache/'guest-user-apks'])
+    run([build/'tools/fakefsify',user_archive,dest],env=env)
     (resources/'default_mount').mkdir(exist_ok=True)
     for name in ['RootfsPatch.bundle','libvdso.so.elf']:
         src=native_output/'resources'/name
@@ -184,7 +187,7 @@ def rootfs(archive,output,cache,native_output,profile,expected_sha256):
     if zip_path.exists():zip_path.unlink()
     run(['ditto','-c','-k','--sequesterRsrc','--keepParent',dest,zip_path])
     # Keep app metadata out of the SDK artifact; caller may add a profile layer.
-    (output/'manifest.json').write_text(json.dumps({'schema_version':1,'platform':'ios','guest_abi':'aarch64','rootfs_zip_sha256':sha(zip_path),'source_archive_sha256':sha(archive),'source_manifest_sha256':sha(PINS),'resources':{'rootfs_zip':str(zip_path),'rootfs_dir':str(dest),'default_mount':str(resources/'default_mount'),'vdso':str(resources/'libvdso.so.elf')}},indent=2)+'\n')
+    (output/'manifest.json').write_text(json.dumps({'schema_version':1,'platform':'ios','guest_abi':'aarch64','rootfs_version':json.loads((SDK/'docs/toolchains/runtime-pins.json').read_text())['rootfs_version'],'rootfs_zip_sha256':sha(zip_path),'source_archive_sha256':sha(archive),'guest_user_archive_sha256':sha(user_archive),'source_manifest_sha256':sha(PINS),'resources':{'rootfs_zip':str(zip_path),'rootfs_dir':str(dest),'default_mount':str(resources/'default_mount'),'vdso':str(resources/'libvdso.so.elf')}},indent=2)+'\n')
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('action',choices=['native','framework','rootfs']);parser.add_argument('--output',type=P,required=True);parser.add_argument('--cache',type=P,required=True);parser.add_argument('--configuration',choices=['Debug','Release'],default='Release');parser.add_argument('--simulator-only',action='store_true');parser.add_argument('--kind',choices=['native-support'],default='native-support');parser.add_argument('--archive',type=P);parser.add_argument('--native-output',type=P);parser.add_argument('--profile',choices=['base','toolchain'],default='toolchain');parser.add_argument('--expected-archive-sha256');args=parser.parse_args();args.output=args.output.resolve();args.cache=args.cache.resolve();args.cache.mkdir(parents=True,exist_ok=True)

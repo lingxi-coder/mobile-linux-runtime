@@ -1,0 +1,84 @@
+--- a/src/ios/iSH/ISHShellExecutor.m
++++ b/src/ios/iSH/ISHShellExecutor.m
+@@ -293,6 +293,14 @@
+     }
+ 
+     struct task *task = current;
++    // Only SDK mount bookkeeping requests root. Public env validation rejects
++    // this marker, and it is never forwarded to a guest process.
++    BOOL runtimeAdmin = [environment[@"LX_RUNTIME_ADMIN"] isEqualToString:@"1"];
++    if (!runtimeAdmin) {
++        task->uid = task->euid = task->suid = 1000;
++        task->gid = task->egid = task->sgid = 1000;
++        task->ngroups = 0;
++    }
+ 
+     // Stamp the new task group with the caller-provided fs_context so the
+     // fakefs path-translate hook can route this task's file operations
+@@ -449,7 +457,9 @@
+ } while(0)
+ 
+     ENVP_APPEND("TERM=xterm-256color");
+-    ENVP_APPEND("HOME=/root");
++    ENVP_APPEND(runtimeAdmin ? "HOME=/root" : "HOME=/home/lingxi");
++    ENVP_APPEND(runtimeAdmin ? "USER=root" : "USER=lingxi");
++    ENVP_APPEND(runtimeAdmin ? "LOGNAME=root" : "LOGNAME=lingxi");
+     ENVP_APPEND("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin");
+     ENVP_APPEND("LANG=C.UTF-8");
+     ENVP_APPEND("CHARSET=UTF-8");
+@@ -492,6 +502,7 @@
+     appendingCustomEnvironment = YES;
+     if (environment) {
+         for (NSString *key in environment) {
++            if ([key isEqualToString:@"LX_RUNTIME_ADMIN"]) continue;
+             NSString *entry = [NSString stringWithFormat:@"%@=%@", key, environment[key]];
+             ENVP_APPEND(entry.UTF8String);
+         }
+--- a/src/ios/iSH/ISHKernel.m
++++ b/src/ios/iSH/ISHKernel.m
+@@ -738,9 +738,14 @@
+         // Build environment variables
+         char envp_buf[8192];
+         size_t envp_pos = 0;
++        BOOL appendingCustomEnvironment = NO;
++        NSDictionary<NSString *, NSString *> *customEnv = self->_customEnvironment;
+ 
+ #define KERNEL_ENVP_APPEND(s) do { \
+     const char *_s = (s); \
++    const char *_eq = strchr(_s, '='); \
++    NSString *_key = _eq ? [[NSString alloc] initWithBytes:_s length:(NSUInteger)(_eq - _s) encoding:NSUTF8StringEncoding] : nil; \
++    if (!appendingCustomEnvironment && _key && customEnv[_key] != nil) break; \
+     size_t _len = strlen(_s) + 1; \
+     if (envp_pos + _len < sizeof(envp_buf) - 256) { \
+         memcpy(envp_buf + envp_pos, _s, _len); \
+@@ -749,7 +754,9 @@
+ } while(0)
+ 
+         KERNEL_ENVP_APPEND("TERM=xterm-256color");
+-        KERNEL_ENVP_APPEND("HOME=/root");
++        KERNEL_ENVP_APPEND("HOME=/home/lingxi");
++        KERNEL_ENVP_APPEND("USER=lingxi");
++        KERNEL_ENVP_APPEND("LOGNAME=lingxi");
+         KERNEL_ENVP_APPEND("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin");
+         KERNEL_ENVP_APPEND("LANG=C.UTF-8");
+         KERNEL_ENVP_APPEND("CHARSET=UTF-8");
+@@ -788,7 +795,7 @@
+         }
+ 
+         // Append custom environment variables
+-        NSDictionary<NSString *, NSString *> *customEnv = self->_customEnvironment;
++        appendingCustomEnvironment = YES;
+         if (customEnv) {
+             for (NSString *key in customEnv) {
+                 NSString *entry = [NSString stringWithFormat:@"%@=%@", key, customEnv[key]];
+@@ -801,6 +808,10 @@
+ 
+         const char *envp = envp_buf;
+ 
++        // The init task stays root; only this interactive child is a user.
++        current->uid = current->euid = current->suid = 1000;
++        current->gid = current->egid = current->sgid = 1000;
++        current->ngroups = 0;
+         // Execute command
+         err = do_execve(exec_path, exec_argc, argv, envp);
+         if (err < 0) {

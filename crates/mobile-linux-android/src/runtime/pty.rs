@@ -14,7 +14,8 @@ impl AndroidProotRuntime {
     ) -> Result<(String, Vec<String>, HashMap<String, String>), MobileLinuxError> {
         let (proot, rootfs) = self.readiness()?;
         let mut args = vec![
-            "-0".to_string(),
+            "-i".to_string(),
+            "1000:1000".to_string(),
             "--link2symlink".to_string(),
             "-r".to_string(),
             rootfs.display().to_string(),
@@ -25,7 +26,8 @@ impl AndroidProotRuntime {
             "-b".to_string(),
             "/sys".to_string(),
             "-w".to_string(),
-            cwd.unwrap_or("/root").to_string(),
+            cwd.unwrap_or(mobile_linux_api::guest_paths::WORKSPACE_ROOT)
+                .to_string(),
         ];
         for mount in mounts {
             args.push("-b".to_string());
@@ -51,7 +53,12 @@ impl AndroidProotRuntime {
                 "PATH".to_string(),
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin".to_string(),
             ),
-            ("HOME".to_string(), "/root".to_string()),
+            (
+                "HOME".to_string(),
+                mobile_linux_api::guest_paths::HOME.to_string(),
+            ),
+            ("USER".to_string(), "lingxi".to_string()),
+            ("LOGNAME".to_string(), "lingxi".to_string()),
         ]);
         child_env.extend(env.iter().map(|(key, value)| (key.clone(), value.clone())));
         if let Some(native_lib_dir) = proot.parent() {

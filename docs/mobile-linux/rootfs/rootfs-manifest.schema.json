@@ -227,18 +227,24 @@
     },
     "writable_paths": {
       "type": "array",
-      "minItems": 4,
-      "maxItems": 4,
+      "minItems": 5,
+      "maxItems": 5,
       "uniqueItems": true,
       "items": {
         "enum": [
+          "/home/lingxi",
           "/root",
           "/tmp",
           "/var/tmp",
-          "/workspace"
+          "/home/lingxi/lingxi"
         ]
       },
       "allOf": [
+        {
+          "contains": {
+            "const": "/home/lingxi"
+          }
+        },
         {
           "contains": {
             "const": "/root"
@@ -256,7 +262,7 @@
         },
         {
           "contains": {
-            "const": "/workspace"
+            "const": "/home/lingxi/lingxi"
           }
         }
       ]

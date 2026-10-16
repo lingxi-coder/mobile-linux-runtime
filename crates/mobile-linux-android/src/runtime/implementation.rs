@@ -634,11 +634,15 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
     }
 
     fn current_mounts(&self) -> Vec<MountSpec> {
-        self.state
-            .mounts
-            .read()
-            .expect("mobile-linux mounts rwlock")
-            .clone()
+        let mut mounts = self.home_mounts();
+        mounts.extend(
+            self.state
+                .mounts
+                .read()
+                .expect("mobile-linux mounts rwlock")
+                .clone(),
+        );
+        mounts
     }
 
     async fn read_events(

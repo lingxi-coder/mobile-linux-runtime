@@ -20,7 +20,7 @@ import java.util.UUID
 private const val ROOTFS_MANIFEST_FILE = "rootfs-manifest.json"
 private const val ROOTFS_SBOM_FILE = "rootfs.spdx.json"
 private const val ROOTFS_SOURCE_PINS_FILE = "mobile-linux-pins.json"
-private val ROOTFS_ALLOWED_WRITABLE_PATHS = linkedSetOf("/root", "/tmp", "/var/tmp", "/workspace")
+private val ROOTFS_ALLOWED_WRITABLE_PATHS = MobileLinuxGuestPaths.writableRoots
 private const val MAX_ROOTFS_SYMLINK_EXPANSIONS = 40
 
 private fun manifestAbiFor(abi: String): String =
@@ -360,6 +360,10 @@ public object RootfsInstaller {
                 check(target.startsWith(root)) {
                     "Rootfs archive path escapes staging directory: ${entry.name}"
                 }
+                val privilegedMode = entry.mode and 0xC00
+                check(privilegedMode == 0 || (actualGuestPath == "/usr/bin/doas" && entry.isFile && entry.mode and 0xFFF == 0x9ED && entry.longUserId == 0L && entry.longGroupId == 0L)) {
+                    "Unapproved privileged rootfs entry: ${entry.name}"
+                }
                 when {
                     entry.isDirectory -> {
                         check(actualGuestPath !in symlinkTargets) {
@@ -410,9 +414,9 @@ public object RootfsInstaller {
                         prepareFileTarget(target)
                         Files.createDirectories(target.parent)
                         FileOutputStream(target.toFile()).use { tar.copyTo(it) }
-                        target.toFile().setReadable(entry.mode and 0b100_100_100 != 0, false)
-                        target.toFile().setWritable(entry.mode and 0b010_010_010 != 0, false)
-                        target.toFile().setExecutable(entry.mode and 0b001_001_001 != 0, false)
+                        // Preserve the virtual SUID bit for PRoot's guest doas,
+                        // as well as private configuration modes (0600/0640).
+                        Files.setAttribute(target, "unix:mode", entry.mode and 0xFFF, LinkOption.NOFOLLOW_LINKS)
                     }
                 }
                 entry = tar.nextTarEntry

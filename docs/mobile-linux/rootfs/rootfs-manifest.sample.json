@@ -192,9 +192,10 @@
     }
   ],
   "writable_paths": [
+    "/home/lingxi",
     "/root",
     "/tmp",
     "/var/tmp",
-    "/workspace"
+    "/home/lingxi/lingxi"
   ]
 }

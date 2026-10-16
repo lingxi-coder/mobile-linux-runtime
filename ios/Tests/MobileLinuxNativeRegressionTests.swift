@@ -170,7 +170,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let wire = Data("""
         {
           "managed_root": "/managed",
-          "workspace_host_path": "/workspace-host",
+          "workspace_host_path": "/home/lingxi/lingxi-host",
           "stable_workspace_id": "12345678-1234-4abc-8def-1234567890ab",
           "abi": "arm64",
           "rootfs_version": "3.24.1",
@@ -182,7 +182,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let config = try LXISHBridgeJSON.decoder().decode(LXISHNativeConfig.self, from: wire)
 
         XCTAssertEqual(config.managedRoot, "/managed")
-        XCTAssertEqual(config.workspaceHostPath, "/workspace-host")
+        XCTAssertEqual(config.workspaceHostPath, "/home/lingxi/lingxi-host")
         XCTAssertEqual(config.stableWorkspaceId, "12345678-1234-4abc-8def-1234567890ab")
         XCTAssertEqual(config.abi, "arm64")
         XCTAssertEqual(config.rootfsVersion, "3.24.1")
@@ -197,7 +197,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let wire = Data("""
         {
           "managedRoot": "/managed",
-          "workspaceHostPath": "/workspace-host",
+          "workspaceHostPath": "/home/lingxi/lingxi-host",
           "stableWorkspaceId": "12345678-1234-4abc-8def-1234567890ab",
           "abi": "arm64",
           "rootfsVersion": "3.24.1"
@@ -263,6 +263,13 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
     /// signal). The bridge's ISHProcessExited observer — the piece that turns
     /// a user typing `exit` into a `pty_closed` event instead of a dead
     /// caret — must decode both shapes.
+    func testDelayedHelperAndPreviousPtyExitsCannotCloseANewPty() {
+        XCTAssertFalse(LXISHPtyExitIdentity.matches(pid: 42, generation: 0, currentGeneration: 2))
+        XCTAssertFalse(LXISHPtyExitIdentity.matches(pid: 43, generation: 1, currentGeneration: 2))
+        XCTAssertTrue(LXISHPtyExitIdentity.matches(pid: 44, generation: 2, currentGeneration: 2))
+        XCTAssertTrue(LXISHPtyExitIdentity.matches(pid: 1, generation: 0, currentGeneration: 2))
+    }
+
     func testGuestWaitStatusDecodesNormalExitsAndSignals() {
         // exit 0 / exit 3 → status << 8.
         XCTAssertEqual(LXISHGuestWaitStatus.decode(0).code, 0)
@@ -287,17 +294,17 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             stableWorkspaceId: "12345678-1234-4abc-8def-1234567890ab"
         )
 
-        XCTAssertEqual(environment["HOME"], "/root")
-        XCTAssertEqual(environment["PWD"], "/workspace/12345678-1234-4abc-8def-1234567890ab")
+        XCTAssertEqual(environment["HOME"], "/home/lingxi")
+        XCTAssertEqual(environment["PWD"], "/home/lingxi/lingxi")
         XCTAssertEqual(environment["TMPDIR"], "/tmp")
         XCTAssertEqual(environment["PATH"], "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-        XCTAssertEqual(environment["XDG_CACHE_HOME"], "/root/.cache")
-        XCTAssertEqual(environment["NPM_CONFIG_CACHE"], "/root/.npm")
-        XCTAssertEqual(environment["PIP_CACHE_DIR"], "/root/.cache/pip")
+        XCTAssertEqual(environment["XDG_CACHE_HOME"], "/home/lingxi/.cache")
+        XCTAssertEqual(environment["NPM_CONFIG_CACHE"], "/home/lingxi/.npm")
+        XCTAssertEqual(environment["PIP_CACHE_DIR"], "/home/lingxi/.cache/pip")
         XCTAssertEqual(environment["SSL_CERT_FILE"], "/etc/ssl/cert.pem")
         XCTAssertEqual(environment["GIT_CONFIG_COUNT"], "1")
         XCTAssertEqual(environment["GIT_CONFIG_KEY_0"], "safe.directory")
-        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/workspace/12345678-1234-4abc-8def-1234567890ab")
+        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab")
         XCTAssertNil(environment["GIT_CONFIG_KEY_1"])
     }
 
@@ -314,7 +321,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
         XCTAssertEqual(environment["GIT_CONFIG_COUNT"], "1")
         XCTAssertEqual(environment["GIT_CONFIG_KEY_0"], "safe.directory")
-        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/workspace/12345678-1234-4abc-8def-1234567890ab")
+        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab")
     }
 
     func testRuntimeMountPlannerPreservesPersistentHomeAndWorkspaceLayers() {
@@ -340,7 +347,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
                 ),
                 LXISHMountSpec(
                     hostPath: temporaryRoot.appendingPathComponent("workspace-subdir", isDirectory: true).path,
-                    guestPath: "/workspace/12345678-1234-4abc-8def-1234567890ab/src",
+                    guestPath: "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab/src",
                     readOnly: false,
                     purpose: "external"
                 ),
@@ -349,13 +356,14 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         )
 
         XCTAssertEqual(mounts.map(\.guestPath), [
+            "/home/lingxi",
             "/root",
-            "/workspace/12345678-1234-4abc-8def-1234567890ab",
-            "/workspace/12345678-1234-4abc-8def-1234567890ab/src",
+            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab/src",
         ])
         XCTAssertEqual(mounts[0].hostPath, config.persistentHomeURL.path)
         XCTAssertEqual(
-            mounts[1].hostPath,
+            mounts[2].hostPath,
             URL(fileURLWithPath: config.workspaceHostPath, isDirectory: true).standardizedFileURL.path
         )
     }
@@ -399,7 +407,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             LXISHMountSpec(hostPath: "/host/home", guestPath: "/root", readOnly: false, purpose: "home"),
             LXISHMountSpec(
                 hostPath: "/host/workspace",
-                guestPath: "/workspace/12345678-1234-4abc-8def-1234567890ab",
+                guestPath: "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
                 readOnly: false,
                 purpose: "workspace"
             ),
@@ -427,14 +435,14 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertEqual(result, "ok")
         XCTAssertEqual(runtimeMounts.map(\.guestPath), [
             "/root",
-            "/workspace/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertEqual(applied.count, 2)
         XCTAssertEqual(applied[0].0, ["/var/lingxi/project-mounts/abcd1234/store/project"])
         XCTAssertFalse(applied[0].1)
         XCTAssertEqual(applied[1].0, [
             "/root",
-            "/workspace/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertTrue(applied[1].1)
     }
@@ -444,7 +452,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             LXISHMountSpec(hostPath: "/host/home", guestPath: "/root", readOnly: false, purpose: "home"),
             LXISHMountSpec(
                 hostPath: "/host/workspace",
-                guestPath: "/workspace/12345678-1234-4abc-8def-1234567890ab",
+                guestPath: "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
                 readOnly: false,
                 purpose: "workspace"
             ),
@@ -475,14 +483,14 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
         XCTAssertEqual(runtimeMounts.map(\.guestPath), [
             "/root",
-            "/workspace/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertEqual(applied.count, 2)
         XCTAssertEqual(applied[0].0, ["/var/lingxi/project-mounts/abcd1234/store/project"])
         XCTAssertFalse(applied[0].1)
         XCTAssertEqual(applied[1].0, [
             "/root",
-            "/workspace/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertTrue(applied[1].1)
     }
@@ -737,7 +745,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         // fail on every run.
         XCTAssertEqual(
             LXISHRuntimeMountPlanner.guestMountParents(of: [
-                LXISHMountSpec(hostPath: "/h", guestPath: "/workspace", readOnly: false, purpose: "workspace")
+                LXISHMountSpec(hostPath: "/h", guestPath: "/mnt", readOnly: false, purpose: "workspace")
             ]),
             []
         )

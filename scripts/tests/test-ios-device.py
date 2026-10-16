@@ -8,6 +8,7 @@ for name in ['native-artifact','ffi-artifact','rootfs-artifact','output']:
     p.add_argument('--'+name, type=P, required=True)
 p.add_argument('--device', required=True)
 p.add_argument('--team', required=True)
+p.add_argument('--default-user-only', action='store_true')
 p.add_argument('--mode', choices=['app','xctest'], default='xctest')
 a = p.parse_args()
 subprocess.run(['python3', str(SDK/'scripts/checks/verify-ios-native.py'), '--artifact-dir', str(a.native_artifact)], check=True)
@@ -43,7 +44,7 @@ subprocess.run(['xcodebuild','test' if a.mode == 'xctest' else 'build','-project
 if a.mode == 'app':
     app = a.output/'DerivedData/Build/Products/Debug-iphoneos/MobileLinuxSample.app'
     subprocess.run(['xcrun','devicectl','device','install','app','--device',a.device,str(app)],check=True)
-    process = subprocess.Popen(['xcrun','devicectl','device','process','launch','--device',a.device,'--console','--terminate-existing','--timeout','600','org.mobilelinux.sdk.sample','--sdk-device-smoke'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+    process = subprocess.Popen(['xcrun','devicectl','device','process','launch','--device',a.device,'--console','--terminate-existing','--timeout','600','org.mobilelinux.sdk.sample','--sdk-default-user-smoke' if a.default_user_only else '--sdk-device-smoke'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
     passed = False
     for line in process.stdout:
         print(line,end='',flush=True)

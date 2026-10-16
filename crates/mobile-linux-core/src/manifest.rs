@@ -6,6 +6,7 @@ use std::path::{Component, Path};
 
 pub(crate) const ALLOWED_WRITABLE_GUEST_PATHS: &[&str] = &[
     mobile_linux_api::guest_paths::HOME,
+    mobile_linux_api::guest_paths::ADMIN_HOME,
     mobile_linux_api::guest_paths::SCRATCH[0],
     mobile_linux_api::guest_paths::SCRATCH[1],
     mobile_linux_api::guest_paths::WORKSPACE_ROOT,

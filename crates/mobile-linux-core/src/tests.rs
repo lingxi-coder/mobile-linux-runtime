@@ -124,13 +124,15 @@ fn manifest_rejects_unapproved_writable_paths() {
 #[test]
 fn manifest_requires_the_complete_fixed_writable_path_set() {
     let mut manifest = manifest();
-    manifest.writable_paths.retain(|path| path != "/workspace");
+    manifest
+        .writable_paths
+        .retain(|path| path != "/home/lingxi/lingxi");
     let err = manifest
         .validate()
         .expect_err("missing fixed writable path must be rejected");
     assert!(matches!(
         err,
-        RootfsManifestError::MissingWritablePath(path) if path == "/workspace"
+        RootfsManifestError::MissingWritablePath(path) if path == "/home/lingxi/lingxi"
     ));
 }
 
@@ -148,34 +150,34 @@ fn manifest_rejects_non_lowercase_hashes() {
 #[test]
 fn guest_containment_uses_linux_separators_on_every_host() {
     assert_eq!(
-        normalized_guest_path("/workspace/bin/python3").unwrap(),
-        "/workspace/bin/python3"
+        normalized_guest_path("/home/lingxi/lingxi/bin/python3").unwrap(),
+        "/home/lingxi/lingxi/bin/python3"
     );
     assert!(path_is_within_guest_path(
-        "/workspace/bin/python3",
-        "/workspace"
+        "/home/lingxi/lingxi/bin/python3",
+        "/home/lingxi/lingxi"
     ));
     assert!(!path_is_within_guest_path(
-        "/workspace-other/bin/python3",
-        "/workspace"
+        "/home/lingxi/lingxi-other/bin/python3",
+        "/home/lingxi/lingxi"
     ));
     assert!(!path_is_within_guest_path(
-        "/workspace/../usr/bin/python3",
-        "/workspace"
+        "/home/lingxi/lingxi/../usr/bin/python3",
+        "/home/lingxi/lingxi"
     ));
 }
 
 #[test]
 fn manifest_rejects_executables_in_writable_paths() {
     let mut manifest = manifest();
-    manifest.executable_allowlist[0].path = "/workspace/bin/python3".to_string();
+    manifest.executable_allowlist[0].path = "/home/lingxi/lingxi/bin/python3".to_string();
     let err = manifest
         .validate()
         .expect_err("writable executable must be rejected");
     assert!(matches!(
         err,
         RootfsManifestError::ExecutableInWritablePath(path)
-            if path == "/workspace/bin/python3"
+            if path == "/home/lingxi/lingxi/bin/python3"
     ));
 }
 
@@ -596,4 +598,38 @@ fn reset_rejects_symlinked_parent_directories() {
         fs::read(outside_var.join("tmp/keep.txt")).expect("outside preserved"),
         b"keep"
     );
+}
+
+#[test]
+fn persistent_user_migration_is_once_only_and_never_overwrites_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join("active/root/.config")).unwrap();
+    fs::create_dir_all(root.join("persistent/lingxi/.config")).unwrap();
+    fs::write(root.join("active/root/.config/legacy"), b"keep").unwrap();
+    fs::write(root.join("active/root/.config/current"), b"old").unwrap();
+    fs::write(root.join("persistent/lingxi/.config/current"), b"new").unwrap();
+    let store = RootfsStore::new(
+        root.to_path_buf(),
+        SandboxBackend::AndroidProot,
+        MobileLinuxRuntimeMode::MobileLinux,
+        "android",
+        "arm64",
+    );
+    store.preserve_guest_homes().unwrap();
+    assert_eq!(
+        fs::read(root.join("persistent/lingxi/.config/legacy")).unwrap(),
+        b"keep"
+    );
+    assert_eq!(
+        fs::read(root.join("persistent/lingxi/.config/current")).unwrap(),
+        b"new"
+    );
+    assert_eq!(
+        fs::read(root.join("persistent/root/.config/legacy")).unwrap(),
+        b"keep"
+    );
+    fs::remove_file(root.join("persistent/lingxi/.config/legacy")).unwrap();
+    store.preserve_guest_homes().unwrap();
+    assert!(!root.join("persistent/lingxi/.config/legacy").exists());
 }

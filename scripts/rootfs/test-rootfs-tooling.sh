@@ -12,7 +12,7 @@ trap 'rm -rf "${tmp_root}"' EXIT
 export SOURCE_DATE_EPOCH=0
 
 fixture_root="${tmp_root}/rootfs"
-mkdir -p "${fixture_root}/bin" "${fixture_root}/sbin" "${fixture_root}/usr/bin" "${fixture_root}/usr/lib" "${fixture_root}/lib/apk/db" "${fixture_root}/etc/apk" "${fixture_root}/tmp" "${fixture_root}/var/tmp" "${fixture_root}/workspace" "${fixture_root}/root"
+mkdir -p "${fixture_root}/bin" "${fixture_root}/sbin" "${fixture_root}/usr/bin" "${fixture_root}/usr/lib" "${fixture_root}/lib/apk/db" "${fixture_root}/etc/apk" "${fixture_root}/tmp" "${fixture_root}/var/tmp" "${fixture_root}/home/lingxi/lingxi" "${fixture_root}/root"
 
 python3 - <<'PY' "${fixture_root}" "${repo_root}/docs/toolchains/runtime-pins.json"
 import hashlib
