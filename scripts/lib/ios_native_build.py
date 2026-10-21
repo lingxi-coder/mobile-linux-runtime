@@ -135,7 +135,7 @@ def framework(output,cache,configuration,simulator_only):
         # Swift module lookup omits the deployment version even though the
         # compiler target triple includes it (arm64-apple-ios-simulator, etc.).
         module_arch=f'{arch}-apple-ios'+('-simulator' if platform=='iphonesimulator' else '')
-        run(['xcrun','swiftc','-parse-as-library','-whole-module-optimization','-emit-object','-emit-module','-enable-library-evolution','-module-name','MobileLinuxNativeSupport','-import-underlying-module','-I',headers,'-target',triple,'-sdk',sdk,'-module-cache-path',cache/'swift-modules','-emit-module-path',swiftmodule/(module_arch+'.swiftmodule'),'-emit-module-interface-path',swiftmodule/(module_arch+'.swiftinterface'),*sorted((SDK/'ios/NativeSupport').glob('*.swift')),'-o',objects/'native-swift.o'])
+        run(['xcrun','swiftc','-language-mode','5','-parse-as-library','-whole-module-optimization','-emit-object','-emit-module','-enable-library-evolution','-module-name','MobileLinuxNativeSupport','-import-underlying-module','-I',headers,'-target',triple,'-sdk',sdk,'-module-cache-path',cache/'swift-modules','-emit-module-path',swiftmodule/(module_arch+'.swiftmodule'),'-emit-module-interface-path',swiftmodule/(module_arch+'.swiftinterface'),*sorted((SDK/'ios/NativeSupport').glob('*.swift')),'-o',objects/'native-swift.o'])
         inputs=list(objects.glob('*.o'))
         if platform=='iphoneos':inputs+=list((output/'native/lib').glob('*.a'))
         run(['xcrun','libtool','-static','-o',fw/'MobileLinuxNativeSupport',*inputs])
