@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest import mock
 
@@ -22,7 +23,7 @@ class IosNativeBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             (work / 'prepared').write_text('identity')
-            for relative, symbols in ios_native_build.PATCH_MARKERS.items():
+            for relative, symbols in {**ios_native_build.PATCH_MARKERS, **ios_native_build.SOURCE_PATCH_MARKERS}.items():
                 source = work / 'ish' / relative
                 source.parent.mkdir(parents=True, exist_ok=True)
                 source.write_text('\n'.join(symbols))
@@ -30,6 +31,17 @@ class IosNativeBuildTests(unittest.TestCase):
             self.assertFalse(ios_native_build.prepared_work_matches(work, 'different'))
             (work / 'ish/fs/sock.c').write_text('unpatched source')
             self.assertFalse(ios_native_build.prepared_work_matches(work, 'identity'))
+
+    def test_mount_path_guard_does_not_follow_home_or_accept_replaced_links(self):
+        sdk = SCRIPTS.parent
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / 'mount-path-probe'
+            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
+                            '-I', str(sdk / 'native/ios'),
+                            str(SCRIPTS / 'tests/ios_mount_path_guard_probe.c'),
+                            '-o', str(binary)], check=True)
+            subprocess.run([str(binary), str(root)], check=True)
 
     def test_device_artifact_rejects_missing_policy_symbol(self):
         symbols = '\n'.join([

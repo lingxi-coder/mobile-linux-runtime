@@ -23,12 +23,16 @@ PATCH_MARKERS = {
         'lx_ish_guest_execution_context_active',
     ),
 }
+SOURCE_PATCH_MARKERS = {
+    'fs/fake.c': ('lx_mount_install_link', 'owned_link_target'),
+    'fs/lx_mount_path_guard.h': ('lx_mount_parent_fd', 'lx_mount_link_matches'),
+}
 
 def prepared_work_matches(work, identity):
     marker = work/'prepared'
     if not marker.is_file() or marker.read_text() != identity:
         return False
-    for relative, symbols in PATCH_MARKERS.items():
+    for relative, symbols in {**PATCH_MARKERS, **SOURCE_PATCH_MARKERS}.items():
         source = work/'ish'/relative
         if not source.is_file(): return False
         text = source.read_text()
@@ -62,6 +66,8 @@ def prepare(cache):
         if sha(SDK/'native/ios/upstream/openminis'/name)!=digest: raise SystemExit('upstream source hash mismatch: '+name)
     for name,digest in pins['patches'].items():
         if sha(SDK/'native/ios/patches'/name)!=digest: raise SystemExit('patch hash mismatch: '+name)
+    for name,digest in pins.get('support_files', {}).items():
+        if sha(SDK/'native/ios'/name)!=digest: raise SystemExit('support file hash mismatch: '+name)
     identity=hashlib.sha256(PINS.read_bytes()+P(__file__).read_bytes()).hexdigest()
     work=cache/'work'/identity[:20];ish=work/'ish';glue=work/'openminis'
     if not prepared_work_matches(work,identity):
@@ -69,8 +75,9 @@ def prepare(cache):
         copytree(source('ish',pins,cache),ish)
         for name in ['libapps','libarchive']: copytree(source(name,pins,cache),ish/'deps'/name)
         copytree(SDK/'native/ios/upstream/openminis',glue)
-        for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch','ish-mobile-mount-owner.patch'):
+        for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch','ish-mobile-mount-owner.patch','ish-nondestructive-mounts.patch'):
             apply_source_patch(ish,name)
+        shutil.copy2(SDK/'native/ios/lx_mount_path_guard.h',ish/'fs/lx_mount_path_guard.h')
         for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch','openminis-default-user.patch','openminis-pty-exit-identity.patch'):
             apply_source_patch(glue,name)
         (work/'prepared').write_text(identity)

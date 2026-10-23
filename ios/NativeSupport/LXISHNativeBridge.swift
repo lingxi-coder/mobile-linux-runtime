@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import Darwin
 import Network
 import ObjectiveC.runtime
 import UIKit
@@ -413,7 +414,7 @@ struct LXISHRuntimeMountPlanner {
         includeDefaultMounts: Bool = true
     ) -> [LXISHMountSpec] {
         guard includeDefaultMounts else {
-            return requestedMounts.map { mount in
+            return nonredundantMounts(requestedMounts.map { mount in
                 LXISHMountSpec(
                     hostPath: URL(fileURLWithPath: mount.hostPath, isDirectory: true)
                         .standardizedFileURL
@@ -422,7 +423,7 @@ struct LXISHRuntimeMountPlanner {
                     readOnly: mount.readOnly,
                     purpose: mount.purpose
                 )
-            }
+            })
         }
         let workspaceGuestPath = LXISHGuestPaths.workspace(config.stableWorkspaceId)
         var mounts: [LXISHMountSpec] = [
@@ -442,7 +443,7 @@ struct LXISHRuntimeMountPlanner {
                         .standardizedFileURL
                         .path,
                     guestPath: workspaceGuestPath,
-                    readOnly: false,
+                    readOnly: requestedMounts.last(where: { $0.guestPath == workspaceGuestPath })?.readOnly ?? false,
                     purpose: "workspace"
                 )
             )
@@ -459,7 +460,72 @@ struct LXISHRuntimeMountPlanner {
                 )
             )
         }
-        return mounts
+        return nonredundantMounts(mounts)
+    }
+
+    static func nonredundantMounts(_ mounts: [LXISHMountSpec]) -> [LXISHMountSpec] {
+        var retained: [LXISHMountSpec] = []
+        for child in mounts.sorted(by: { shallowestFirst($0.guestPath, $1.guestPath) }) {
+            // The nearest retained overlay decides the route. Matching an
+            // outer HOME cannot bypass a different backing or read-only layer.
+            if let parent = retained.filter({ child.guestPath.hasPrefix($0.guestPath + "/") })
+                .max(by: { $0.guestPath.count < $1.guestPath.count }), child.readOnly == parent.readOnly {
+                let suffix = String(child.guestPath.dropFirst(parent.guestPath.count + 1))
+                let expected = URL(fileURLWithPath: parent.hostPath).appendingPathComponent(suffix)
+                    .standardizedFileURL.resolvingSymlinksInPath()
+                let actual = URL(fileURLWithPath: child.hostPath).standardizedFileURL.resolvingSymlinksInPath()
+                if actual.path == expected.path { continue }
+            }
+            retained.append(child)
+        }
+        let identities = Set(retained)
+        return mounts.filter { identities.contains($0) }
+    }
+
+    /// Keep shared HOME and unchanged overlays mounted while another context
+    /// adds or retires its own mapping. A changed parent also retires its
+    /// children so physical links and virtual overlays are rebuilt in order.
+    static func transition(from current: [LXISHMountSpec], to desired: [LXISHMountSpec])
+        -> (retiring: [String], installing: [LXISHMountSpec]) {
+        func sameMapping(_ left: LXISHMountSpec, _ right: LXISHMountSpec) -> Bool {
+            left.guestPath == right.guestPath && left.readOnly == right.readOnly &&
+                URL(fileURLWithPath: left.hostPath).standardizedFileURL.resolvingSymlinksInPath().path ==
+                URL(fileURLWithPath: right.hostPath).standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        let changed = current.filter { old in !desired.contains { sameMapping(old, $0) } } +
+            desired.filter { requested in !current.contains { sameMapping(requested, $0) } }
+        let retiring = current.filter { old in
+            changed.contains { old.guestPath == $0.guestPath || old.guestPath.hasPrefix($0.guestPath + "/") }
+        }.map(\.guestPath).sorted { shallowestFirst($1, $0) }
+        let retired = Set(retiring)
+        let installing = desired.filter { requested in
+            retired.contains(requested.guestPath) || !current.contains { sameMapping(requested, $0) }
+        }.sorted { shallowestFirst($0.guestPath, $1.guestPath) }
+        return (retiring, installing)
+    }
+
+    /// Remove only an empty, physical rootfs scaffold. A failed guest lookup
+    /// does not authorize recursive deletion through HOME or an overlay link.
+    static func removeEmptyScaffold(_ guestPath: String, under dataRoot: URL) throws {
+        guard let point = guestMountPointURL(for: guestPath, under: dataRoot) else { return }
+        let root = dataRoot.standardizedFileURL.resolvingSymlinksInPath()
+        let relative = String(point.path.dropFirst(dataRoot.standardizedFileURL.path.count + 1))
+        let components = relative.split(separator: "/").map(String.init)
+        guard let leaf = components.last else { return }
+        var parent = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw LXISHBridgeError.unavailable("Cannot open rootfs scaffold directory") }
+        defer { close(parent) }
+        for component in components.dropLast() {
+            let next = openat(parent, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            if next < 0 {
+                if [ENOENT, ENOTDIR, ELOOP].contains(errno) { return }
+                throw LXISHBridgeError.unavailable("Cannot inspect rootfs scaffold parent")
+            }
+            close(parent); parent = next
+        }
+        guard unlinkat(parent, leaf, AT_REMOVEDIR) == 0 || errno == ENOENT else {
+            throw LXISHBridgeError.invalidRequest("Mount scaffold is not an empty rootfs directory; existing files were preserved")
+        }
     }
 }
 
@@ -541,7 +607,7 @@ private enum LXISHBridgeError: LocalizedError {
 
 private final class LXISHKernelRuntimeBridge {
     private var kernelObject: AnyObject?
-    private var mountedGuestPaths: [String] = []
+    private var mountedSpecs: [String: LXISHMountSpec] = [:]
     private var interactiveShellOpen = false
 
     static func isDeviceBridgeAvailable() -> Bool {
@@ -584,37 +650,40 @@ private final class LXISHKernelRuntimeBridge {
         }
     }
 
-    func configureMounts(_ mounts: [[String: Any]], replacing: Bool = true) throws {
+    func prepareMountTransition(to mounts: [LXISHMountSpec]) throws -> [LXISHMountSpec] {
+        let transition = LXISHRuntimeMountPlanner.transition(from: Array(mountedSpecs.values), to: mounts)
+        guard !transition.retiring.isEmpty else { return transition.installing }
         let kernel = try resolveKernel()
         let unmountSelector = NSSelectorFromString("bindUnmountPath:")
         if let method = class_getInstanceMethod(type(of: kernel), unmountSelector) {
             typealias Fn = @convention(c) (AnyObject, Selector, NSString) -> Int32
             let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
-            for guestPath in (replacing ? Array(mountedGuestPaths.reversed()) : []) {
-                _ = fn(kernel, unmountSelector, guestPath as NSString)
+            for guestPath in transition.retiring {
+                let result = fn(kernel, unmountSelector, guestPath as NSString)
+                guard result >= 0 else {
+                    throw LXISHBridgeError.unavailable("bind unmount failed for \(guestPath) (\(result)); mount ownership retained")
+                }
+                mountedSpecs.removeValue(forKey: guestPath)
             }
+        } else {
+            throw LXISHBridgeError.unavailable("ISHKernel cannot retire its existing mounts")
         }
-        if replacing { mountedGuestPaths.removeAll() }
+        return transition.installing
+    }
 
+    func installMount(_ mount: LXISHMountSpec) throws {
+        let kernel = try resolveKernel()
         let mountSelector = NSSelectorFromString("bindMountPath:toHostPath:readOnly:")
         guard let method = class_getInstanceMethod(type(of: kernel), mountSelector) else {
             throw LXISHBridgeError.unavailable("ISHKernel is missing bindMountPath:toHostPath:readOnly:")
         }
         typealias Fn = @convention(c) (AnyObject, Selector, NSString, NSString, ObjCBool) -> Int32
         let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
-        for mount in mounts {
-            guard let guestPath = mount["guest_path"] as? String,
-                  let hostPath = mount["host_path"] as? String
-            else {
-                throw LXISHBridgeError.invalidRequest("Mount entries require guest_path and host_path")
-            }
-            let readOnly = (mount["read_only"] as? Bool) ?? false
-            let result = fn(kernel, mountSelector, guestPath as NSString, hostPath as NSString, ObjCBool(readOnly))
-            guard result >= 0 else {
-                throw LXISHBridgeError.unavailable("bind mount failed for \(guestPath) -> \(hostPath) (\(result))")
-            }
-            mountedGuestPaths.append(guestPath)
+        let result = fn(kernel, mountSelector, mount.guestPath as NSString, mount.hostPath as NSString, ObjCBool(mount.readOnly))
+        guard result >= 0 else {
+            throw LXISHBridgeError.unavailable("bind mount failed for \(mount.guestPath) -> \(mount.hostPath) (\(result))")
         }
+        mountedSpecs[mount.guestPath] = mount
     }
 
     private(set) var interactiveShellGeneration: UInt64 = 0
@@ -1696,10 +1765,11 @@ private final class LXISHNativeCoordinator {
         execute(config: config) { runtime in
             try self.requireNoIsolatedProcess(runtime)
             runtime.mounts = mounts
-            try self.ensureHostEndpointsExist(mounts)
-            try self.ensureGuestMountParentsExist(mounts, runtime: &runtime)
-            if LXISHKernelRuntimeBridge.isDeviceBridgeAvailable() {
-                try runtime.kernel.configureMounts(mounts.map(self.dictionary(from:)))
+            if runtime.kernelBooted {
+                try self.applyMountsIfNeeded(requestedMounts: mounts, to: &runtime)
+            } else {
+                let effective = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: mounts, config: config)
+                try self.ensureHostEndpointsExist(effective)
             }
             return ["status": self.rootfsManager.status(for: config)]
         }
@@ -2404,10 +2474,9 @@ private final class LXISHNativeCoordinator {
             includeDefaultMounts: includeDefaultMounts
         )
         try ensureHostEndpointsExist(mounts)
-        try runtime.kernel.configureMounts([])
-        for mount in mounts.sorted(by: { LXISHRuntimeMountPlanner.shallowestFirst($0.guestPath, $1.guestPath) }) {
+        for mount in try runtime.kernel.prepareMountTransition(to: mounts) {
             try ensureGuestMountParentsExist([mount], runtime: &runtime)
-            try runtime.kernel.configureMounts([dictionary(from: mount)], replacing: false)
+            try runtime.kernel.installMount(mount)
         }
     }
 
@@ -2465,21 +2534,8 @@ private final class LXISHNativeCoordinator {
         let missing = probe.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
         guard !missing.isEmpty else { return }
 
-        // A path the guest cannot see is one nothing in the guest can be
-        // using, so clearing the stale scaffold underneath it is safe — and it
-        // is the only way to lift the EEXIST that would otherwise make the
-        // `mkdir` below fail forever. Shallowest first: removing a parent
-        // takes its children with it. Any bind leaf destroyed here is
-        // re-established by the `configureMounts` that follows.
-        let dataRoot = runtime.config.rootfsDataURL.standardizedFileURL
-        for path in missing.sorted(by: LXISHRuntimeMountPlanner.shallowestFirst) {
-            guard let scaffold = LXISHRuntimeMountPlanner.guestMountPointURL(
-                for: path,
-                under: dataRoot
-            ) else {
-                continue
-            }
-            try? FileManager.default.removeItem(at: scaffold)
+        for path in missing.sorted(by: { LXISHRuntimeMountPlanner.shallowestFirst($1, $0) }) {
+            try LXISHRuntimeMountPlanner.removeEmptyScaffold(path, under: runtime.config.rootfsDataURL)
         }
 
         _ = try runGuestHelper(["-c", #"mkdir -p "$@""#, "sh"] + missing, runtime: &runtime)
@@ -2501,6 +2557,9 @@ private final class LXISHNativeCoordinator {
             networkPolicy: 0,
             memoryLimitBytes: nil
         )
+        guard result.exitCode == 0 else {
+            throw LXISHBridgeError.unavailable("Guest mount preparation failed (\(result.exitCode)): \(result.stderrText)")
+        }
         return result.stdoutText
     }
 
