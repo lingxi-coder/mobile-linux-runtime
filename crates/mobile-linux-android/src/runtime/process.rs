@@ -183,7 +183,8 @@ impl AndroidProotRuntime {
             .env("HOME", mobile_linux_api::guest_paths::HOME)
             .env("USER", mobile_linux_api::guest_paths::USER)
             .env("LOGNAME", mobile_linux_api::guest_paths::USER)
-            .envs(env);
+            .envs(env)
+            .env("LINGXI_RUNTIME_OWNER_PID", std::process::id().to_string());
         if let Some(receipt_path) = receipt_path {
             command.env("LINGXI_ENFORCEMENT_RECEIPT_PATH", receipt_path);
         }

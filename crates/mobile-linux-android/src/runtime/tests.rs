@@ -1305,3 +1305,28 @@ fn normal_and_pty_launches_use_the_same_nonroot_identity_and_default_cwd() {
     assert_eq!(env.get("HOME").unwrap(), "/home/lingxi");
     assert_eq!(env.get("USER").unwrap(), "lingxi");
 }
+
+#[test]
+fn command_and_pty_owner_identity_cannot_be_overridden_by_guest_env() {
+    let (_temp, runtime) = runtime();
+    let env = BTreeMap::from([("LINGXI_RUNTIME_OWNER_PID".to_string(), "1".to_string())]);
+    let request = request();
+    let command = runtime
+        .build_command(&request, None, &env, &[], None)
+        .unwrap();
+    let owner = command
+        .as_std()
+        .get_envs()
+        .find(|(name, _)| *name == "LINGXI_RUNTIME_OWNER_PID")
+        .unwrap()
+        .1
+        .unwrap();
+    assert_eq!(owner, std::process::id().to_string().as_str());
+    let (_, _, child_env) = runtime
+        .build_pty_invocation("/bin/sh", &[], None, &env, &[])
+        .unwrap();
+    assert_eq!(
+        child_env["LINGXI_RUNTIME_OWNER_PID"],
+        std::process::id().to_string()
+    );
+}

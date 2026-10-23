@@ -134,6 +134,8 @@ def main():
             proot.mkdir()
             with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
                 tar.extractall(proot, filter="data")
+            run(["patch", "--batch", "--forward", "-p1", "-i", NATIVE / "patches/proot-runtime-owner.patch"], cwd=proot, env=env)
+            shutil.copy2(NATIVE / "proot_runtime_owner.h", proot / "src/tracee/runtime_owner.h")
             if abi == "arm64-v8a":
                 run(["patch", "--batch", "--forward", "-p1", "-i", NATIVE / "patches/proot-loader-16k.patch"], cwd=proot, env=env)
             shutil.copy2(NATIVE / "proot_lingxi_network_policy.c", proot / "src/extension/port_switch/port_switch.c")
@@ -141,7 +143,7 @@ def main():
             shutil.copytree(NATIVE / "talloc", talloc)
             run([cc, "-c", talloc / "talloc.c", "-o", talloc / "talloc.o", "-I" + str(talloc), "-fPIC", "-O2", "-std=gnu99", "-DHAVE_STDARG_H=1", "-DHAVE_VA_COPY=1", "-DHAVE_UNISTD_H=1", "-DHAVE_INTPTR_T=1"], env=env)
             run([tools / "llvm-ar", "rcs", talloc / "libtalloc.a", talloc / "talloc.o"], env=env)
-            run(["make", f"CC={cc}", f"STRIP={tools / 'llvm-strip'}", f"OBJCOPY={tools / 'llvm-objcopy'}", f"OBJDUMP={tools / 'llvm-objdump'}", "PROOT_UNBUNDLE_LOADER=/proc/self/fd", f"CPPFLAGS=-D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -DARG_MAX=131072 -I{talloc}", 'CFLAGS=-O2 -Wall -Wextra -fPIE -DPROOT_UNBUNDLE_LOADER=\\\"/proc/self/fd\\\"', f"LDFLAGS=-Wl,-z,noexecstack -pie {page_flag} {talloc / 'libtalloc.a'}", f"-j{args.jobs}"], cwd=proot / "src", env=env)
+            run(["make", f"CC={cc}", f"STRIP={tools / 'llvm-strip'}", f"OBJCOPY={tools / 'llvm-objcopy'}", f"OBJDUMP={tools / 'llvm-objdump'}", "PROOT_UNBUNDLE_LOADER=/proc/self/fd", f"CPPFLAGS=-D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -DARG_MAX=131072 -I{talloc}", 'CFLAGS=-O2 -Wall -Wextra -fPIE -pthread -DPROOT_UNBUNDLE_LOADER=\\\"/proc/self/fd\\\"', f"LDFLAGS=-Wl,-z,noexecstack -pie -pthread {page_flag} {talloc / 'libtalloc.a'}", f"-j{args.jobs}"], cwd=proot / "src", env=env)
             stage = work / "artifacts"
             stage.mkdir()
             shutil.copy2(proot / "src/proot", stage / "libproot.so")
