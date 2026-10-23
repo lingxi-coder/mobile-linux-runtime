@@ -173,12 +173,18 @@ pub(super) fn snapshot_read_only_mounts(
 impl AndroidProotRuntime {
     pub(super) fn home_mounts(&self) -> Vec<MountSpec> {
         [
-            ("persistent/lingxi", mobile_linux_api::guest_paths::HOME),
-            ("persistent/root", mobile_linux_api::guest_paths::ADMIN_HOME),
+            (
+                mobile_linux_api::guest_paths::home_host_path(&self.state.config.managed_root),
+                mobile_linux_api::guest_paths::HOME,
+            ),
+            (
+                self.state.config.managed_root.join("persistent/root"),
+                mobile_linux_api::guest_paths::ADMIN_HOME,
+            ),
         ]
         .into_iter()
         .map(|(host, guest)| MountSpec {
-            host_path: self.state.config.managed_root.join(host),
+            host_path: host,
             guest_path: guest.to_string(),
             read_only: false,
             purpose: MountPurpose::Shared,
@@ -304,7 +310,9 @@ pub(super) fn validate_mount(
     let managed = managed_root
         .canonicalize()
         .unwrap_or_else(|_| managed_root.to_path_buf());
-    if host.starts_with(&managed) || managed.starts_with(&host) {
+    if (host.starts_with(&managed) || managed.starts_with(&host))
+        && !mobile_linux_core::is_persistent_user_workspace(&managed, mount)
+    {
         return Err(MobileLinuxError::InvalidRequest(
             "mount must not expose the managed rootfs".to_string(),
         ));
