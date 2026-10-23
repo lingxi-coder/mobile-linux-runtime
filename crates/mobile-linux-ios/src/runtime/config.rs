@@ -47,7 +47,7 @@ impl IosIshRuntimeConfig {
     }
 
     pub(super) fn persistent_home_host_path(&self) -> PathBuf {
-        self.managed_root.join("persistent/lingxi")
+        mobile_linux_api::guest_paths::home_host_path(&self.managed_root)
     }
 
     pub(super) fn default_workspace_mount(&self) -> MountSpec {

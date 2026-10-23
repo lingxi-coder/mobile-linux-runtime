@@ -117,7 +117,12 @@ pub(super) fn validate_mount(
             "request mounts may not replace the persistent guest home".into(),
         ));
     }
-    let mut protected = vec![managed_root];
+    let user_workspace = mobile_linux_core::is_persistent_user_workspace(&managed_root, mount);
+    let mut protected = if user_workspace {
+        Vec::new()
+    } else {
+        vec![managed_root]
+    };
     for path in &config.protected_host_roots {
         protected.push(normalize_host_path(path, "protected root")?);
     }
@@ -216,7 +221,7 @@ pub(super) fn normalize_host_path(path: &Path, field: &str) -> Result<PathBuf, M
             Component::ParentDir => {
                 return Err(MobileLinuxError::InvalidRequest(format!(
                     "{field} may not contain parent traversal"
-                )))
+                )));
             }
             Component::CurDir => {}
             Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
@@ -252,7 +257,7 @@ pub(super) fn normalize_host_path(path: &Path, field: &str) -> Result<PathBuf, M
             Err(error) => {
                 return Err(MobileLinuxError::InvalidRequest(format!(
                     "{field} cannot be resolved safely: {error}"
-                )))
+                )));
             }
         }
     }

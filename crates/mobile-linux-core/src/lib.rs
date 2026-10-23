@@ -7,6 +7,7 @@ mod filesystem;
 mod guest_path;
 mod manifest;
 mod store;
+mod user_workspace;
 
 pub use error::{RootfsManifestError, RootfsStoreError};
 pub use guest_path::{
@@ -18,6 +19,7 @@ pub use manifest::{
     RootfsManifestEntry, RootfsPackage,
 };
 pub use store::{RootfsStore, RootfsVerificationIssue, RootfsVerificationReport};
+pub use user_workspace::is_persistent_user_workspace;
 
 #[cfg(test)]
 mod tests;

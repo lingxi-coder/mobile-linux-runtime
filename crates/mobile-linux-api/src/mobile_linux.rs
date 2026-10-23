@@ -33,6 +33,36 @@ pub mod guest_paths {
     pub const SCRATCH: &[&str] = &["/tmp", "/var/tmp"];
     /// Default parent of workspace mounts.
     pub const WORKSPACE_ROOT: &str = "/home/lingxi/lingxi";
+    /// Persistent host backing of the runtime-created, unprivileged account.
+    /// Keep this independent of replaceable rootfs images and workspace IDs.
+    #[must_use]
+    pub fn home_host_path(managed_root: &std::path::Path) -> std::path::PathBuf {
+        managed_root.join("persistent").join(USER)
+    }
+
+    /// Host twin of a workspace inside the user's persistent home. Only
+    /// normalized descendants of WORKSPACE_ROOT are eligible for the managed
+    /// storage exception; a caller cannot use it to expose runtime internals.
+    #[must_use]
+    pub fn workspace_host_path(
+        managed_root: &std::path::Path,
+        guest_path: &str,
+    ) -> Option<std::path::PathBuf> {
+        let path = std::path::Path::new(guest_path);
+        if !path.is_absolute()
+            || path.components().any(|part| {
+                !matches!(
+                    part,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )
+            })
+            || path == std::path::Path::new(WORKSPACE_ROOT)
+            || !path.starts_with(WORKSPACE_ROOT)
+        {
+            return None;
+        }
+        Some(home_host_path(managed_root).join(path.strip_prefix(HOME).ok()?))
+    }
     /// Guest path for a stable workspace identifier.
     #[must_use]
     pub fn workspace(stable_workspace_id: &str) -> String {
