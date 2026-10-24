@@ -80,7 +80,13 @@ def apply_archive(source, output, arch, cache):
         metadata = ''
         for item in tar:
             name = item.name.removeprefix('./').rstrip('/')
-            if not name or name == '.': continue
+            if not name or name == '.':
+                if not package:
+                    if not item.isdir():
+                        raise ValueError('guest archive root must be a directory')
+                    item = copy.copy(item); item.name = '.'
+                    entries['.'] = item, None
+                continue
             if name.startswith('/') or '..' in pathlib.PurePosixPath(name).parts:
                 raise ValueError('unsafe guest archive path: ' + name)
             payload = tar.extractfile(item).read() if item.isfile() else None
@@ -93,6 +99,12 @@ def apply_archive(source, output, arch, cache):
             entries[name] = (item, payload)
         return metadata
     with tarfile.open(source, 'r:*') as tar: ingest(tar)
+    # fakefsify's fallback for an absent root stores permission bits without
+    # S_IFDIR. Keep an explicit tar directory so guest chdir("/") sees a dir.
+    if '.' not in entries:
+        root = tarfile.TarInfo('.')
+        root.type = tarfile.DIRTYPE; root.mode = 0o755
+        entries['.'] = root, None
     pins = json.loads(PINS.read_text())
     for record in pins['guest_user_packages'][arch]:
         with apk_payload(record, pathlib.Path(cache) / arch) as tar:

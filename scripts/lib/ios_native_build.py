@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Reproducible iSH native support. All mutable work is confined to explicit cache/output."""
-import argparse, hashlib, json, os, pathlib, plistlib, shutil, subprocess, sys, tarfile, tempfile
+import argparse, hashlib, json, os, pathlib, plistlib, shutil, sqlite3, stat, struct, subprocess, sys, tarfile, tempfile
 sys.dont_write_bytecode = True
 from sdk_artifact_identity import source_identity
 P=pathlib.Path
@@ -172,6 +172,17 @@ def framework(output,cache,configuration,simulator_only):
     artifacts={str(p.relative_to(output)):sha(p) for base in [result,licenses,provenance] for p in base.rglob('*') if p.is_file()}
     (output/'native-support-manifest.json').write_text(json.dumps({'schema_version':1,'kind':'native-support','contains_rust':False,'source_revision':revision,'source_dirty':dirty,'source_file_sha256':source_hashes,'source_manifest_sha256':sha(PINS),'configuration':configuration,'slices':[entry[0]+'-'+entry[1] for entry in libraries],'artifacts':artifacts},indent=2)+'\n')
 
+def verify_fakefs_root(rootfs):
+    database = (rootfs/'meta.db').resolve(strict=True)
+    with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as connection:
+        row = connection.execute("select stat from paths join stats using(inode) where path=x''").fetchone()
+    if row is None or len(row[0]) != 16:
+        raise ValueError('fakefs root metadata is missing or malformed')
+    mode, = struct.unpack('<I', row[0][:4])
+    if not stat.S_ISDIR(mode) or not (rootfs/'data').is_dir():
+        raise ValueError('fakefs root must have directory type, not just permission bits')
+    return mode
+
 def rootfs(archive,output,cache,native_output,profile,expected_sha256):
     output.mkdir(parents=True,exist_ok=True)
     run(['python3',SDK/'scripts/rootfs/verify-rootfs-profile.py','--archive',archive,'--arch','aarch64','--profile',profile,'--sha256',expected_sha256,'--receipt',output/'archive-verification.json'])
@@ -185,6 +196,7 @@ def rootfs(archive,output,cache,native_output,profile,expected_sha256):
     user_archive=output/'guest-user-rootfs.tar.gz'
     run(['python3',SDK/'scripts/rootfs/guest_user.py','--archive',archive,'--output',user_archive,'--arch','aarch64','--cache',cache/'guest-user-apks'])
     run([build/'tools/fakefsify',user_archive,dest],env=env)
+    verify_fakefs_root(dest)
     (resources/'default_mount').mkdir(exist_ok=True)
     for name in ['RootfsPatch.bundle','libvdso.so.elf']:
         src=native_output/'resources'/name

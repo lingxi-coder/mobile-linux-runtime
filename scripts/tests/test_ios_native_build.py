@@ -6,6 +6,8 @@ import sys
 import tempfile
 import subprocess
 import unittest
+import sqlite3
+import struct
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -19,6 +21,23 @@ spec.loader.exec_module(verifier)
 
 
 class IosNativeBuildTests(unittest.TestCase):
+    def test_fakefs_root_verification_rejects_permission_only_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'data').mkdir()
+            with sqlite3.connect(root/'meta.db') as connection:
+                connection.executescript('create table paths(path blob primary key,inode integer); create table stats(inode integer primary key,stat blob);')
+                connection.execute("insert into paths values(x'',1)")
+                for mode in [0o40755, 0o755, 0o100755, 0o120777]:
+                    with self.subTest(mode=oct(mode)):
+                        connection.execute('insert or replace into stats values(1,?)', (struct.pack('<IIII',mode,0,0,0),))
+                        connection.commit()
+                        if mode == 0o40755:
+                            self.assertEqual(ios_native_build.verify_fakefs_root(root), mode)
+                        else:
+                            with self.assertRaisesRegex(ValueError,'directory type'):
+                                ios_native_build.verify_fakefs_root(root)
+
     def test_prepared_cache_requires_all_policy_patches(self):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
