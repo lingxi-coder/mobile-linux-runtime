@@ -1,0 +1,13 @@
+--- a/src/ios/iSH/ISHKernel.m
++++ b/src/ios/iSH/ISHKernel.m
+@@ -275,6 +275,10 @@
+ #pragma mark - Process Exit Handler
+ 
+ static void handle_process_exit(struct task *task, int code) {
++    // exit_hook runs when the final thread leaves a thread group. Its task
++    // can be a worker whose TID differs from the executor's process PID.
++    // Notify using the still-live group leader before the worker is destroyed.
++    task = task->group->leader;
+     // Only notify for init (parent == NULL) and direct children of init
+     // (parent->parent == NULL). Grandchildren and deeper descendants are
+     // ignored to avoid pids_lock contention with sys_wait4/wait_for.

@@ -69,7 +69,8 @@
     "openminis-default-user.patch": "57d5775f1abc23a02c7ce7c659be8c8d307f8a6f9084a2caee645e34ff6c9988",
     "ish-mobile-mount-owner.patch": "7a1abbe65fe41c27d008bb3e21c9210c61d20ed57d636194d42ae075e61ddbdd",
     "openminis-pty-exit-identity.patch": "d49565eca771fe260919f9851273a6c136415f4b1f3da96cf4430cb3ee12ce35",
-    "ish-nondestructive-mounts.patch": "2799229e385dfea9bd23d394c56ae98e552a698426187402f8d05a78bc27afe1"
+    "ish-nondestructive-mounts.patch": "2799229e385dfea9bd23d394c56ae98e552a698426187402f8d05a78bc27afe1",
+    "openminis-process-exit-leader.patch": "dcbd0f1911a3b8852bff3e9885a63e7f69eb09c37539e11fb657cd40c68e63ff"
   },
   "features": {
     "native_apple_offloads": false,

@@ -78,7 +78,7 @@ def prepare(cache):
         for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch','ish-mobile-mount-owner.patch','ish-nondestructive-mounts.patch'):
             apply_source_patch(ish,name)
         shutil.copy2(SDK/'native/ios/lx_mount_path_guard.h',ish/'fs/lx_mount_path_guard.h')
-        for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch','openminis-default-user.patch','openminis-pty-exit-identity.patch'):
+        for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch','openminis-default-user.patch','openminis-pty-exit-identity.patch','openminis-process-exit-leader.patch'):
             apply_source_patch(glue,name)
         (work/'prepared').write_text(identity)
         if not prepared_work_matches(work,identity):
