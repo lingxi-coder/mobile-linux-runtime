@@ -55,15 +55,41 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
     }
 
     func testExplicitCallerHomeAndBrowserSurviveDefaultEnvironment() {
-        let environment = LXISHGuestEnvironment.merged(requestEnvironment: ["HOME": "/tmp/sdk-home", "BROWSER": "/tmp/caller-browser"], cwd: nil, stableWorkspaceId: "one")
+        let config = guestEnvironmentConfig(stableWorkspaceId: "one")
+        let environment = LXISHGuestEnvironment.merged(
+            requestEnvironment: ["HOME": "/tmp/sdk-home", "BROWSER": "/tmp/caller-browser"],
+            cwd: nil,
+            config: config
+        )
         XCTAssertEqual(environment["HOME"], "/tmp/sdk-home")
         XCTAssertEqual(environment["BROWSER"], "/tmp/caller-browser")
-        XCTAssertNil(LXISHGuestEnvironment.merged(requestEnvironment: [:], cwd: nil, stableWorkspaceId: "one")["BROWSER"])
+        XCTAssertNil(LXISHGuestEnvironment.merged(
+            requestEnvironment: [:],
+            cwd: nil,
+            config: config
+        )["BROWSER"])
     }
 
     private var temporaryRoot: URL!
     private var rootfsArchivePath: String?
     private var defaultMountPath: String?
+
+    private func guestEnvironmentConfig(stableWorkspaceId: String) -> LXISHNativeConfig {
+        LXISHNativeConfig(
+            managedRoot: "/managed",
+            brandId: "lingxi",
+            linuxUser: "lingxi",
+            configDirName: ".lingxi",
+            workspaceHostPath: "/workspace",
+            stableWorkspaceId: stableWorkspaceId,
+            abi: "arm64",
+            rootfsVersion: "3.24.1",
+            archiveSha256: nil,
+            authorizationFile: nil,
+            rootfsArchivePath: nil,
+            defaultMountPath: nil
+        )
+    }
 
     private enum StubFailure: LocalizedError {
         case boom
@@ -291,10 +317,11 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
 
     func testGuestEnvironmentPinsOnlyTheCurrentWorkspaceAsSafeDirectory() {
+        let stableWorkspaceId = "12345678-1234-4abc-8def-1234567890ab"
         let environment = LXISHGuestEnvironment.merged(
             requestEnvironment: [:],
             cwd: nil,
-            stableWorkspaceId: "12345678-1234-4abc-8def-1234567890ab"
+            config: guestEnvironmentConfig(stableWorkspaceId: stableWorkspaceId)
         )
 
         XCTAssertEqual(environment["HOME"], "/home/lingxi")
@@ -312,6 +339,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
     }
 
     func testGuestEnvironmentOverridesCallerProvidedSafeDirectoryEscape() {
+        let stableWorkspaceId = "12345678-1234-4abc-8def-1234567890ab"
         let environment = LXISHGuestEnvironment.merged(
             requestEnvironment: [
                 "GIT_CONFIG_COUNT": "2",
@@ -319,7 +347,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
                 "GIT_CONFIG_VALUE_0": "*"
             ],
             cwd: nil,
-            stableWorkspaceId: "12345678-1234-4abc-8def-1234567890ab"
+            config: guestEnvironmentConfig(stableWorkspaceId: stableWorkspaceId)
         )
 
         XCTAssertEqual(environment["GIT_CONFIG_COUNT"], "1")
