@@ -75,7 +75,7 @@ def prepare(cache):
         copytree(source('ish',pins,cache),ish)
         for name in ['libapps','libarchive']: copytree(source(name,pins,cache),ish/'deps'/name)
         copytree(SDK/'native/ios/upstream/openminis',glue)
-        for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch','ish-mobile-mount-owner.patch','ish-nondestructive-mounts.patch'):
+        for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch','ish-mobile-mount-owner.patch','ish-nondestructive-mounts.patch','ish-truncate-cwd.patch','ish-covered-path-preservation.patch'):
             apply_source_patch(ish,name)
         shutil.copy2(SDK/'native/ios/lx_mount_path_guard.h',ish/'fs/lx_mount_path_guard.h')
         for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch','openminis-default-user.patch','openminis-pty-exit-identity.patch','openminis-process-exit-leader.patch'):

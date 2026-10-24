@@ -8,6 +8,7 @@ import subprocess
 import unittest
 import sqlite3
 import struct
+import re
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -70,6 +71,114 @@ int main(void) {
             binary = root/'exit-identity'
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',str(probe),'-o',str(binary)],check=True)
             subprocess.run([str(binary)],check=True)
+
+    def patched_function(self, patch_name, signature):
+        patch = (SCRIPTS.parent/'native/ios/patches'/patch_name).read_text()
+        source = '\n'.join(line[1:] for line in patch.splitlines() if line.startswith((' ', '+')) and not line.startswith('+++'))
+        start = source.index(signature)
+        brace = source.index('{', start)
+        depth = 1
+        end = brace + 1
+        while depth:
+            depth += (source[end] == '{') - (source[end] == '}')
+            end += 1
+        return source[start:end]
+
+    def test_truncate_syscalls_resolve_absolute_and_relative_paths_from_cwd(self):
+        patch = (SCRIPTS.parent/'native/ios/patches/ish-truncate-cwd.patch').read_text()
+        source = '\n'.join(line[1:] for line in patch.splitlines() if line.startswith((' ', '+')) and not line.startswith('+++'))
+        functions = re.findall(r'dword_t sys_truncate64\([^)]*\)\s*\{.*?\n\}', source, re.S)
+        self.assertEqual(len(functions), 2)
+        code = r"""
+#include <assert.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stddef.h>
+#define MAX_PATH 4096
+#define STRACE(...) ((void)0)
+#define _EFAULT (-14)
+struct fd { int unused; };
+#define AT_PWD ((struct fd *)-2)
+typedef unsigned long dword_t;
+typedef uintptr_t addr_t;
+typedef long long off_t_;
+typedef uint64_t qword_t;
+#define make_attr(kind, value) (value)
+static const char *expected_path;
+static off_t_ expected_size;
+static int user_read_string(addr_t address, char *output, size_t size) {
+    if (!address) return 1;
+    assert(strlen((const char *)address) < size);
+    strcpy(output, (const char *)address); return 0;
+}
+static int generic_setattrat(struct fd *at, const char *path, off_t_ size, bool follow) {
+    assert(at == AT_PWD); assert(follow); assert(!strcmp(path, expected_path));
+    assert(size == expected_size); return 37;
+}
+"""
+        code += functions[0].replace('sys_truncate64(', 'probe_arm64(') + '\n'
+        code += functions[1].replace('sys_truncate64(', 'probe_arm32(') + '\n'
+        code += r"""
+int main(void) {
+    expected_path = "relative.dat"; expected_size = 19;
+    assert(probe_arm64((addr_t)expected_path, expected_size) == 37);
+    expected_path = "/tmp/absolute.dat"; expected_size = 9;
+    assert(probe_arm64((addr_t)expected_path, expected_size) == 37);
+    expected_path = "relative.dat"; expected_size = ((off_t_)7 << 32) | 9;
+    assert(probe_arm32((addr_t)expected_path, 9, 7) == 37);
+    expected_path = "/tmp/absolute.dat"; expected_size = 3;
+    assert(probe_arm32((addr_t)expected_path, 3, 0) == 37);
+    assert(probe_arm64(0, 0) == (dword_t)_EFAULT);
+    assert(probe_arm32(0, 0, 0) == (dword_t)_EFAULT);
+    return 0;
+}
+"""
+        self.compile_native_probe(code)
+
+    def compile_native_probe(self, code):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root/'probe.c'; source.write_text(code)
+            binary = root/'probe'
+            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(SCRIPTS.parent/'native/ios'),str(source),'-o',str(binary)],check=True)
+            subprocess.run([str(binary)],check=True)
+
+    def test_mount_installer_preserves_covered_files_directories_and_foreign_links(self):
+        function = self.patched_function('ish-covered-path-preservation.patch', 'static int lx_mount_install_link(')
+        code = r"""
+#include <assert.h>
+#include <stdlib.h>
+#include "lx_mount_path_guard.h"
+#define _EBUSY (-EBUSY)
+#define _EINVAL (-EINVAL)
+struct fakefs_bind_mount { bool materialized; char owned_link_target[PATH_MAX]; };
+struct root_mount { int root_fd; };
+static struct root_mount *g_fakefs_mount;
+static const char *fix_path(const char *path) { return *path == '/' ? path + 1 : path; }
+static int create_relative_symlink(int parent, const char *leaf, const char *target) { return symlinkat(target, parent, leaf); }
+""" + function + r"""
+int main(void) {
+    char root[] = "/tmp/lx-covered-mount-XXXXXX"; assert(mkdtemp(root));
+    struct root_mount fs = {open(root, O_RDONLY | O_DIRECTORY)}; assert(fs.root_fd >= 0); g_fakefs_mount = &fs;
+    assert(mkdirat(fs.root_fd, "covered", 0700) == 0);
+    int fd = openat(fs.root_fd, "covered/sentinel", O_CREAT | O_WRONLY, 0600); assert(fd >= 0); assert(write(fd, "keep", 4) == 4); close(fd);
+    struct fakefs_bind_mount mount = {.materialized = true};
+    assert(lx_mount_install_link(&mount, "/covered", "/unrelated", false) == 0); assert(!mount.materialized);
+    char bytes[5] = {0}; fd = openat(fs.root_fd, "covered/sentinel", O_RDONLY); assert(fd >= 0); assert(read(fd, bytes, 4) == 4); close(fd); assert(!strcmp(bytes,"keep"));
+    fd = openat(fs.root_fd,"file",O_CREAT|O_WRONLY,0600); assert(fd>=0); close(fd); mount.materialized=true;
+    assert(lx_mount_install_link(&mount,"/file","/unrelated",false)==0); assert(!mount.materialized);
+    assert(symlinkat("covered",fs.root_fd,"foreign")==0); mount.materialized=true;
+    assert(lx_mount_install_link(&mount,"/foreign","/unrelated",false)==0); assert(!mount.materialized); assert(lx_mount_link_matches(fs.root_fd,"foreign","covered"));
+    mount.materialized=true; assert(lx_mount_install_link(&mount,"/new","/unrelated",false)==0); assert(mount.materialized); assert(lx_mount_link_matches(fs.root_fd,"new",mount.owned_link_target));
+    assert(unlinkat(fs.root_fd,"new",0)==0); assert(symlinkat("covered",fs.root_fd,"new")==0);
+    assert(lx_mount_install_link(&mount,"/new","/replacement",true)==_EBUSY); assert(lx_mount_link_matches(fs.root_fd,"new","covered"));
+    assert(unlinkat(fs.root_fd,"new",0)==0); assert(unlinkat(fs.root_fd,"foreign",0)==0); assert(unlinkat(fs.root_fd,"file",0)==0); assert(unlinkat(fs.root_fd,"covered/sentinel",0)==0); assert(unlinkat(fs.root_fd,"covered",AT_REMOVEDIR)==0); close(fs.root_fd); assert(rmdir(root)==0);
+    const char *prefixes[] = {"/tmp"}; assert(lx_mount_longest_prefix("/tmp/a",prefixes,1)==0);
+    return 0;
+}
+"""
+        self.compile_native_probe(code)
 
     def test_prepared_cache_requires_all_policy_patches(self):
         with tempfile.TemporaryDirectory() as directory:
