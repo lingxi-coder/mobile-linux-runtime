@@ -108,8 +108,9 @@ pub(super) fn validate_mount(
     validate_guest_path(&mount.guest_path, "guest_path", false)?;
     let managed_root = normalize_host_path(&config.managed_root, "managed_root")?;
     let app_root = normalize_host_path(&config.app_sandbox_root, "app_sandbox_root")?;
+    let guest_home = mobile_linux_api::guest_paths::home_for_profile(&config.brand_profile);
     if ["/", "/home"].contains(&mount.guest_path.as_str())
-        || (guest_path_has_prefix(&mount.guest_path, mobile_linux_api::guest_paths::HOME)
+        || (guest_path_has_prefix(&mount.guest_path, &guest_home)
             && !matches!(mount.purpose, MountPurpose::Workspace))
         || guest_path_has_prefix(&mount.guest_path, mobile_linux_api::guest_paths::ADMIN_HOME)
     {
@@ -117,7 +118,11 @@ pub(super) fn validate_mount(
             "request mounts may not replace the persistent guest home".into(),
         ));
     }
-    let user_workspace = mobile_linux_core::is_persistent_user_workspace(&managed_root, mount);
+    let user_workspace = mobile_linux_core::is_persistent_user_workspace(
+        &managed_root,
+        &config.brand_profile,
+        mount,
+    );
     let mut protected = if user_workspace {
         Vec::new()
     } else {

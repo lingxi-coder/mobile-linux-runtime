@@ -6,12 +6,46 @@ use std::{fs, path::Path};
 use super::*;
 
 fn manifest() -> RootfsManifest {
+    let account_files = [
+        (
+            "/etc/passwd",
+            b"root:x:0:0:root:/root:/bin/sh\nlingxi:x:1000:1000:LingXi:/home/lingxi:/bin/sh\n"
+                .as_slice(),
+        ),
+        ("/etc/group", b"root:x:0:\nlingxi:x:1000:\n".as_slice()),
+        (
+            "/etc/shadow",
+            b"root:!:0:0:99999:7:::\nlingxi:!:0:0:99999:7:::\n".as_slice(),
+        ),
+        (
+            "/etc/doas.conf",
+            b"permit nopass lingxi as root\n".as_slice(),
+        ),
+    ];
+    let mut immutable_files = vec![RootfsImmutableEntry {
+        path: "/usr/bin/python3".to_string(),
+        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+        kind: RootfsImmutableKind::RegularFile,
+        size_bytes: 0,
+    }];
+    immutable_files.extend(
+        account_files
+            .iter()
+            .map(|(path, bytes)| RootfsImmutableEntry {
+                path: (*path).to_string(),
+                sha256: crate::filesystem::sha256_bytes(bytes),
+                kind: RootfsImmutableKind::RegularFile,
+                size_bytes: bytes.len() as u64,
+            }),
+    );
+    immutable_files.sort_by(|left, right| left.path.cmp(&right.path));
     RootfsManifest {
         schema_version: 2,
         runtime: "android-proot".to_string(),
         platform: "android".to_string(),
         abi: "arm64".to_string(),
         rootfs_version: "1.0.0".to_string(),
+        brand_profile: None,
         content_sha256: None,
         sbom_filename: None,
         source_pins_filename: None,
@@ -36,12 +70,7 @@ fn manifest() -> RootfsManifest {
             kind: RootfsEntryKind::Interpreter,
             size_bytes: Some(0),
         }],
-        immutable_files: vec![RootfsImmutableEntry {
-            path: "/usr/bin/python3".to_string(),
-            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
-            kind: RootfsImmutableKind::RegularFile,
-            size_bytes: 0,
-        }],
+        immutable_files,
         writable_paths: ALLOWED_WRITABLE_GUEST_PATHS
             .iter()
             .map(|path| (*path).to_string())
@@ -53,6 +82,20 @@ fn write_valid_root(path: &Path) {
     let executable = path.join("usr/bin/python3");
     fs::create_dir_all(executable.parent().expect("parent")).expect("rootfs dirs");
     fs::write(executable, b"").expect("rootfs executable");
+    let account = path.join("etc");
+    fs::create_dir_all(&account).expect("account files");
+    fs::write(
+        account.join("passwd"),
+        b"root:x:0:0:root:/root:/bin/sh\nlingxi:x:1000:1000:LingXi:/home/lingxi:/bin/sh\n",
+    )
+    .unwrap();
+    fs::write(account.join("group"), b"root:x:0:\nlingxi:x:1000:\n").unwrap();
+    fs::write(
+        account.join("shadow"),
+        b"root:!:0:0:99999:7:::\nlingxi:!:0:0:99999:7:::\n",
+    )
+    .unwrap();
+    fs::write(account.join("doas.conf"), b"permit nopass lingxi as root\n").unwrap();
     for writable in ALLOWED_WRITABLE_GUEST_PATHS {
         fs::create_dir_all(path.join(writable.trim_start_matches('/')))
             .expect("writable rootfs dir");
@@ -86,6 +129,30 @@ fn manifest_rejects_unknown_schema_versions() {
         manifest.validate(),
         Err(RootfsManifestError::InvalidSchemaVersion)
     ));
+}
+
+#[test]
+fn selected_brand_runtime_rejects_a_manifest_for_another_brand_before_boot() {
+    let selected = RootfsStore::new(
+        Path::new("/tmp/mobile-linux-brand-test").to_path_buf(),
+        SandboxBackend::AndroidProot,
+        MobileLinuxRuntimeMode::MobileLinux,
+        "android",
+        "arm64-v8a",
+    )
+    .with_brand_profile(mobile_linux_api::BrandRuntimeProfile::new(
+        "atlas",
+        "atlas_guest",
+        ".atlas",
+    ));
+
+    let status = selected.status(&manifest());
+
+    assert_eq!(status.state, RootfsState::Corrupt);
+    assert!(status
+        .last_error
+        .as_deref()
+        .is_some_and(|message| message.contains("does not match store target")));
 }
 
 #[test]
@@ -498,8 +565,13 @@ fn verify_active_root_rejects_symlinked_executables() {
     manifest.executable_allowlist[0].size_bytes = Some(7);
     manifest.executable_allowlist[0].sha256 =
         "239f59ed55e737c77147cf55ad0c1b03b8c4fa0193f6c82b53f6ba356b4a8044".to_string();
-    manifest.immutable_files[0].size_bytes = 7;
-    manifest.immutable_files[0].sha256 =
+    let executable = manifest
+        .immutable_files
+        .iter_mut()
+        .find(|entry| entry.path == "/usr/bin/python3")
+        .expect("python immutable entry");
+    executable.size_bytes = 7;
+    executable.sha256 =
         "239f59ed55e737c77147cf55ad0c1b03b8c4fa0193f6c82b53f6ba356b4a8044".to_string();
     let report = store.verify_active_root(&manifest).expect("report");
     assert!(!report.ok);
@@ -601,7 +673,7 @@ fn reset_rejects_symlinked_parent_directories() {
 }
 
 #[test]
-fn persistent_user_migration_is_once_only_and_never_overwrites_files() {
+fn persistent_home_migration_is_account_scoped_logged_and_never_merges_root() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     fs::create_dir_all(root.join("active/root/.config")).unwrap();
@@ -617,10 +689,7 @@ fn persistent_user_migration_is_once_only_and_never_overwrites_files() {
         "arm64",
     );
     store.preserve_guest_homes().unwrap();
-    assert_eq!(
-        fs::read(root.join("persistent/lingxi/.config/legacy")).unwrap(),
-        b"keep"
-    );
+    assert!(!root.join("persistent/lingxi/.config/legacy").exists());
     assert_eq!(
         fs::read(root.join("persistent/lingxi/.config/current")).unwrap(),
         b"new"
@@ -629,7 +698,21 @@ fn persistent_user_migration_is_once_only_and_never_overwrites_files() {
         fs::read(root.join("persistent/root/.config/legacy")).unwrap(),
         b"keep"
     );
-    fs::remove_file(root.join("persistent/lingxi/.config/legacy")).unwrap();
+    let record = fs::read_dir(root.join("persistent/migrations"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.file_name().unwrap().to_string_lossy().contains("root"))
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&fs::read(record).unwrap()).unwrap();
+    assert_eq!(record["source_guest_path"], "/root");
+    assert_eq!(
+        record["destination_managed_relative_path"],
+        "persistent/root"
+    );
+    assert_eq!(record["source_retained"], true);
     store.preserve_guest_homes().unwrap();
-    assert!(!root.join("persistent/lingxi/.config/legacy").exists());
+    assert_eq!(
+        fs::read(root.join("persistent/root/.config/legacy")).unwrap(),
+        b"keep"
+    );
 }

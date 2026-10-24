@@ -91,15 +91,36 @@ impl AndroidProotRuntime {
 
 impl AndroidProotRuntime {
     pub(super) fn prepare_execution(&self) -> Result<(), MobileLinuxError> {
+        self.state
+            .config
+            .brand_profile
+            .validate()
+            .map_err(|error| MobileLinuxError::InvalidRequest(error.to_string()))?;
         self.readiness()?;
+        match self.load_rootfs_manifest() {
+            Ok(manifest) => {
+                let status = self.rootfs_store().status(&manifest);
+                if status.state != RootfsState::Ready {
+                    return Err(MobileLinuxError::Integrity(
+                        status.last_error.unwrap_or_else(|| {
+                            "active rootfs does not match the selected brand profile".to_string()
+                        }),
+                    ));
+                }
+            }
+            Err(_) if cfg!(test) => {}
+            Err(error) => return Err(error),
+        }
         self.rootfs_store()
             .preserve_guest_homes()
             .map_err(rootfs_store_error)?;
-        for path in ["persistent/lingxi/lingxi", "persistent/root"] {
-            fs::create_dir_all(self.state.config.managed_root.join(path)).map_err(|error| {
-                MobileLinuxError::Io(format!("create persistent home: {error}"))
-            })?;
-        }
+        let profile = &self.state.config.brand_profile;
+        let home = profile.persistent_home_host_path(&self.state.config.managed_root);
+        fs::create_dir_all(home.join(&profile.brand_id).join("projects"))
+            .and_then(|()| {
+                fs::create_dir_all(self.state.config.managed_root.join("persistent/root"))
+            })
+            .map_err(|error| MobileLinuxError::Io(format!("create persistent home: {error}")))?;
         fs::create_dir_all(self.state.config.managed_root.join("tmp"))
             .map_err(|error| MobileLinuxError::Io(format!("create PRoot tmp: {error}")))?;
         self.state.booted.store(true, Ordering::Release);
@@ -116,6 +137,7 @@ impl AndroidProotRuntime {
             "android",
             self.state.config.abi.clone(),
         )
+        .with_brand_profile(self.state.config.brand_profile.clone())
     }
 }
 
@@ -199,9 +221,9 @@ impl AndroidProotRuntime {
             staged_root: path_present(&staged).then_some(staged),
             archive_sha256: self.state.config.archive_sha256.clone(),
             installed_size_bytes: directory_size(&active).ok(),
-            writable_guest_paths: mobile_linux_api::guest_paths::writable_roots()
-                .map(str::to_string)
-                .to_vec(),
+            writable_guest_paths: mobile_linux_api::guest_paths::writable_roots_for_profile(
+                &self.state.config.brand_profile,
+            ),
             last_error,
         }
     }

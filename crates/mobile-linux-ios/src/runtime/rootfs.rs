@@ -39,12 +39,9 @@ impl IosIshRuntime {
             staged_root: None,
             archive_sha256: self.state.config.archive_sha256.clone(),
             installed_size_bytes: directory_size(&active_root).ok(),
-            writable_guest_paths: vec![
-                mobile_linux_api::guest_paths::HOME.to_string(),
-                mobile_linux_api::guest_paths::SCRATCH[0].to_string(),
-                mobile_linux_api::guest_paths::SCRATCH[1].to_string(),
-                self.state.config.workspace_guest_path(),
-            ],
+            writable_guest_paths: mobile_linux_api::guest_paths::writable_roots_for_profile(
+                &self.state.config.brand_profile,
+            ),
             last_error: last_error.or(native_unavailable),
         }
     }

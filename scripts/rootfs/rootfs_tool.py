@@ -14,6 +14,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
+from guest_user import GuestUserProfile, profile_from_values
 
 # Versions come from the pins so toolchain updates and validation stay aligned.
 _PINS_PATH = (
@@ -66,9 +67,38 @@ BINARY_SYMLINK_SCRUTINY_PREFIXES = [
 ]
 
 WORLD_WRITABLE_ALLOWED = {"/tmp", "/var/tmp"}
-WRITABLE_ROOTS = {"/root", "/home/lingxi", "/tmp", "/var/tmp", "/home/lingxi/lingxi"}
+GUEST_PROFILE = profile_from_values(
+    os.environ.get("LINGXI_BRAND_ID"),
+    os.environ.get("LINGXI_LINUX_USER"),
+    os.environ.get("LINGXI_CONFIG_DIR_NAME"),
+)
+WRITABLE_ROOTS = {
+    "/root",
+    "/tmp",
+    "/var/tmp",
+    GUEST_PROFILE.guest_home.as_posix(),
+    GUEST_PROFILE.workspace_root.as_posix(),
+}
 DEFAULT_SOURCE_DATE_EPOCH = 0
 EXPECTED_ALPINE_RELEASE = _ALPINE["version"]
+
+
+def set_guest_profile(profile: GuestUserProfile) -> None:
+    """Set the profile whose home and workspace are writable in this rootfs."""
+    global GUEST_PROFILE, WRITABLE_ROOTS
+    GUEST_PROFILE = profile.validate()
+    WRITABLE_ROOTS = {
+        "/root",
+        "/tmp",
+        "/var/tmp",
+        GUEST_PROFILE.guest_home.as_posix(),
+        GUEST_PROFILE.workspace_root.as_posix(),
+    }
+
+
+def _guest_owned_archive_path(path: str) -> bool:
+    home = GUEST_PROFILE.guest_home.as_posix().lstrip("/")
+    return path == home or path.startswith(home + "/")
 
 
 @dataclass
@@ -615,6 +645,11 @@ def generate_manifest(args: argparse.Namespace) -> None:
         "platform": args.platform,
         "abi": args.abi,
         "rootfs_version": args.rootfs_version,
+        "brand_profile": {
+            "brand_id": GUEST_PROFILE.brand_id,
+            "linux_user": GUEST_PROFILE.linux_user,
+            "config_dir_name": GUEST_PROFILE.config_dir_name,
+        },
         "content_sha256": hashlib.sha256(canonical_json_bytes(immutable_files)).hexdigest(),
         "sbom_filename": "rootfs.spdx.json",
         "source_pins_filename": "mobile-linux-pins.json",
@@ -938,9 +973,9 @@ def build_archive(args: argparse.Namespace) -> None:
                 info = tarfile.TarInfo(dir_name)
                 info.type = tarfile.DIRTYPE
                 info.mode = normalized_tar_mode(dir_stat.st_mode, is_dir=True, is_symlink=False)
-                info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                info.uid = 1000 if _guest_owned_archive_path(info.name) else 0
                 info.gid = info.uid
-                info.uname = "lingxi" if info.uid == 1000 else "root"
+                info.uname = GUEST_PROFILE.linux_user if info.uid == 1000 else "root"
                 info.gname = info.uname
                 info.mtime = epoch
                 tar.addfile(info)
@@ -954,9 +989,9 @@ def build_archive(args: argparse.Namespace) -> None:
                     info.type = tarfile.SYMTYPE
                     info.linkname = target
                     info.mode = normalized_tar_mode(os.lstat(path).st_mode, is_dir=False, is_symlink=True)
-                    info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                    info.uid = 1000 if _guest_owned_archive_path(info.name) else 0
                     info.gid = info.uid
-                    info.uname = "lingxi" if info.uid == 1000 else "root"
+                    info.uname = GUEST_PROFILE.linux_user if info.uid == 1000 else "root"
                     info.gname = info.uname
                     info.mtime = epoch
                     tar.addfile(info)
@@ -970,9 +1005,9 @@ def build_archive(args: argparse.Namespace) -> None:
                     info.type = tarfile.SYMTYPE
                     info.linkname = os.readlink(path)
                     info.mode = normalized_tar_mode(st.st_mode, is_dir=False, is_symlink=True)
-                    info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                    info.uid = 1000 if _guest_owned_archive_path(info.name) else 0
                     info.gid = info.uid
-                    info.uname = "lingxi" if info.uid == 1000 else "root"
+                    info.uname = GUEST_PROFILE.linux_user if info.uid == 1000 else "root"
                     info.gname = info.uname
                     info.mtime = epoch
                     tar.addfile(info)
@@ -984,9 +1019,9 @@ def build_archive(args: argparse.Namespace) -> None:
                     info.type = tarfile.LNKTYPE
                     info.linkname = inode_first_path[inode_key]
                     info.mode = normalized_tar_mode(st.st_mode, is_dir=False, is_symlink=False)
-                    info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                    info.uid = 1000 if _guest_owned_archive_path(info.name) else 0
                     info.gid = info.uid
-                    info.uname = "lingxi" if info.uid == 1000 else "root"
+                    info.uname = GUEST_PROFILE.linux_user if info.uid == 1000 else "root"
                     info.gname = info.uname
                     info.mtime = epoch
                     tar.addfile(info)
@@ -996,9 +1031,9 @@ def build_archive(args: argparse.Namespace) -> None:
                 info = tarfile.TarInfo(rel)
                 info.size = st.st_size
                 info.mode = normalized_tar_mode(st.st_mode, is_dir=False, is_symlink=False)
-                info.uid = 1000 if info.name == "home/lingxi" or info.name.startswith("home/lingxi/") else 0
+                info.uid = 1000 if _guest_owned_archive_path(info.name) else 0
                 info.gid = info.uid
-                info.uname = "lingxi" if info.uid == 1000 else "root"
+                info.uname = GUEST_PROFILE.linux_user if info.uid == 1000 else "root"
                 info.gname = info.uname
                 info.mtime = epoch
                 with path.open("rb") as handle:

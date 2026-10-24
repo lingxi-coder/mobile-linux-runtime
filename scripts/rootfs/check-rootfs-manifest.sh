@@ -21,7 +21,10 @@ if [[ ! -f "${target_path}" ]]; then
   exit 1
 fi
 
-SCHEMA_PATH="${schema_path}" TARGET_PATH="${target_path}" PINS_PATH="${pins_path}" python3 - <<'PY'
+SCHEMA_PATH="${schema_path}" TARGET_PATH="${target_path}" PINS_PATH="${pins_path}" \
+LINGXI_BRAND_ID="${LINGXI_BRAND_ID:-lingxi}" \
+LINGXI_LINUX_USER="${LINGXI_LINUX_USER:-lingxi}" \
+LINGXI_CONFIG_DIR_NAME="${LINGXI_CONFIG_DIR_NAME:-.lingxi}" python3 - <<'PY'
 import json
 import os
 import pathlib
@@ -43,6 +46,21 @@ except Exception as exc:
     print(f"failed to parse rootfs manifest input: {exc}", file=sys.stderr)
     sys.exit(1)
 
+brand_id = os.environ["LINGXI_BRAND_ID"]
+linux_user = os.environ["LINGXI_LINUX_USER"]
+config_dir_name = os.environ["LINGXI_CONFIG_DIR_NAME"]
+if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,62}", brand_id):
+    print("brand id must be one lowercase path component", file=sys.stderr)
+    sys.exit(1)
+if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", linux_user) or linux_user == "root":
+    print("Linux user must be a safe non-root account name", file=sys.stderr)
+    sys.exit(1)
+if not re.fullmatch(r"\.[a-z0-9][a-z0-9._-]{0,62}", config_dir_name):
+    print("config directory name must be one hidden path component", file=sys.stderr)
+    sys.exit(1)
+guest_home = f"/home/{linux_user}"
+workspace_root = f"{guest_home}/{brand_id}"
+
 required = {
     "schema_version",
     "runtime",
@@ -62,9 +80,28 @@ missing = required - data.keys()
 if missing:
     print(f"missing required manifest keys: {sorted(missing)}", file=sys.stderr)
     sys.exit(1)
-unknown = data.keys() - required
+allowed_keys = set(schema.get("properties", {}))
+unknown = data.keys() - allowed_keys
 if unknown:
     print(f"unknown manifest keys: {sorted(unknown)}", file=sys.stderr)
+    sys.exit(1)
+
+brand_profile = data.get("brand_profile", {
+    "brand_id": "lingxi",
+    "linux_user": "lingxi",
+    "config_dir_name": ".lingxi",
+})
+if (not isinstance(brand_profile, dict)
+        or set(brand_profile) != {"brand_id", "linux_user", "config_dir_name"}):
+    print("brand_profile must contain brand_id, linux_user, and config_dir_name", file=sys.stderr)
+    sys.exit(1)
+expected_profile = {
+    "brand_id": brand_id,
+    "linux_user": linux_user,
+    "config_dir_name": config_dir_name,
+}
+if brand_profile != expected_profile:
+    print("rootfs brand_profile does not match the selected runtime profile", file=sys.stderr)
     sys.exit(1)
 
 if data["schema_version"] != 2:
@@ -251,7 +288,7 @@ for entry in immutable_files:
         "/root",
         "/tmp",
         "/var/tmp",
-        "/home/lingxi/lingxi", "/home/lingxi",
+        workspace_root, guest_home,
     }):
         print(f"writable path is forbidden in immutable inventory: {path}", file=sys.stderr)
         sys.exit(1)
@@ -288,7 +325,7 @@ if not isinstance(writable_paths, list) or not writable_paths:
     print("writable_paths must be a non-empty list", file=sys.stderr)
     sys.exit(1)
 
-allowed_writable_roots = {"/root", "/tmp", "/var/tmp", "/home/lingxi/lingxi", "/home/lingxi"}
+allowed_writable_roots = {"/root", "/tmp", "/var/tmp", workspace_root, guest_home}
 if len(writable_paths) != len(set(writable_paths)):
     print("writable_paths contains duplicates", file=sys.stderr)
     sys.exit(1)

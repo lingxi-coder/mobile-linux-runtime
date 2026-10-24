@@ -26,8 +26,8 @@ impl AndroidProotRuntime {
             "-b".to_string(),
             "/sys".to_string(),
             "-w".to_string(),
-            cwd.unwrap_or(mobile_linux_api::guest_paths::WORKSPACE_ROOT)
-                .to_string(),
+            cwd.map(str::to_owned)
+                .unwrap_or_else(|| self.state.config.workspace_root()),
         ];
         for mount in mounts {
             args.push("-b".to_string());
@@ -53,12 +53,15 @@ impl AndroidProotRuntime {
                 "PATH".to_string(),
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin".to_string(),
             ),
+            ("HOME".to_string(), self.state.config.guest_home()),
             (
-                "HOME".to_string(),
-                mobile_linux_api::guest_paths::HOME.to_string(),
+                "USER".to_string(),
+                self.state.config.brand_profile.linux_user.clone(),
             ),
-            ("USER".to_string(), "lingxi".to_string()),
-            ("LOGNAME".to_string(), "lingxi".to_string()),
+            (
+                "LOGNAME".to_string(),
+                self.state.config.brand_profile.linux_user.clone(),
+            ),
         ]);
         child_env.extend(env.iter().map(|(key, value)| (key.clone(), value.clone())));
         if let Some(native_lib_dir) = proot.parent() {

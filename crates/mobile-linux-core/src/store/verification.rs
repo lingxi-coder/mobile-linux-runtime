@@ -2,11 +2,11 @@
 use super::RootfsStore;
 use crate::filesystem::{sha256_bytes, sha256_file};
 use crate::guest_path::secure_guest_host_path_with_real_parents;
-use crate::manifest::ALLOWED_WRITABLE_GUEST_PATHS;
 use crate::{
     path_is_within_guest_path, validate_guest_path, RootfsImmutableEntry, RootfsImmutableKind,
     RootfsManifest, RootfsStoreError,
 };
+use mobile_linux_api::BrandRuntimeProfile;
 use std::{
     collections::BTreeSet,
     fs,
@@ -315,6 +315,7 @@ impl RootfsStore {
         let mut issues = Vec::new();
         let mut verified_files = 0usize;
         let mut verified_bytes = 0u64;
+        issues.extend(verify_brand_account(&active_root, self.brand_profile()));
         for writable_path in &manifest.writable_paths {
             if let Some(reason) = verify_writable_root(&active_root, writable_path) {
                 issues.push(RootfsVerificationIssue {
@@ -367,7 +368,8 @@ impl RootfsStore {
     ) -> Result<PathBuf, RootfsStoreError> {
         self.validate_manifest_target(manifest)?;
         validate_guest_path(guest_path)?;
-        if ALLOWED_WRITABLE_GUEST_PATHS
+        if manifest
+            .writable_paths
             .iter()
             .any(|writable| path_is_within_guest_path(guest_path, writable))
         {
@@ -419,5 +421,158 @@ impl RootfsStore {
             });
         }
         Ok(host_path)
+    }
+}
+
+fn verify_brand_account(
+    root: &Path,
+    profile: &BrandRuntimeProfile,
+) -> Vec<RootfsVerificationIssue> {
+    let user = profile.linux_user.as_str();
+    let home = profile.guest_home().to_string_lossy().into_owned();
+    let mut issues = Vec::new();
+    for guest_path in ["/etc/passwd", "/etc/group", "/etc/shadow"] {
+        let file = match secure_guest_host_path_with_real_parents(root, guest_path) {
+            Ok(file) => file,
+            Err(error) => {
+                issues.push(RootfsVerificationIssue {
+                    path: guest_path.to_string(),
+                    reason: error.to_string(),
+                });
+                continue;
+            }
+        };
+        let text = match fs::read_to_string(&file) {
+            Ok(text) => text,
+            Err(error) => {
+                issues.push(RootfsVerificationIssue {
+                    path: guest_path.to_string(),
+                    reason: format!("could not read account database: {error}"),
+                });
+                continue;
+            }
+        };
+        let rows = text
+            .lines()
+            .map(|line| line.split(':').collect::<Vec<_>>())
+            .collect::<Vec<_>>();
+        let matches_profile = match guest_path {
+            "/etc/passwd" => {
+                let uid_1000 = rows
+                    .iter()
+                    .filter(|fields| fields.len() > 2 && fields[2] == "1000")
+                    .collect::<Vec<_>>();
+                let selected = rows
+                    .iter()
+                    .filter(|fields| fields.first().copied() == Some(user))
+                    .collect::<Vec<_>>();
+                uid_1000.len() == 1
+                    && selected.len() == 1
+                    && selected[0].len() >= 7
+                    && selected[0][2] == "1000"
+                    && selected[0][3] == "1000"
+                    && selected[0][5] == home
+                    && selected[0][6] == "/bin/sh"
+            }
+            "/etc/group" => {
+                let gid_1000 = rows
+                    .iter()
+                    .filter(|fields| fields.len() > 2 && fields[2] == "1000")
+                    .collect::<Vec<_>>();
+                let selected = rows
+                    .iter()
+                    .filter(|fields| fields.first().copied() == Some(user))
+                    .collect::<Vec<_>>();
+                gid_1000.len() == 1
+                    && selected.len() == 1
+                    && selected[0].len() >= 3
+                    && selected[0][2] == "1000"
+            }
+            "/etc/shadow" => {
+                rows.iter()
+                    .filter(|fields| fields.first().copied() == Some(user))
+                    .count()
+                    == 1
+            }
+            _ => false,
+        };
+        if !matches_profile {
+            issues.push(RootfsVerificationIssue {
+                path: guest_path.to_string(),
+                reason: format!("selected Linux account {user:?} is missing or inconsistent"),
+            });
+        }
+    }
+    let doas = match secure_guest_host_path_with_real_parents(root, "/etc/doas.conf") {
+        Ok(path) => path,
+        Err(error) => {
+            issues.push(RootfsVerificationIssue {
+                path: "/etc/doas.conf".to_string(),
+                reason: error.to_string(),
+            });
+            return issues;
+        }
+    };
+    match fs::read_to_string(doas) {
+        Ok(text) if text.trim() == format!("permit nopass {user} as root") => {}
+        Ok(_) => issues.push(RootfsVerificationIssue {
+            path: "/etc/doas.conf".to_string(),
+            reason: format!("privilege policy does not match selected Linux account {user:?}"),
+        }),
+        Err(error) => issues.push(RootfsVerificationIssue {
+            path: "/etc/doas.conf".to_string(),
+            reason: format!("could not read privilege policy: {error}"),
+        }),
+    }
+    issues
+}
+
+#[cfg(test)]
+mod brand_account_tests {
+    use super::verify_brand_account;
+    use mobile_linux_api::BrandRuntimeProfile;
+    use std::fs;
+
+    fn write_account(root: &std::path::Path, path: &str, contents: &str) {
+        let target = root.join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(target, contents).unwrap();
+    }
+
+    #[test]
+    fn brand_account_verification_requires_unique_uid_and_gid_1000() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = BrandRuntimeProfile::default();
+        write_account(
+            root.path(),
+            "etc/passwd",
+            "root:x:0:0:root:/root:/bin/sh\nlingxi:x:1000:1000:LingXi:/home/lingxi:/bin/sh\n",
+        );
+        write_account(root.path(), "etc/group", "root:x:0:\nlingxi:x:1000:\n");
+        write_account(
+            root.path(),
+            "etc/shadow",
+            "root:!:0:0:99999:7:::\nlingxi:!:0:0:99999:7:::\n",
+        );
+        write_account(
+            root.path(),
+            "etc/doas.conf",
+            "permit nopass lingxi as root\n",
+        );
+        assert!(verify_brand_account(root.path(), &profile).is_empty());
+
+        write_account(
+            root.path(),
+            "etc/passwd",
+            "root:x:0:0:root:/root:/bin/sh\nlingxi:x:1000:1000:LingXi:/home/lingxi:/bin/sh\natlas:x:1000:1000:atlas:/home/atlas:/bin/sh\n",
+        );
+        write_account(
+            root.path(),
+            "etc/group",
+            "root:x:0:\nlingxi:x:1000:\natlas:x:1000:\n",
+        );
+        let issues = verify_brand_account(root.path(), &profile);
+        assert!(issues.iter().any(|issue| issue.path == "/etc/passwd"));
+        assert!(issues.iter().any(|issue| issue.path == "/etc/group"));
     }
 }

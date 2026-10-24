@@ -1,19 +1,27 @@
-use mobile_linux_api::{guest_paths, MountPurpose, MountSpec};
+use mobile_linux_api::{guest_paths, BrandRuntimeProfile, MountPurpose, MountSpec};
 use std::path::Path;
 
 /// Whether a workspace is the exact host twin of a directory in the runtime
 /// user's home. Canonical containment prevents symlinks from extending this
 /// exception into rootfs, administrator, or host-owned storage.
 #[must_use]
-pub fn is_persistent_user_workspace(managed_root: &Path, mount: &MountSpec) -> bool {
+pub fn is_persistent_user_workspace(
+    managed_root: &Path,
+    profile: &BrandRuntimeProfile,
+    mount: &MountSpec,
+) -> bool {
     if !matches!(mount.purpose, MountPurpose::Workspace) {
         return false;
     }
-    let Some(expected) = guest_paths::workspace_host_path(managed_root, &mount.guest_path) else {
+    let Some(expected) =
+        guest_paths::workspace_host_path_for_profile(managed_root, profile, &mount.guest_path)
+    else {
         return false;
     };
     let (Ok(home), Ok(expected), Ok(actual)) = (
-        guest_paths::home_host_path(managed_root).canonicalize(),
+        profile
+            .persistent_home_host_path(managed_root)
+            .canonicalize(),
         expected.canonicalize(),
         mount.host_path.canonicalize(),
     ) else {
@@ -22,7 +30,7 @@ pub fn is_persistent_user_workspace(managed_root: &Path, mount: &MountSpec) -> b
     let Ok(managed) = managed_root.canonicalize() else {
         return false;
     };
-    home == guest_paths::home_host_path(&managed)
+    home == profile.persistent_home_host_path(&managed)
         && expected.starts_with(home)
         && actual == expected
 }
@@ -43,13 +51,14 @@ mod tests {
             read_only: false,
             purpose: MountPurpose::Workspace,
         };
-        assert!(is_persistent_user_workspace(root.path(), &mount));
+        let profile = BrandRuntimeProfile::default();
+        assert!(is_persistent_user_workspace(root.path(), &profile, &mount));
         mount.guest_path = guest_paths::workspace("other");
-        assert!(!is_persistent_user_workspace(root.path(), &mount));
+        assert!(!is_persistent_user_workspace(root.path(), &profile, &mount));
         mount.guest_path = format!("{}/projects/../../.lingxi", guest_paths::WORKSPACE_ROOT);
-        assert!(!is_persistent_user_workspace(root.path(), &mount));
+        assert!(!is_persistent_user_workspace(root.path(), &profile, &mount));
         mount.guest_path = guest_paths::HOME.to_string();
-        assert!(!is_persistent_user_workspace(root.path(), &mount));
+        assert!(!is_persistent_user_workspace(root.path(), &profile, &mount));
     }
 
     #[cfg(unix)]
@@ -68,7 +77,11 @@ mod tests {
             read_only: false,
             purpose: MountPurpose::Workspace,
         };
-        assert!(!is_persistent_user_workspace(root.path(), &mount));
+        assert!(!is_persistent_user_workspace(
+            root.path(),
+            &BrandRuntimeProfile::default(),
+            &mount
+        ));
     }
 
     #[cfg(unix)]
@@ -86,6 +99,10 @@ mod tests {
             read_only: false,
             purpose: MountPurpose::Workspace,
         };
-        assert!(!is_persistent_user_workspace(root.path(), &mount));
+        assert!(!is_persistent_user_workspace(
+            root.path(),
+            &BrandRuntimeProfile::default(),
+            &mount
+        ));
     }
 }

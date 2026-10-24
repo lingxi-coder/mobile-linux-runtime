@@ -24,6 +24,10 @@ impl IosIshRuntime {
     /// Construct a new runtime without mutating filesystem or native state.
     #[must_use]
     pub fn new(mut config: IosIshRuntimeConfig) -> Result<Self, MobileLinuxError> {
+        config
+            .brand_profile
+            .validate()
+            .map_err(|error| MobileLinuxError::InvalidRequest(error.to_string()))?;
         config.managed_root = normalize_host_path(&config.managed_root, "managed_root")?;
         config.app_sandbox_root =
             normalize_host_path(&config.app_sandbox_root, "app_sandbox_root")?;
@@ -182,6 +186,11 @@ impl IosIshRuntime {
 
 impl IosIshRuntime {
     pub(super) fn native_config_json(&self) -> Result<String, MobileLinuxError> {
+        self.state
+            .config
+            .brand_profile
+            .validate()
+            .map_err(|error| MobileLinuxError::InvalidRequest(error.to_string()))?;
         serde_json::to_string(&self.state.config.native_payload())
             .map_err(|error| MobileLinuxError::Io(format!("serialize native config: {error}")))
     }

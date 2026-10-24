@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 #[derive(Debug, Serialize)]
 pub(super) struct NativeConfigPayload {
     pub(super) managed_root: String,
+    pub(super) brand_id: String,
+    pub(super) linux_user: String,
+    pub(super) config_dir_name: String,
     pub(super) workspace_host_path: String,
     pub(super) stable_workspace_id: String,
     pub(super) abi: String,

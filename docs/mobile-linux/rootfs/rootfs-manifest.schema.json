@@ -85,6 +85,16 @@
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9._-]+)?$"
     },
+    "brand_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["brand_id", "linux_user", "config_dir_name"],
+      "properties": {
+        "brand_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$" },
+        "linux_user": { "type": "string", "pattern": "^[a-z_][a-z0-9_-]{0,31}$", "not": { "const": "root" } },
+        "config_dir_name": { "type": "string", "pattern": "^\\.[a-z0-9][a-z0-9._-]{0,62}$" }
+      }
+    },
     "content_sha256": {
       "type": "string",
       "pattern": "^[a-f0-9]{64}$"
@@ -231,18 +241,13 @@
       "maxItems": 5,
       "uniqueItems": true,
       "items": {
-        "enum": [
-          "/home/lingxi",
-          "/root",
-          "/tmp",
-          "/var/tmp",
-          "/home/lingxi/lingxi"
-        ]
+        "type": "string",
+        "pattern": "^(\\/root|\\/tmp|\\/var\\/tmp|\\/home\\/[^/]+(\\/[^/]+)?)$"
       },
       "allOf": [
         {
           "contains": {
-            "const": "/home/lingxi"
+            "pattern": "^\\/home\\/[^/]+$"
           }
         },
         {
@@ -262,7 +267,7 @@
         },
         {
           "contains": {
-            "const": "/home/lingxi/lingxi"
+            "pattern": "^\\/home\\/[^/]+\\/[^/]+$"
           }
         }
       ]

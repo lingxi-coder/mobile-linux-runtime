@@ -419,6 +419,7 @@ async fn raw_resource_failure_disposes_native_session_before_returning_typed_err
 fn test_config(root: &Path) -> IosIshRuntimeConfig {
     IosIshRuntimeConfig {
         managed_root: root.join("mobile-linux"),
+        brand_profile: mobile_linux_api::BrandRuntimeProfile::default(),
         app_sandbox_root: root.to_path_buf(),
         workspace_host_path: root.join("workspaces/default"),
         stable_workspace_id: "default".to_string(),
@@ -433,6 +434,20 @@ fn test_config(root: &Path) -> IosIshRuntimeConfig {
         allowed_mount_roots: vec![root.join("exports")],
         allowed_guest_roots: vec!["/exports".into()],
     }
+}
+
+#[test]
+fn runtime_rejects_an_unsafe_brand_profile_before_registry_or_path_setup() {
+    let root = tempfile::tempdir().unwrap();
+    let mut config = test_config(root.path());
+    config.brand_profile =
+        mobile_linux_api::BrandRuntimeProfile::new("../outside", "lingxi", ".lingxi");
+
+    assert!(matches!(
+        IosIshRuntime::new(config),
+        Err(MobileLinuxError::InvalidRequest(_))
+    ));
+    assert!(!root.path().join("mobile-linux").exists());
 }
 
 fn command_request() -> LinuxCommandRequest {

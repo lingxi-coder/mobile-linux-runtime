@@ -102,47 +102,148 @@ impl RootfsStore {
 }
 
 impl RootfsStore {
-    /// Preserve guest homes outside replaceable images. Existing files win;
-    /// a failed copy is retried before activation and never removes the source.
+    /// Preserve account homes outside replaceable images. Each legacy home is
+    /// copied only into the persistent directory named by that image's own
+    /// account profile; the source is retained and a per-user recovery record
+    /// is written before activation can replace the image.
     pub fn preserve_guest_homes(&self) -> Result<(), RootfsStoreError> {
-        let marker = self.managed_root.join("persistent/.user-home-migrated");
-        if marker.exists() {
-            return Ok(());
-        }
         let active = self.active_root();
-        for (source, target) in [
+        let Some(metadata) = fs::symlink_metadata(&active).ok() else {
+            return Ok(());
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(RootfsStoreError::UnsafeManagedPath(active));
+        }
+        let source_linux_user = legacy_active_linux_user(&active)?;
+        let migration_root = self.managed_root.join("persistent/migrations");
+        fs::create_dir_all(&migration_root).map_err(|error| RootfsStoreError::Io {
+            path: migration_root.clone(),
+            message: error.to_string(),
+        })?;
+        for (guest_path, source, target) in [
             (
+                "/root".to_string(),
                 active.join("root"),
                 self.managed_root.join("persistent/root"),
             ),
             (
-                active.join("home/lingxi"),
-                self.managed_root.join("persistent/lingxi"),
+                format!("/home/{source_linux_user}"),
+                active.join("home").join(&source_linux_user),
+                self.managed_root
+                    .join("persistent")
+                    .join(&source_linux_user),
             ),
         ] {
+            if fs::symlink_metadata(&source).is_err() {
+                continue;
+            }
             merge_home(&source, &target).map_err(|error| RootfsStoreError::Io {
-                path: target,
+                path: target.clone(),
                 message: error.to_string(),
             })?;
-        }
-        if !marker.exists() {
-            merge_home(
-                &self.managed_root.join("persistent/root"),
-                &self.managed_root.join("persistent/lingxi"),
-            )
-            .map_err(|error| RootfsStoreError::Io {
-                path: marker.clone(),
-                message: error.to_string(),
+            let record =
+                migration_root.join(format!("guest-home-v1-{}.json", migration_key(&guest_path)));
+            let payload = serde_json::json!({
+                "schema_version": 1,
+                "source_guest_path": guest_path,
+                "destination_managed_relative_path": relative_managed_path(&self.managed_root, &target)?,
+                "source_retained": true
+            });
+            let bytes = serde_json::to_vec_pretty(&payload).map_err(|error| {
+                RootfsStoreError::Integrity(format!("encode guest-home migration record: {error}"))
             })?;
-            fs::create_dir_all(marker.parent().expect("persistent parent"))
-                .and_then(|()| fs::write(&marker, b"1\n"))
-                .map_err(|error| RootfsStoreError::Io {
-                    path: marker,
-                    message: error.to_string(),
+            let temporary = record.with_extension(format!("json.tmp-{}", std::process::id()));
+            fs::write(&temporary, bytes)
+                .and_then(|()| fs::rename(&temporary, &record))
+                .map_err(|error| {
+                    let _ = fs::remove_file(&temporary);
+                    RootfsStoreError::Io {
+                        path: record.clone(),
+                        message: error.to_string(),
+                    }
                 })?;
         }
         Ok(())
     }
+}
+
+fn legacy_active_linux_user(active: &Path) -> Result<String, RootfsStoreError> {
+    let manifest_path = active.join("rootfs-manifest.json");
+    match fs::read(&manifest_path) {
+        Ok(bytes) => {
+            let manifest = serde_json::from_slice::<RootfsManifest>(&bytes).map_err(|error| {
+                RootfsStoreError::Integrity(format!(
+                    "read active rootfs identity from {}: {error}",
+                    manifest_path.display()
+                ))
+            })?;
+            let profile = manifest.brand_profile.unwrap_or_default();
+            profile.validate().map_err(|error| {
+                RootfsStoreError::Integrity(format!(
+                    "active rootfs has invalid brand profile: {error}"
+                ))
+            })?;
+            Ok(profile.linux_user)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Older images did not embed their manifest. Recover the uid-1000
+            // account name from the actual passwd file, so an account from a
+            // former brand is preserved under its own persistent/<user> key.
+            let passwd_path = active.join("etc/passwd");
+            let passwd = match fs::read_to_string(&passwd_path) {
+                Ok(passwd) => passwd,
+                Err(read_error) if read_error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok("lingxi".to_string());
+                }
+                Err(read_error) => {
+                    return Err(RootfsStoreError::Io {
+                        path: passwd_path,
+                        message: read_error.to_string(),
+                    });
+                }
+            };
+            let users = passwd
+                .lines()
+                .filter_map(|line| {
+                    let fields = line.split(':').collect::<Vec<_>>();
+                    (fields.len() >= 7 && fields[2] == "1000" && fields[3] == "1000")
+                        .then(|| fields[0].to_string())
+                })
+                .collect::<Vec<_>>();
+            match users.as_slice() {
+                [user] => {
+                    mobile_linux_api::BrandRuntimeProfile::new("legacy", user, ".legacy")
+                        .validate()
+                        .map_err(|error| {
+                            RootfsStoreError::Integrity(format!(
+                                "active rootfs has an unsafe uid-1000 account: {error}"
+                            ))
+                        })?;
+                    Ok(user.clone())
+                }
+                [] => Ok("lingxi".to_string()),
+                _ => Err(RootfsStoreError::Integrity(
+                    "active rootfs has ambiguous uid-1000 accounts; refusing home migration"
+                        .to_string(),
+                )),
+            }
+        }
+        Err(error) => Err(RootfsStoreError::Io {
+            path: manifest_path,
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn migration_key(guest_path: &str) -> String {
+    guest_path.trim_matches('/').replace('/', "-")
+}
+
+fn relative_managed_path(managed_root: &Path, target: &Path) -> Result<String, RootfsStoreError> {
+    target
+        .strip_prefix(managed_root)
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .map_err(|_| RootfsStoreError::UnsafeManagedPath(target.to_path_buf()))
 }
 
 fn merge_home(source: &Path, target: &Path) -> std::io::Result<()> {

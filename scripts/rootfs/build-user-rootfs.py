@@ -12,7 +12,7 @@ import rootfs_tool as tool
 from source_contract import external_output
 
 
-def build(base, abi, output, cache, container='docker'):
+def build(base, abi, output, cache, container='docker', profile=guest_user.DEFAULT_PROFILE):
     arch = {'arm64-v8a': 'aarch64', 'x86_64': 'x86_64'}[abi]
     sdk = Path(__file__).resolve().parents[2]
     historical = sdk / 'docs/mobile-linux/releases' / tool._PINS['alpine']['version'] / abi
@@ -35,7 +35,7 @@ def build(base, abi, output, cache, container='docker'):
         '-v', str(cache.resolve()) + ':/apk:ro', image, '/bin/sh', '-eu', '-c',
         'mkdir /out/tree; tar -xzf /base.tar.gz -C /out/tree; apk --root /out/tree --no-network --allow-untrusted add "$@"',
         'guest-user-install', *packages], check=True)
-    guest_user.apply_tree(tree)
+    guest_user.apply_tree(tree, profile)
     legacy_workspace = tree / 'workspace'
     if legacy_workspace.exists(): legacy_workspace.rmdir()
     archive = output / 'rootfs.tar.gz'
@@ -64,5 +64,14 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--cache', type=Path, required=True)
     parser.add_argument('--container-runtime', default='docker')
+    parser.add_argument('--brand-id')
+    parser.add_argument('--linux-user')
+    parser.add_argument('--config-dir-name')
     args = parser.parse_args()
-    print(build(args.base_archive.resolve(), args.abi, args.output.resolve(), args.cache.resolve(), args.container_runtime))
+    profile = guest_user.profile_from_values(args.brand_id, args.linux_user, args.config_dir_name)
+    tool.set_guest_profile(profile)
+    import os
+    os.environ['LINGXI_BRAND_ID'] = profile.brand_id
+    os.environ['LINGXI_LINUX_USER'] = profile.linux_user
+    os.environ['LINGXI_CONFIG_DIR_NAME'] = profile.config_dir_name
+    print(build(args.base_archive.resolve(), args.abi, args.output.resolve(), args.cache.resolve(), args.container_runtime, profile))

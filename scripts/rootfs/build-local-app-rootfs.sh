@@ -9,7 +9,8 @@
 # `fakefsify`, in place of the bare minirootfs.
 #
 # Usage:
-#   build-local-app-rootfs.sh --arch <aarch64|x86_64> [--output <dir>]
+#   build-local-app-rootfs.sh --arch <aarch64|x86_64> --output-dir <dir> --cache-dir <dir>
+#       [--brand-id <id> --linux-user <name> --config-dir-name <name>]
 #
 set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
@@ -30,6 +31,9 @@ OUTPUT=""
 CACHE=""
 VERIFY_BLOCKED=0
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-}"
+BRAND_ID="lingxi"
+LINUX_USER="lingxi"
+CONFIG_DIR_NAME=".lingxi"
 
 usage() { sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
@@ -39,6 +43,9 @@ while [[ $# -gt 0 ]]; do
     --arch) ARCH="${2:-}"; shift 2 ;;
     --cache-dir) CACHE="${2:-}"; shift 2 ;;
     --output|--output-dir) OUTPUT="${2:-}"; shift 2 ;;
+    --brand-id) BRAND_ID="${2:-}"; shift 2 ;;
+    --linux-user) LINUX_USER="${2:-}"; shift 2 ;;
+    --config-dir-name) CONFIG_DIR_NAME="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -50,6 +57,13 @@ case "${ARCH}" in
   *) echo "--arch must be aarch64 or x86_64" >&2; exit 2 ;;
 esac
 [[ -n "${OUTPUT}" && -n "${CACHE}" ]] || { echo "--output-dir and --cache-dir are required" >&2; exit 2; }
+python3 - "${SCRIPT_DIR}" "${BRAND_ID}" "${LINUX_USER}" "${CONFIG_DIR_NAME}" <<'PY'
+import pathlib
+import sys
+sys.path.insert(0, sys.argv[1])
+from guest_user import GuestUserProfile
+GuestUserProfile(*sys.argv[2:]).validate()
+PY
 OUTPUT="$(python3 "${SCRIPT_DIR}/source_contract.py" "${OUTPUT}")"
 CACHE="$(python3 "${SCRIPT_DIR}/source_contract.py" "${CACHE}")"
 [[ -f "${PINS}" ]] || { echo "missing pins: ${PINS}" >&2; exit 1; }
@@ -99,6 +113,9 @@ mkdir -p "${NODE_SOURCE_CACHE}"
   -e SDK_VERIFY_BLOCKED_CLOSURE="${VERIFY_BLOCKED}" \
   -v "${REPO_ROOT}:/sdk:ro" \
   -e LINGXI_ARCH="${ARCH}" \
+  -e LINGXI_BRAND_ID="${BRAND_ID}" \
+  -e LINGXI_LINUX_USER="${LINUX_USER}" \
+  -e LINGXI_CONFIG_DIR_NAME="${CONFIG_DIR_NAME}" \
   -e LINGXI_NODE_BUILD_JOBS="${LINGXI_NODE_BUILD_JOBS:-4}" \
   -e LINGXI_ALPINE_VERSION="${ALPINE_VERSION}" \
   -e LINGXI_ALPINE_BRANCH="${ALPINE_BRANCH}" \

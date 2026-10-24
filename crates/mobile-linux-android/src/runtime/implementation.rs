@@ -247,7 +247,7 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         request: PtyOpenRequest,
     ) -> Result<PtySessionHandle, MobileLinuxError> {
         self.prepare_execution()?;
-        validate_pty_request(&request)?;
+        validate_pty_request(&request, &self.state.config.brand_profile)?;
         let mounts = self.execution_mounts(&request.mounts, ForegroundMountMode::Merged)?;
         let (program, args, env) = self.build_pty_invocation(
             &request.command,
@@ -623,7 +623,11 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
 
     async fn configure_mounts(&self, mounts: Vec<MountSpec>) -> Result<(), MobileLinuxError> {
         for mount in &mounts {
-            validate_mount(mount, &self.state.config.managed_root)?;
+            validate_mount(
+                mount,
+                &self.state.config.managed_root,
+                &self.state.config.brand_profile,
+            )?;
         }
         *self
             .state

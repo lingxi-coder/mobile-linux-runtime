@@ -12,16 +12,146 @@ use crate::execution::{ProcessError, ProcessOutput, ProcessStreamSink};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use thiserror::Error;
 
 /// Maximum number of events a single `read_events` call should return.
 pub const MAX_MOBILE_LINUX_EVENT_BATCH: usize = 512;
 
+/// Brand identity shared by rootfs provisioning, account storage, mounts, and
+/// process environment. This identifies the product build, never its signed-in
+/// Firebase or provider account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrandRuntimeProfile {
+    /// Stable lowercase brand path component.
+    pub brand_id: String,
+    /// Linux account and persistent-home directory name.
+    pub linux_user: String,
+    /// Config directory component below the Linux home.
+    pub config_dir_name: String,
+}
+
+impl Default for BrandRuntimeProfile {
+    fn default() -> Self {
+        Self {
+            brand_id: "lingxi".into(),
+            linux_user: "lingxi".into(),
+            config_dir_name: ".lingxi".into(),
+        }
+    }
+}
+
+impl BrandRuntimeProfile {
+    /// Construct a profile at an FFI or configuration boundary.
+    #[must_use]
+    pub fn new(
+        brand_id: impl Into<String>,
+        linux_user: impl Into<String>,
+        config_dir_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            brand_id: brand_id.into(),
+            linux_user: linux_user.into(),
+            config_dir_name: config_dir_name.into(),
+        }
+    }
+
+    /// Validate all three values with the same component policy used by
+    /// Harness branding and rootfs provisioning.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        fn slug(value: &str, max_len: usize) -> bool {
+            let bytes = value.as_bytes();
+            !bytes.is_empty()
+                && bytes.len() <= max_len
+                && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+                && bytes.iter().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'.' | b'_' | b'-')
+                })
+        }
+        fn username(value: &str) -> bool {
+            let bytes = value.as_bytes();
+            !bytes.is_empty()
+                && bytes.len() <= 32
+                && (bytes[0].is_ascii_lowercase() || bytes[0] == b'_')
+                && bytes.iter().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'_' | b'-')
+                })
+                && value != "root"
+        }
+        if !slug(&self.brand_id, 63) {
+            return Err("brand id must be one lowercase path component");
+        }
+        if !username(&self.linux_user) {
+            return Err("Linux user must be a safe non-root account name");
+        }
+        let config = self.config_dir_name.as_bytes();
+        if config.len() < 2
+            || config.len() > 64
+            || config[0] != b'.'
+            || !(config[1].is_ascii_lowercase() || config[1].is_ascii_digit())
+            || !config[1..].iter().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'_' | b'-')
+            })
+        {
+            return Err("config directory name must be one hidden path component");
+        }
+        Ok(())
+    }
+
+    /// Guest home for the Linux account.
+    #[must_use]
+    pub fn guest_home(&self) -> PathBuf {
+        Path::new("/home").join(&self.linux_user)
+    }
+
+    /// Guest workspace root for this product brand.
+    #[must_use]
+    pub fn workspace_root_guest_path(&self) -> PathBuf {
+        self.guest_home().join(&self.brand_id)
+    }
+
+    /// Guest config directory for this product brand.
+    #[must_use]
+    pub fn config_guest_path(&self) -> PathBuf {
+        self.guest_home().join(&self.config_dir_name)
+    }
+
+    /// Guest projects root for this product brand.
+    #[must_use]
+    pub fn projects_guest_path(&self) -> PathBuf {
+        self.workspace_root_guest_path().join("projects")
+    }
+
+    /// Guest Local Apps source root for this product brand.
+    #[must_use]
+    pub fn apps_guest_path(&self) -> PathBuf {
+        self.config_guest_path().join(".apps")
+    }
+
+    /// Persistent native home below the runtime managed root.
+    #[must_use]
+    pub fn persistent_home_host_path(&self, managed_root: &Path) -> PathBuf {
+        managed_root.join("persistent").join(&self.linux_user)
+    }
+}
+
 /// Default guest path conventions shared by portable backends.
 pub mod guest_paths {
-    /// Default guest home directory.
+    use super::BrandRuntimeProfile;
+    use std::path::{Component, Path, PathBuf};
+    /// Default brand path component for the LingXi runtime profile.
+    pub const BRAND_ID: &str = "lingxi";
+    /// Default config directory component for the LingXi runtime profile.
+    pub const CONFIG_DIR_NAME: &str = ".lingxi";
+    /// Default guest home directory for the LingXi profile.
+    /// Keep the SDK default profile aligned with Harness `LINGXI_RUNTIME_PROFILE`.
     pub const HOME: &str = "/home/lingxi";
     /// Default guest account (virtual inside the mobile runtime).
     pub const USER: &str = "lingxi";
@@ -33,11 +163,55 @@ pub mod guest_paths {
     pub const SCRATCH: &[&str] = &["/tmp", "/var/tmp"];
     /// Default parent of workspace mounts.
     pub const WORKSPACE_ROOT: &str = "/home/lingxi/lingxi";
+    /// Guest workspace root for a selected profile.
+    #[must_use]
+    pub fn workspace_root_for_profile(profile: &BrandRuntimeProfile) -> String {
+        profile
+            .workspace_root_guest_path()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Guest home for a selected profile.
+    #[must_use]
+    pub fn home_for_profile(profile: &BrandRuntimeProfile) -> String {
+        profile.guest_home().to_string_lossy().into_owned()
+    }
+
+    /// Config directory for a selected profile.
+    #[must_use]
+    pub fn config_home_for_profile(profile: &BrandRuntimeProfile) -> String {
+        profile.config_guest_path().to_string_lossy().into_owned()
+    }
+    /// Guest path of the default profile's user config directory.
+    #[must_use]
+    pub fn config_home() -> String {
+        format!("{HOME}/{CONFIG_DIR_NAME}")
+    }
+    /// Guest path of the default profile's projects directory.
+    #[must_use]
+    pub fn projects_root() -> String {
+        format!("{WORKSPACE_ROOT}/projects")
+    }
+    /// Guest projects root for a selected profile.
+    #[must_use]
+    pub fn projects_root_for_profile(profile: &BrandRuntimeProfile) -> String {
+        profile.projects_guest_path().to_string_lossy().into_owned()
+    }
     /// Persistent host backing of the runtime-created, unprivileged account.
     /// Keep this independent of replaceable rootfs images and workspace IDs.
     #[must_use]
     pub fn home_host_path(managed_root: &std::path::Path) -> std::path::PathBuf {
         managed_root.join("persistent").join(USER)
+    }
+
+    /// Persistent host account home for a selected brand profile.
+    #[must_use]
+    pub fn home_host_path_for_profile(
+        managed_root: &std::path::Path,
+        profile: &BrandRuntimeProfile,
+    ) -> PathBuf {
+        profile.persistent_home_host_path(managed_root)
     }
 
     /// Host twin of a workspace inside the user's persistent home. Only
@@ -63,15 +237,71 @@ pub mod guest_paths {
         }
         Some(home_host_path(managed_root).join(path.strip_prefix(HOME).ok()?))
     }
+
+    /// Host twin of a normalized workspace path for the selected brand.
+    #[must_use]
+    pub fn workspace_host_path_for_profile(
+        managed_root: &Path,
+        profile: &BrandRuntimeProfile,
+        guest_path: &str,
+    ) -> Option<PathBuf> {
+        let path = Path::new(guest_path);
+        let root = profile.workspace_root_guest_path();
+        if !path.is_absolute()
+            || path
+                .components()
+                .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+            || path == root
+            || !path.starts_with(&root)
+        {
+            return None;
+        }
+        let suffix = path.strip_prefix(profile.guest_home()).ok()?;
+        Some(profile.persistent_home_host_path(managed_root).join(suffix))
+    }
     /// Guest path for a stable workspace identifier.
     #[must_use]
     pub fn workspace(stable_workspace_id: &str) -> String {
         format!("{WORKSPACE_ROOT}/{stable_workspace_id}")
     }
+
+    /// Guest path for a stable workspace identifier under the selected brand.
+    #[must_use]
+    pub fn workspace_for_profile(
+        profile: &BrandRuntimeProfile,
+        stable_workspace_id: &str,
+    ) -> String {
+        format!(
+            "{}/{stable_workspace_id}",
+            profile.workspace_root_guest_path().display()
+        )
+    }
     /// Default writable guest roots.
     #[must_use]
     pub fn writable_roots() -> [&'static str; 5] {
         [HOME, ADMIN_HOME, SCRATCH[0], SCRATCH[1], WORKSPACE_ROOT]
+    }
+
+    /// Writable guest roots for the selected profile.
+    #[must_use]
+    pub fn writable_roots_for_profile(profile: &BrandRuntimeProfile) -> Vec<String> {
+        vec![
+            profile.guest_home().to_string_lossy().into_owned(),
+            ADMIN_HOME.to_string(),
+            SCRATCH[0].to_string(),
+            SCRATCH[1].to_string(),
+            profile
+                .workspace_root_guest_path()
+                .to_string_lossy()
+                .into_owned(),
+        ]
+    }
+
+    /// Configured writable roots including the selected profile's home and
+    /// workspace, plus the fixed administrator and scratch roots.
+    #[must_use]
+    pub fn writable_roots_owned_for_profile(profile: &BrandRuntimeProfile) -> Vec<String> {
+        writable_roots_for_profile(profile)
     }
 }
 

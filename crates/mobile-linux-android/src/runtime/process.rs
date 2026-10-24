@@ -28,7 +28,7 @@ impl AndroidProotRuntime {
         request: &LinuxCommandRequest,
         mounts: &[MountSpec],
     ) -> Result<SpawnedChild, MobileLinuxError> {
-        validate_request(request)?;
+        validate_request(request, &self.state.config.brand_profile)?;
         let memory_limit_bytes = requested_memory_limit_bytes(request)?;
         if memory_limit_bytes.is_some() {
             ensure_process_group_rss_available()?;
@@ -143,8 +143,8 @@ impl AndroidProotRuntime {
             "-b".to_string(),
             "/sys".to_string(),
             "-w".to_string(),
-            cwd.unwrap_or(mobile_linux_api::guest_paths::WORKSPACE_ROOT)
-                .to_string(),
+            cwd.map(str::to_owned)
+                .unwrap_or_else(|| self.state.config.workspace_root()),
         ];
         if matches!(request.network, NetworkPolicy::LoopbackOnly) {
             // This enables LingXi's sockaddr-aware extension in the pinned
@@ -180,9 +180,9 @@ impl AndroidProotRuntime {
                 "PATH",
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin",
             )
-            .env("HOME", mobile_linux_api::guest_paths::HOME)
-            .env("USER", mobile_linux_api::guest_paths::USER)
-            .env("LOGNAME", mobile_linux_api::guest_paths::USER)
+            .env("HOME", self.state.config.guest_home())
+            .env("USER", &self.state.config.brand_profile.linux_user)
+            .env("LOGNAME", &self.state.config.brand_profile.linux_user)
             .envs(env);
         if let Some(receipt_path) = receipt_path {
             command.env("LINGXI_ENFORCEMENT_RECEIPT_PATH", receipt_path);

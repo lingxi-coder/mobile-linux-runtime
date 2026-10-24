@@ -170,6 +170,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let wire = Data("""
         {
           "managed_root": "/managed",
+          "brand_id": "lingxi",
+          "linux_user": "lingxi",
+          "config_dir_name": ".lingxi",
           "workspace_host_path": "/home/lingxi/lingxi-host",
           "stable_workspace_id": "12345678-1234-4abc-8def-1234567890ab",
           "abi": "arm64",
@@ -324,9 +327,105 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab")
     }
 
+    func testSecondBrandProfileControlsNativeGuestPathsEnvironmentAndMounts() throws {
+        let config = LXISHNativeConfig(
+            managedRoot: temporaryRoot.appendingPathComponent("atlas-managed", isDirectory: true).path,
+            brandId: "atlas",
+            linuxUser: "atlas_guest",
+            configDirName: ".atlas",
+            workspaceHostPath: temporaryRoot.appendingPathComponent("atlas-projects", isDirectory: true).path,
+            stableWorkspaceId: "projects",
+            abi: "arm64",
+            rootfsVersion: "3.24.1",
+            archiveSha256: nil,
+            authorizationFile: nil,
+            rootfsArchivePath: nil,
+            defaultMountPath: nil
+        )
+        try config.validateBrandProfile()
+        XCTAssertEqual(config.guestHome, "/home/atlas_guest")
+        XCTAssertEqual(config.guestConfigHome, "/home/atlas_guest/.atlas")
+        XCTAssertEqual(config.workspaceRoot, "/home/atlas_guest/atlas")
+        XCTAssertEqual(config.guestWorkspace, "/home/atlas_guest/atlas/projects")
+        XCTAssertEqual(config.persistentHomeURL.path, config.managedRoot + "/persistent/atlas_guest")
+
+        let environment = LXISHGuestEnvironment.merged(
+            requestEnvironment: [:],
+            cwd: nil,
+            config: config
+        )
+        XCTAssertEqual(environment["HOME"], "/home/atlas_guest")
+        XCTAssertEqual(environment["USER"], "atlas_guest")
+        XCTAssertEqual(environment["PWD"], "/home/atlas_guest/atlas")
+        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/atlas_guest/atlas/projects")
+
+        let mounts = LXISHRuntimeMountPlanner.effectiveMounts(
+            requestedMounts: [],
+            config: config
+        )
+        XCTAssertEqual(mounts.map(\.guestPath), [
+            "/home/atlas_guest",
+            "/root",
+            "/home/atlas_guest/atlas/projects"
+        ])
+        XCTAssertEqual(mounts[0].hostPath, config.persistentHomeURL.path)
+    }
+
+    func testNativeConfigRejectsUnsafeBrandProfile() {
+        var config = LXISHNativeConfig(
+            managedRoot: temporaryRoot.appendingPathComponent("invalid-profile", isDirectory: true).path,
+            brandId: "atlas",
+            linuxUser: "root",
+            configDirName: ".atlas",
+            workspaceHostPath: "/tmp/project",
+            stableWorkspaceId: "projects",
+            abi: "arm64",
+            rootfsVersion: "3.24.1",
+            archiveSha256: nil,
+            authorizationFile: nil,
+            rootfsArchivePath: nil,
+            defaultMountPath: nil
+        )
+        XCTAssertThrowsError(try config.validateBrandProfile())
+        config.linuxUser = "atlas_guest"
+        config.configDirName = "../escape"
+        XCTAssertThrowsError(try config.validateBrandProfile())
+    }
+
+    func testBrandProvisioningRejectsForeignAccountAlreadyUsingUidAndGid1000() throws {
+        let archive = try makeRootfsArchive(
+            version: "3.24.1",
+            accountFiles: [
+                "etc/passwd": Data("root:x:0:0:root:/root:/bin/sh\nlingxi:x:1000:1000:LingXi:/home/lingxi:/bin/sh\n".utf8),
+                "etc/group": Data("root:x:0:\nlingxi:x:1000:\n".utf8),
+            ]
+        )
+        let managedRoot = temporaryRoot.appendingPathComponent("atlas-managed", isDirectory: true)
+        let config = LXISHNativeConfig(
+            managedRoot: managedRoot.path,
+            brandId: "atlas",
+            linuxUser: "atlas_guest",
+            configDirName: ".atlas",
+            workspaceHostPath: temporaryRoot.appendingPathComponent("atlas-projects", isDirectory: true).path,
+            stableWorkspaceId: "projects",
+            abi: "arm64",
+            rootfsVersion: "3.24.1",
+            archiveSha256: archive.sha256,
+            authorizationFile: nil,
+            rootfsArchivePath: archive.url.path,
+            defaultMountPath: nil
+        )
+
+        XCTAssertThrowsError(try LXISHNativeRootfsManager().installIfNeeded(for: config))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: config.rootfsURL.path))
+    }
+
     func testRuntimeMountPlannerPreservesPersistentHomeAndWorkspaceLayers() {
         let config = LXISHNativeConfig(
             managedRoot: temporaryRoot.appendingPathComponent("managed-root", isDirectory: true).path,
+            brandId: "lingxi",
+            linuxUser: "lingxi",
+            configDirName: ".lingxi",
             workspaceHostPath: temporaryRoot.appendingPathComponent("workspace-host", isDirectory: true).path,
             stableWorkspaceId: "12345678-1234-4abc-8def-1234567890ab",
             abi: "arm64",
@@ -371,6 +470,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
     func testRuntimeMountPlannerCanExcludeManagedHomeAndWorkspaceForIsolatedRequests() {
         let config = LXISHNativeConfig(
             managedRoot: temporaryRoot.appendingPathComponent("managed-root-isolated", isDirectory: true).path,
+            brandId: "lingxi",
+            linuxUser: "lingxi",
+            configDirName: ".lingxi",
             workspaceHostPath: temporaryRoot.appendingPathComponent("workspace-host-isolated", isDirectory: true).path,
             stableWorkspaceId: "12345678-1234-4abc-8def-1234567890ab",
             abi: "arm64",
@@ -500,6 +602,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         try FileManager.default.createDirectory(at: managedRoot, withIntermediateDirectories: true)
         let config = LXISHNativeConfig(
             managedRoot: managedRoot.path,
+            brandId: "lingxi",
+            linuxUser: "lingxi",
+            configDirName: ".lingxi",
             workspaceHostPath: temporaryRoot.appendingPathComponent("workspace-current", isDirectory: true).path,
             stableWorkspaceId: "12345678-1234-4abc-8def-1234567890ab",
             abi: "arm64",
@@ -534,7 +639,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         )
     }
 
-    func testInstallVerifiesPinnedArchiveAndMigratesLegacyHomeIntoPersistentRoot() throws {
+    func testInstallVerifiesPinnedArchiveAndKeepsLegacyRootHomeSeparate() throws {
         let archive = try makeRootfsArchive(version: "3.24.1")
         let managedRoot = temporaryRoot.appendingPathComponent("managed-root", isDirectory: true)
         let defaultMount = temporaryRoot.appendingPathComponent("default_mount", isDirectory: true)
@@ -547,6 +652,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
         let config = LXISHNativeConfig(
             managedRoot: managedRoot.path,
+            brandId: "lingxi",
+            linuxUser: "lingxi",
+            configDirName: ".lingxi",
             workspaceHostPath: "/tmp/project",
             stableWorkspaceId: stableId,
             abi: "arm64",
@@ -566,7 +674,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             "3.24.1"
         )
         XCTAssertEqual(
-            try String(contentsOf: config.persistentHomeURL.appendingPathComponent("notes.txt"), encoding: .utf8),
+            try String(contentsOf: config.persistentAdminHomeURL.appendingPathComponent("notes.txt"), encoding: .utf8),
             "keep-me"
         )
         XCTAssertFalse(
@@ -577,6 +685,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
         let drifted = LXISHNativeConfig(
             managedRoot: managedRoot.path,
+            brandId: "lingxi",
+            linuxUser: "lingxi",
+            configDirName: ".lingxi",
             workspaceHostPath: "/tmp/project",
             stableWorkspaceId: stableId,
             abi: "arm64",
@@ -599,6 +710,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
         let config = LXISHNativeConfig(
             managedRoot: managedRoot.path,
+            brandId: "lingxi",
+            linuxUser: "lingxi",
+            configDirName: ".lingxi",
             workspaceHostPath: "/tmp/project",
             stableWorkspaceId: "12345678-1234-4abc-8def-1234567890ab",
             abi: "arm64",
@@ -622,6 +736,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
         let config = LXISHNativeConfig(
             managedRoot: managedRoot.path,
+            brandId: "lingxi",
+            linuxUser: "lingxi",
+            configDirName: ".lingxi",
             workspaceHostPath: "/tmp/project",
             stableWorkspaceId: "12345678-1234-4abc-8def-1234567890ab",
             abi: "arm64",
@@ -668,13 +785,17 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         """.write(to: rootfsURL.appendingPathComponent("bridge-state.json"), atomically: true, encoding: .utf8)
     }
 
-    private func makeRootfsArchive(version: String) throws -> (url: URL, sha256: String) {
+    private func makeRootfsArchive(
+        version: String,
+        accountFiles: [String: Data] = [:]
+    ) throws -> (url: URL, sha256: String) {
         let archiveURL = temporaryRoot.appendingPathComponent("alpine-rootfs-\(version).zip")
-        let entries = [
+        var entries = [
             ("alpine-rootfs/meta.db", Data("meta".utf8)),
             ("alpine-rootfs/etc/alpine-release", Data(version.utf8)),
             ("alpine-rootfs/usr/bin/node", Data("#!/bin/sh\nexit 0\n".utf8)),
         ]
+        entries.append(contentsOf: accountFiles.map { ("alpine-rootfs/data/\($0.key)", $0.value) })
         let data = try TestZipArchive.make(entries: entries)
         try data.write(to: archiveURL, options: .atomic)
         let sha256 = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()

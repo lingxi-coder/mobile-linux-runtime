@@ -58,26 +58,33 @@ struct LXISHRootfsStatus: Codable {
 /// workspace, so they are the same machine rather than two.
 /// The Swift twin of Rust's guest-path atlas
 /// (`traits::mobile_linux::guest_paths`) — the ONE definition on this side of
-/// the FFI of the well-known guest paths and the `/home/lingxi/lingxi/<id>` format.
+/// the FFI of the default LingXi-profile guest paths and workspace format.
 /// Seven Swift sites used to restate these as independent string literals.
 /// The two twins are byte-pinned against each other:
 /// `guest_paths::tests::atlas_atoms_are_pinned` (Rust) and
 /// `testGuestPathAtlasMatchesRustTwin` (Swift) assert the SAME literals, so
 /// drift on either side fails one of the pins.
 public enum LXISHGuestPaths {
-    /// The guest home (`~` of the interactive shell), host-backed by the
-    /// rootfs manager's `persistent/lingxi` bind mount.
+    /// The default LingXi guest home, host-backed by the selected profile's
+    /// persistent account mount in `LXISHNativeRootfsManager`.
     public static let home = "/home/lingxi"
     public static let adminHome = "/root"
     public static let user = "lingxi"
     public static let uid = 1000
     /// Scratch areas writable inside the guest.
     public static let scratch = ["/tmp", "/var/tmp"]
-    /// Parent of every per-workspace mount.
+    /// Parent of every workspace mount for the default LingXi profile.
     public static let workspaceRoot = "/home/lingxi/lingxi"
-    /// THE `/home/lingxi/lingxi/<id>` format.
+    /// The default LingXi workspace format.
     public static func workspace(_ stableWorkspaceId: String) -> String {
         "\(workspaceRoot)/\(stableWorkspaceId)"
+    }
+    public static func home(linuxUser: String) -> String { "/home/\(linuxUser)" }
+    public static func workspaceRoot(linuxUser: String, brandId: String) -> String {
+        "\(home(linuxUser: linuxUser))/\(brandId)"
+    }
+    public static func workspace(linuxUser: String, brandId: String, stableWorkspaceId: String) -> String {
+        "\(workspaceRoot(linuxUser: linuxUser, brandId: brandId))/\(stableWorkspaceId)"
     }
 
 
@@ -95,6 +102,9 @@ public enum LXISHGuestPaths {
 /// not.
 struct LXISHNativeConfig: Codable, Hashable {
     var managedRoot: String
+    var brandId: String
+    var linuxUser: String
+    var configDirName: String
     var workspaceHostPath: String
     var stableWorkspaceId: String
     var abi: String
@@ -107,11 +117,12 @@ struct LXISHNativeConfig: Codable, Hashable {
 
 
     var runtimeKey: String {
-        normalizedManagedRoot.path + "\n" + workspaceHostPath + "\n" + stableWorkspaceId
+        normalizedManagedRoot.path + "\n" + brandId + "\n" + linuxUser + "\n" + configDirName + "\n" + workspaceHostPath + "\n" + stableWorkspaceId
     }
 
     func sameKernel(as other: LXISHNativeConfig) -> Bool {
-        managedRoot == other.managedRoot && abi == other.abi && rootfsVersion == other.rootfsVersion
+        managedRoot == other.managedRoot && brandId == other.brandId && linuxUser == other.linuxUser
+            && configDirName == other.configDirName && abi == other.abi && rootfsVersion == other.rootfsVersion
             && archiveSha256 == other.archiveSha256 && authorizationFile == other.authorizationFile
             && rootfsArchivePath == other.rootfsArchivePath && defaultMountPath == other.defaultMountPath
             && rootfsPatchPath == other.rootfsPatchPath
@@ -129,8 +140,27 @@ struct LXISHNativeConfig: Codable, Hashable {
         rootfsURL.appendingPathComponent("data", isDirectory: true)
     }
 
+    var guestHome: String { LXISHGuestPaths.home(linuxUser: linuxUser) }
+    var workspaceRoot: String { LXISHGuestPaths.workspaceRoot(linuxUser: linuxUser, brandId: brandId) }
+    var guestWorkspace: String {
+        LXISHGuestPaths.workspace(linuxUser: linuxUser, brandId: brandId, stableWorkspaceId: stableWorkspaceId)
+    }
+    var guestConfigHome: String { "\(guestHome)/\(configDirName)" }
+
+    func validateBrandProfile() throws {
+        func matches(_ value: String, _ pattern: String) -> Bool {
+            value.range(of: pattern, options: .regularExpression) != nil
+        }
+        guard matches(brandId, "^[a-z0-9][a-z0-9._-]{0,62}$"),
+              matches(linuxUser, "^[a-z_][a-z0-9_-]{0,31}$"), linuxUser != "root",
+              matches(configDirName, "^\\.[a-z0-9][a-z0-9._-]{0,62}$")
+        else {
+            throw LXISHRootfsError.corrupt("invalid selected brand runtime profile")
+        }
+    }
+
     var persistentHomeURL: URL {
-        normalizedManagedRoot.appendingPathComponent("persistent/lingxi", isDirectory: true)
+        normalizedManagedRoot.appendingPathComponent("persistent/\(linuxUser)", isDirectory: true)
     }
 
     var persistentAdminHomeURL: URL {
@@ -143,6 +173,9 @@ struct LXISHNativeConfig: Codable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case managedRoot = "managed_root"
+        case brandId = "brand_id"
+        case linuxUser = "linux_user"
+        case configDirName = "config_dir_name"
         case workspaceHostPath = "workspace_host_path"
         case stableWorkspaceId = "stable_workspace_id"
         case abi
@@ -171,6 +204,9 @@ enum LXISHRootfsError: LocalizedError {
 
 private struct LXISHInstalledRootfsMetadata: Codable {
     var abi: String
+    var brandId: String
+    var linuxUser: String
+    var configDirName: String
     var rootfsVersion: String
     var archiveSha256: String?
     var arch: String
@@ -179,6 +215,9 @@ private struct LXISHInstalledRootfsMetadata: Codable {
 
     enum CodingKeys: String, CodingKey {
         case abi
+        case brandId = "brand_id"
+        case linuxUser = "linux_user"
+        case configDirName = "config_dir_name"
         case rootfsVersion = "rootfs_version"
         case archiveSha256 = "archive_sha256"
         case arch
@@ -191,17 +230,19 @@ final class LXISHNativeRootfsManager {
     private let currentArch = "aarch64"
 
     func status(for config: LXISHNativeConfig, lastError: String? = nil) -> LXISHRootfsStatus {
+        let profileIsValid = (try? config.validateBrandProfile()) != nil
         let rootfsURL = config.rootfsURL
         let dataURL = config.rootfsDataURL
         let metaDB = rootfsURL.appendingPathComponent("meta.db")
         let installed = fileManager.fileExists(atPath: dataURL.path) && fileManager.fileExists(atPath: metaDB.path)
         let installedMetadata = readInstalledMetadata(for: config)
         let metadataMatches = metadataMatches(installedMetadata, config: config)
+        let accountMatches = guestAccountMatches(at: config.rootfsDataURL, config: config)
         let archMatches = readArchTag(at: rootfsURL) == currentArch
         let state: String
         if !fileManager.fileExists(atPath: rootfsURL.path) {
             state = "missing"
-        } else if installed && archMatches && metadataMatches {
+        } else if profileIsValid && installed && archMatches && metadataMatches && accountMatches {
             state = "ready"
         } else {
             state = "corrupt"
@@ -219,13 +260,14 @@ final class LXISHNativeRootfsManager {
             stagedRoot: nil,
             archiveSha256: installedMetadata?.archiveSha256 ?? config.archiveSha256,
             installedSizeBytes: state == "ready" ? directorySize(at: rootfsURL) : nil,
-            writableGuestPaths: [LXISHGuestPaths.workspace(config.stableWorkspaceId)] + LXISHGuestPaths.scratch + [LXISHGuestPaths.home, LXISHGuestPaths.adminHome],
-            lastError: lastError
+            writableGuestPaths: [config.workspaceRoot] + LXISHGuestPaths.scratch + [config.guestHome, LXISHGuestPaths.adminHome],
+            lastError: lastError ?? (!profileIsValid ? "invalid selected brand runtime profile" : (!accountMatches && installed ? "rootfs account database does not match selected brand profile" : nil))
         )
     }
 
     @discardableResult
     func installIfNeeded(for config: LXISHNativeConfig) throws -> LXISHRootfsStatus {
+        try config.validateBrandProfile()
         try fileManager.createDirectory(at: config.normalizedManagedRoot, withIntermediateDirectories: true)
         try migrateLegacyHomeIfNeeded(for: config)
         try ensurePersistentHome(for: config)
@@ -265,6 +307,7 @@ final class LXISHNativeRootfsManager {
     }
 
     func repair(for config: LXISHNativeConfig) throws -> LXISHRootfsStatus {
+        try config.validateBrandProfile()
         let current = status(for: config)
         if current.state == "ready" {
             try ensureGuestDirectories(for: config)
@@ -318,9 +361,11 @@ final class LXISHNativeRootfsManager {
 
     private func ensureGuestDirectories(at dataRoot: URL, for config: LXISHNativeConfig) throws {
         let directories = [
-
-            "tmp",
-            "var/tmp"
+            "tmp", "var/tmp", String(config.guestHome.dropFirst()),
+            String(config.workspaceRoot.dropFirst()),
+            String(config.workspaceRoot.dropFirst()) + "/projects",
+            String(config.guestConfigHome.dropFirst()),
+            String(config.guestConfigHome.dropFirst()) + "/.apps"
         ]
         for relative in directories {
             try fileManager.createDirectory(
@@ -328,6 +373,98 @@ final class LXISHNativeRootfsManager {
                 withIntermediateDirectories: true
             )
         }
+        try ensureGuestAccount(at: dataRoot, config: config)
+    }
+
+    private func ensureGuestAccount(at dataRoot: URL, config: LXISHNativeConfig) throws {
+        try config.validateBrandProfile()
+        for (relative, idField) in [("etc/passwd", 2), ("etc/group", 2)] {
+            let file = dataRoot.appendingPathComponent(relative)
+            if let attributes = try? fileManager.attributesOfItem(atPath: file.path),
+               attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+                throw LXISHRootfsError.corrupt("guest account file is a symlink: \(relative)")
+            }
+            let existing = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            let identityRows = existing.split(whereSeparator: \.isNewline).filter { line in
+                let fields = line.split(separator: ":", omittingEmptySubsequences: false)
+                return fields.count > idField && fields[idField] == "1000"
+            }
+            guard identityRows.count <= 1,
+                  identityRows.first.map({
+                      $0.split(separator: ":", omittingEmptySubsequences: false).first.map(String.init)
+                          == config.linuxUser
+                  }) ?? true
+            else {
+                throw LXISHRootfsError.corrupt(
+                    "rootfs UID/GID 1000 belongs to a different account than selected brand \(config.brandId)"
+                )
+            }
+        }
+        let accountFiles: [(String, String, NSNumber)] = [
+            ("etc/passwd", "\(config.linuxUser):x:1000:1000:\(config.brandId):\(config.guestHome):/bin/sh", NSNumber(value: 0o644)),
+            ("etc/group", "\(config.linuxUser):x:1000:", NSNumber(value: 0o644)),
+            ("etc/shadow", "\(config.linuxUser):!:0:0:99999:7:::", NSNumber(value: 0o640))
+        ]
+        for (relative, record, mode) in accountFiles {
+            let file = dataRoot.appendingPathComponent(relative)
+            try fileManager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if let attributes = try? fileManager.attributesOfItem(atPath: file.path),
+               attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+                throw LXISHRootfsError.corrupt("guest account file is a symlink: \(relative)")
+            }
+            let existing = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            let retained = existing.split(whereSeparator: \.isNewline).filter {
+                $0.split(separator: ":", omittingEmptySubsequences: false).first.map(String.init) != config.linuxUser
+            }
+            let content = (retained.map(String.init) + [record]).joined(separator: "\n") + "\n"
+            try Data(content.utf8).write(to: file, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: mode], ofItemAtPath: file.path)
+        }
+        let doas = dataRoot.appendingPathComponent("etc/doas.conf")
+        try fileManager.createDirectory(at: doas.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("permit nopass \(config.linuxUser) as root\n".utf8).write(to: doas, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: doas.path)
+    }
+
+    private func guestAccountMatches(at dataRoot: URL, config: LXISHNativeConfig) -> Bool {
+        func contents(_ relative: String) -> String? {
+            let file = dataRoot.appendingPathComponent(relative)
+            guard (try? fileManager.attributesOfItem(atPath: file.path))?[.type] as? FileAttributeType != .typeSymbolicLink
+            else { return nil }
+            return try? String(contentsOf: file, encoding: .utf8)
+        }
+        let passwdRows = contents("etc/passwd")?.split(whereSeparator: \.isNewline) ?? []
+        let passwdUidRows = passwdRows.filter { line in
+            let fields = line.split(separator: ":", omittingEmptySubsequences: false)
+            return fields.count > 2 && fields[2] == "1000"
+        }
+        let selectedPasswdRows = passwdRows.filter { line in
+            line.split(separator: ":", omittingEmptySubsequences: false).first.map(String.init) == config.linuxUser
+        }
+        let passwd = passwdUidRows.count == 1 && selectedPasswdRows.count == 1 && selectedPasswdRows.contains { line in
+            let fields = line.split(separator: ":", omittingEmptySubsequences: false)
+            return fields.count >= 7 && fields[0] == config.linuxUser && fields[2] == "1000"
+                && fields[3] == "1000" && fields[5] == config.guestHome && fields[6] == "/bin/sh"
+        }
+        let groupRows = contents("etc/group")?.split(whereSeparator: \.isNewline) ?? []
+        let groupIdRows = groupRows.filter { line in
+            let fields = line.split(separator: ":", omittingEmptySubsequences: false)
+            return fields.count > 2 && fields[2] == "1000"
+        }
+        let selectedGroupRows = groupRows.filter { line in
+            line.split(separator: ":", omittingEmptySubsequences: false).first.map(String.init) == config.linuxUser
+        }
+        let group = groupIdRows.count == 1 && selectedGroupRows.count == 1 && selectedGroupRows.contains { line in
+            let fields = line.split(separator: ":", omittingEmptySubsequences: false)
+            return fields.count >= 3 && fields[0] == config.linuxUser && fields[2] == "1000"
+        }
+        let selectedShadowRows = contents("etc/shadow")?.split(whereSeparator: \.isNewline).filter { line in
+            line.split(separator: ":", omittingEmptySubsequences: false).first.map(String.init) == config.linuxUser
+        } ?? []
+        let shadow = selectedShadowRows.count == 1
+        let doas = contents("etc/doas.conf")?.trimmingCharacters(in: .whitespacesAndNewlines)
+            == "permit nopass \(config.linuxUser) as root"
+        return passwd && group && shadow && doas
     }
 
     private func applyDefaultMountOverlay(for config: LXISHNativeConfig, into rootfsDataURL: URL) throws {
@@ -354,9 +491,14 @@ final class LXISHNativeRootfsManager {
     }
 
     private func ensurePersistentHome(for config: LXISHNativeConfig) throws {
+        try config.validateBrandProfile()
         try fileManager.createDirectory(at: config.persistentHomeURL, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: config.persistentAdminHomeURL, withIntermediateDirectories: true)
-        let childDirectories = [".cache", ".cache/pip", ".npm", ".local", "lingxi"]
+        let childDirectories = [
+            ".cache", ".cache/pip", ".npm", ".local", config.configDirName,
+            "\(config.configDirName)/.apps", config.brandId,
+            "\(config.brandId)/projects", "\(config.brandId)/scheduled"
+        ]
         for relative in childDirectories {
             try fileManager.createDirectory(
                 at: config.persistentHomeURL.appendingPathComponent(relative, isDirectory: true),
@@ -366,15 +508,49 @@ final class LXISHNativeRootfsManager {
     }
 
     private func migrateLegacyHomeIfNeeded(for config: LXISHNativeConfig) throws {
-        let marker = config.normalizedManagedRoot.appendingPathComponent("persistent/.user-home-migrated")
-        guard !fileManager.fileExists(atPath: marker.path) else { return }
-        try mergeHome(from: config.rootfsDataURL.appendingPathComponent("root", isDirectory: true),
-                      into: config.persistentAdminHomeURL)
-        try mergeHome(from: config.rootfsDataURL.appendingPathComponent("home/lingxi", isDirectory: true),
-                      into: config.persistentHomeURL)
-        try mergeHome(from: config.persistentAdminHomeURL, into: config.persistentHomeURL)
-        try fileManager.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data("1\n".utf8).write(to: marker, options: .atomic)
+        let oldUser = try legacyActiveLinuxUser(for: config)
+        let migrations: [(String, URL, URL)] = [
+            ("/root", config.rootfsDataURL.appendingPathComponent("root", isDirectory: true), config.persistentAdminHomeURL),
+            ("/home/\(oldUser)", config.rootfsDataURL.appendingPathComponent("home/\(oldUser)", isDirectory: true),
+             config.normalizedManagedRoot.appendingPathComponent("persistent/\(oldUser)", isDirectory: true))
+        ]
+        for (guestPath, source, destination) in migrations where fileManager.fileExists(atPath: source.path) {
+            try mergeHome(from: source, into: destination)
+            let recordDirectory = config.normalizedManagedRoot.appendingPathComponent("persistent/migrations", isDirectory: true)
+            try fileManager.createDirectory(at: recordDirectory, withIntermediateDirectories: true)
+            let key = guestPath.trimmingCharacters(in: CharacterSet(charactersIn: "/")).replacingOccurrences(of: "/", with: "-")
+            let record = recordDirectory.appendingPathComponent("guest-home-v1-\(key).json")
+            let payload: [String: Any] = [
+                "schema_version": 1,
+                "source_guest_path": guestPath,
+                "destination_managed_relative_path": "persistent/\(guestPath == "/root" ? "root" : oldUser)",
+                "source_retained": true
+            ]
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: record, options: .atomic)
+        }
+    }
+
+    private func legacyActiveLinuxUser(for config: LXISHNativeConfig) throws -> String {
+        if let metadata = readInstalledMetadata(for: config),
+           metadata.linuxUser.range(of: "^[a-z_][a-z0-9_-]{0,31}$", options: .regularExpression) != nil,
+           metadata.linuxUser != "root" {
+            return metadata.linuxUser
+        }
+        let passwd = config.rootfsDataURL.appendingPathComponent("etc/passwd")
+        guard let text = try? String(contentsOf: passwd, encoding: .utf8) else { return "lingxi" }
+        let users = text.split(whereSeparator: \.isNewline).compactMap { line -> String? in
+            let fields = line.split(separator: ":", omittingEmptySubsequences: false)
+            guard fields.count >= 7, fields[2] == "1000", fields[3] == "1000",
+                  fields[5].hasPrefix("/home/") else { return nil }
+            let user = String(fields[0])
+            return user.range(of: "^[a-z_][a-z0-9_-]{0,31}$", options: .regularExpression) != nil && user != "root"
+                ? user : nil
+        }
+        if users.count > 1 {
+            throw LXISHRootfsError.corrupt("active rootfs has ambiguous uid-1000 accounts; refusing home migration")
+        }
+        return users.first ?? "lingxi"
     }
 
     /// Copy once before replacing the image. Existing user files and symlinks
@@ -411,6 +587,9 @@ final class LXISHNativeRootfsManager {
     private func persistInstalledMetadata(for config: LXISHNativeConfig, rootfsURL: URL) throws {
         let payload = LXISHInstalledRootfsMetadata(
             abi: config.abi,
+            brandId: config.brandId,
+            linuxUser: config.linuxUser,
+            configDirName: config.configDirName,
             rootfsVersion: config.rootfsVersion,
             archiveSha256: config.archiveSha256,
             arch: currentArch,
@@ -435,6 +614,9 @@ final class LXISHNativeRootfsManager {
         guard let metadata else { return false }
         guard metadata.arch == currentArch,
               metadata.abi == config.abi,
+              metadata.brandId == config.brandId,
+              metadata.linuxUser == config.linuxUser,
+              metadata.configDirName == config.configDirName,
               metadata.rootfsVersion == config.rootfsVersion
         else {
             return false

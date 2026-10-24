@@ -1,4 +1,4 @@
-use super::mounts::{snapshot_read_only_mounts, validate_request};
+use super::mounts::{snapshot_read_only_mounts, validate_mount, validate_request};
 use super::process::{enforced_network_policy_name, requested_memory_limit_bytes};
 use async_trait::async_trait;
 use mobile_linux_api::LinuxEnforcementReceipt;
@@ -36,6 +36,12 @@ fn native_library_directory_is_explicit_and_not_host_library_named() {
 }
 
 fn runtime() -> (TempDir, AndroidProotRuntime) {
+    runtime_for_profile(mobile_linux_api::BrandRuntimeProfile::default())
+}
+
+fn runtime_for_profile(
+    brand_profile: mobile_linux_api::BrandRuntimeProfile,
+) -> (TempDir, AndroidProotRuntime) {
     let temp = tempfile::tempdir().expect("temp");
     let managed = temp.path().join("runtime");
     fs::create_dir_all(managed.join("active/bin")).expect("active");
@@ -64,6 +70,7 @@ fn runtime() -> (TempDir, AndroidProotRuntime) {
     }
     let runtime = AndroidProotRuntime::new(AndroidProotRuntimeConfig {
         native_library_dir: None,
+        brand_profile,
         managed_root: managed,
         app_sandbox_root: temp.path().join("sandbox"),
         abi: "x86_64".to_string(),
@@ -994,6 +1001,7 @@ async fn missing_payload_fails_closed_without_legacy_fallback() {
     let temp = tempfile::tempdir().expect("temp");
     let runtime = AndroidProotRuntime::new(AndroidProotRuntimeConfig {
         native_library_dir: None,
+        brand_profile: mobile_linux_api::BrandRuntimeProfile::default(),
         managed_root: temp.path().join("missing"),
         app_sandbox_root: temp.path().join("sandbox"),
         abi: "x86_64".to_string(),
@@ -1200,7 +1208,8 @@ async fn loopback_network_fails_before_guest_spawn_without_policy_launcher() {
 fn loopback_only_is_admitted_for_sockaddr_aware_proot_enforcement() {
     let mut request = request();
     request.network = NetworkPolicy::LoopbackOnly;
-    validate_request(&request).expect("LoopbackOnly is supported");
+    validate_request(&request, &mobile_linux_api::BrandRuntimeProfile::default())
+        .expect("LoopbackOnly is supported");
     assert_eq!(
         enforced_network_policy_name(request.network),
         Some("loopback_only")
@@ -1213,7 +1222,8 @@ fn ordinary_requests_reject_build_state_env_overrides() {
     request
         .env
         .insert("HOME".into(), "/home/lingxi/lingxi/extra/home".into());
-    let error = validate_request(&request).expect_err("ordinary requests must reject HOME");
+    let error = validate_request(&request, &mobile_linux_api::BrandRuntimeProfile::default())
+        .expect_err("ordinary requests must reject HOME");
     assert!(error
         .to_string()
         .contains("host-reserved environment variable"));
@@ -1304,4 +1314,57 @@ fn normal_and_pty_launches_use_the_same_nonroot_identity_and_default_cwd() {
     assert_eq!(&pty_args[..2], ["-i", "1000:1000"]);
     assert_eq!(env.get("HOME").unwrap(), "/home/lingxi");
     assert_eq!(env.get("USER").unwrap(), "lingxi");
+}
+
+#[test]
+fn second_brand_profile_controls_runtime_mounts_environment_and_guest_mapping() {
+    let profile = mobile_linux_api::BrandRuntimeProfile::new("atlas", "atlas_guest", ".atlas");
+    let (_temp, runtime) = runtime_for_profile(profile.clone());
+    let home = profile.persistent_home_host_path(&runtime.state.config.managed_root);
+    let projects = home.join("atlas/projects");
+    fs::create_dir_all(projects.join("app/src")).unwrap();
+    let workspace = MountSpec {
+        host_path: projects.clone(),
+        guest_path: mobile_linux_api::guest_paths::projects_root_for_profile(&profile),
+        read_only: false,
+        purpose: MountPurpose::Workspace,
+    };
+    validate_mount(&workspace, &runtime.state.config.managed_root, &profile)
+        .expect("profile-backed projects mount is accepted");
+    let mut mounts = runtime.home_mounts();
+    mounts.push(workspace);
+    assert_eq!(
+        mobile_linux_api::map_guest_path_to_host(
+            "/home/atlas_guest/atlas/projects/app/src/main.rs",
+            &mounts,
+        ),
+        Some(projects.join("app/src/main.rs"))
+    );
+
+    let request = LinuxCommandRequest {
+        cwd: None,
+        ..request()
+    };
+    let command = runtime
+        .build_command(&request, None, &BTreeMap::new(), &[], None)
+        .unwrap();
+    let args = command
+        .as_std()
+        .get_args()
+        .map(|value| value.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(args
+        .windows(2)
+        .any(|pair| pair == ["-w", "/home/atlas_guest/atlas"]));
+    let (_, pty_args, env) = runtime
+        .build_pty_invocation("/bin/sh", &[], None, &BTreeMap::new(), &[])
+        .unwrap();
+    assert!(pty_args
+        .windows(2)
+        .any(|pair| pair == ["-w", "/home/atlas_guest/atlas"]));
+    assert_eq!(
+        env.get("HOME").map(String::as_str),
+        Some("/home/atlas_guest")
+    );
+    assert_eq!(env.get("USER").map(String::as_str), Some("atlas_guest"));
 }

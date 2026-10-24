@@ -8,7 +8,8 @@
 //
 //  JSON request keys:
 //    config:
-//      managed_root, workspace_host_path, stable_workspace_id, abi,
+//      managed_root, brand_id, linux_user, config_dir_name,
+//      workspace_host_path, stable_workspace_id, abi,
 //      rootfs_version, archive_sha256?, authorization_file?
 //    mount:
 //      host_path, guest_path, read_only, purpose

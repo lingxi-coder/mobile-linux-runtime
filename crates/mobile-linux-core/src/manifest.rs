@@ -1,9 +1,11 @@
 //! Manifest schema and validation of the immutable rootfs contract.
 use crate::filesystem::sha256_bytes;
 use crate::{path_is_within_guest_path, validate_guest_path, RootfsManifestError};
+use mobile_linux_api::BrandRuntimeProfile;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
+#[cfg(test)]
 pub(crate) const ALLOWED_WRITABLE_GUEST_PATHS: &[&str] = &[
     mobile_linux_api::guest_paths::HOME,
     mobile_linux_api::guest_paths::ADMIN_HOME,
@@ -11,6 +13,19 @@ pub(crate) const ALLOWED_WRITABLE_GUEST_PATHS: &[&str] = &[
     mobile_linux_api::guest_paths::SCRATCH[1],
     mobile_linux_api::guest_paths::WORKSPACE_ROOT,
 ];
+
+pub(crate) fn allowed_writable_guest_paths(profile: &BrandRuntimeProfile) -> [String; 5] {
+    [
+        profile.guest_home().to_string_lossy().into_owned(),
+        mobile_linux_api::guest_paths::ADMIN_HOME.to_string(),
+        mobile_linux_api::guest_paths::SCRATCH[0].to_string(),
+        mobile_linux_api::guest_paths::SCRATCH[1].to_string(),
+        profile
+            .workspace_root_guest_path()
+            .to_string_lossy()
+            .into_owned(),
+    ]
+}
 
 pub(crate) const REQUIRED_ROOTFS_PACKAGES: &[&str] = &[
     "busybox",
@@ -28,6 +43,10 @@ pub struct RootfsManifest {
     pub platform: String,
     pub abi: String,
     pub rootfs_version: String,
+    /// Brand account and path identity embedded in the rootfs. Missing only
+    /// for legacy LingXi manifests; non-LingXi runtimes fail closed on them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand_profile: Option<BrandRuntimeProfile>,
     /// Digest of the producer's canonical, ordered immutable inventory.
     /// Absent only for legacy manifests emitted before producer attestation.
     #[serde(
@@ -65,6 +84,10 @@ fn present_string<'de, D: serde::Deserializer<'de>>(
 
 impl RootfsManifest {
     pub fn validate(&self) -> Result<(), RootfsManifestError> {
+        let profile = self.brand_profile.clone().unwrap_or_default();
+        profile
+            .validate()
+            .map_err(|error| RootfsManifestError::InvalidBrandProfile(error.to_string()))?;
         if self.schema_version != 2 {
             return Err(RootfsManifestError::InvalidSchemaVersion);
         }
@@ -148,15 +171,16 @@ impl RootfsManifest {
             if !writable_paths.insert(path.as_str()) {
                 return Err(RootfsManifestError::DuplicatePath(path.clone()));
             }
-            if !ALLOWED_WRITABLE_GUEST_PATHS.contains(&path.as_str()) {
+            if !allowed_writable_guest_paths(&profile)
+                .iter()
+                .any(|allowed| allowed == path)
+            {
                 return Err(RootfsManifestError::WritablePathNotAllowed(path.clone()));
             }
         }
-        for required in ALLOWED_WRITABLE_GUEST_PATHS {
-            if !writable_paths.contains(required) {
-                return Err(RootfsManifestError::MissingWritablePath(
-                    (*required).to_string(),
-                ));
+        for required in allowed_writable_guest_paths(&profile) {
+            if !writable_paths.contains(required.as_str()) {
+                return Err(RootfsManifestError::MissingWritablePath(required));
             }
         }
 
@@ -247,7 +271,8 @@ impl RootfsManifest {
             if !is_lowercase_sha256(&entry.sha256) {
                 return Err(RootfsManifestError::InvalidSha256(entry.sha256.clone()));
             }
-            if ALLOWED_WRITABLE_GUEST_PATHS
+            if self
+                .writable_paths
                 .iter()
                 .any(|writable| path_is_within_guest_path(&entry.path, writable))
             {
@@ -258,7 +283,8 @@ impl RootfsManifest {
         }
 
         for entry in &self.executable_allowlist {
-            if ALLOWED_WRITABLE_GUEST_PATHS
+            if self
+                .writable_paths
                 .iter()
                 .any(|writable| path_is_within_guest_path(&entry.path, writable))
             {

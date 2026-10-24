@@ -20,6 +20,8 @@ pub enum RootfsManifestError {
     ContentDigestEncoding(String),
     #[error("rootfs manifest is missing a required field")]
     MissingRequiredField,
+    #[error("invalid rootfs brand runtime profile: {0}")]
+    InvalidBrandProfile(String),
     #[error("rootfs version and archive filename must be single safe path components")]
     UnsafeArtifactName,
     #[error("invalid or duplicate rootfs package: {0}")]

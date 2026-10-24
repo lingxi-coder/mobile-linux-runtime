@@ -1,7 +1,9 @@
 //! Managed-root identity, paths, and status.
 use crate::filesystem::{dir_size, ensure_real_directory, path_present};
 use crate::{RootfsManifest, RootfsStoreError};
-use mobile_linux_api::{MobileLinuxRuntimeMode, RootfsState, RootfsStatus, SandboxBackend};
+use mobile_linux_api::{
+    BrandRuntimeProfile, MobileLinuxRuntimeMode, RootfsState, RootfsStatus, SandboxBackend,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use verification::verification_failure_message;
@@ -16,6 +18,7 @@ pub struct RootfsStore {
     mode: MobileLinuxRuntimeMode,
     platform: String,
     abi: String,
+    brand_profile: BrandRuntimeProfile,
 }
 
 fn abis_match(manifest_abi: &str, store_abi: &str) -> bool {
@@ -45,7 +48,21 @@ impl RootfsStore {
             mode,
             platform: platform.into(),
             abi: abi.into(),
+            brand_profile: BrandRuntimeProfile::default(),
         }
+    }
+
+    /// Select the account identity this runtime expects to find in rootfs
+    /// metadata and its account database.
+    #[must_use]
+    pub fn with_brand_profile(mut self, profile: BrandRuntimeProfile) -> Self {
+        self.brand_profile = profile;
+        self
+    }
+
+    #[must_use]
+    pub fn brand_profile(&self) -> &BrandRuntimeProfile {
+        &self.brand_profile
     }
 
     #[must_use]
@@ -123,6 +140,16 @@ impl RootfsStore {
 
     fn validate_manifest_target(&self, manifest: &RootfsManifest) -> Result<(), RootfsStoreError> {
         manifest.validate()?;
+        self.brand_profile
+            .validate()
+            .map_err(|error| crate::RootfsManifestError::InvalidBrandProfile(error.to_string()))?;
+        let manifest_profile = manifest.brand_profile.clone().unwrap_or_default();
+        if manifest_profile != self.brand_profile {
+            return Err(RootfsStoreError::TargetMismatch {
+                store: format!("brand={:?}", self.brand_profile),
+                manifest: format!("brand={manifest_profile:?}"),
+            });
+        }
         let expected_runtime = match self.backend {
             SandboxBackend::AndroidProot => "android-proot",
             SandboxBackend::IosIsh => "ios-ish",

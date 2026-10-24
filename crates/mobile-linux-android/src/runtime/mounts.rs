@@ -174,12 +174,12 @@ impl AndroidProotRuntime {
     pub(super) fn home_mounts(&self) -> Vec<MountSpec> {
         [
             (
-                mobile_linux_api::guest_paths::home_host_path(&self.state.config.managed_root),
-                mobile_linux_api::guest_paths::HOME,
+                self.state.config.persistent_home(),
+                self.state.config.guest_home(),
             ),
             (
                 self.state.config.managed_root.join("persistent/root"),
-                mobile_linux_api::guest_paths::ADMIN_HOME,
+                mobile_linux_api::guest_paths::ADMIN_HOME.to_string(),
             ),
         ]
         .into_iter()
@@ -212,7 +212,11 @@ impl AndroidProotRuntime {
             mounts = homes;
         }
         for mount in request_mounts {
-            validate_mount(mount, &self.state.config.managed_root)?;
+            validate_mount(
+                mount,
+                &self.state.config.managed_root,
+                &self.state.config.brand_profile,
+            )?;
             mounts.retain(|existing| existing.guest_path != mount.guest_path);
             mounts.push(mount.clone());
         }
@@ -220,7 +224,10 @@ impl AndroidProotRuntime {
     }
 }
 
-pub(super) fn validate_request(request: &LinuxCommandRequest) -> Result<(), MobileLinuxError> {
+pub(super) fn validate_request(
+    request: &LinuxCommandRequest,
+    profile: &mobile_linux_api::BrandRuntimeProfile,
+) -> Result<(), MobileLinuxError> {
     if request.command.trim().is_empty() || request.command.as_bytes().contains(&0) {
         return Err(MobileLinuxError::InvalidRequest(
             "command must not be empty or contain NUL".to_string(),
@@ -232,12 +239,12 @@ pub(super) fn validate_request(request: &LinuxCommandRequest) -> Result<(), Mobi
         ));
     }
     let _ = requested_memory_limit_bytes(request)?;
-    validate_guest_path(
-        request
-            .cwd
-            .as_deref()
-            .unwrap_or(mobile_linux_api::guest_paths::WORKSPACE_ROOT),
-    )?;
+    let default_cwd = profile.workspace_root_guest_path();
+    let cwd = request
+        .cwd
+        .as_deref()
+        .unwrap_or_else(|| default_cwd.to_str().expect("profile paths are valid UTF-8"));
+    validate_guest_path(cwd)?;
     for value in &request.args {
         if value.as_bytes().contains(&0) {
             return Err(MobileLinuxError::InvalidRequest(
@@ -248,7 +255,10 @@ pub(super) fn validate_request(request: &LinuxCommandRequest) -> Result<(), Mobi
     validate_env_map(&request.env)
 }
 
-pub(super) fn validate_pty_request(request: &PtyOpenRequest) -> Result<(), MobileLinuxError> {
+pub(super) fn validate_pty_request(
+    request: &PtyOpenRequest,
+    profile: &mobile_linux_api::BrandRuntimeProfile,
+) -> Result<(), MobileLinuxError> {
     if request.command.trim().is_empty()
         || request.command.as_bytes().contains(&0)
         || request.size.cols == 0
@@ -265,18 +275,19 @@ pub(super) fn validate_pty_request(request: &PtyOpenRequest) -> Result<(), Mobil
             ));
         }
     }
-    validate_guest_path(
-        request
-            .cwd
-            .as_deref()
-            .unwrap_or(mobile_linux_api::guest_paths::WORKSPACE_ROOT),
-    )?;
+    let default_cwd = profile.workspace_root_guest_path();
+    let cwd = request
+        .cwd
+        .as_deref()
+        .unwrap_or_else(|| default_cwd.to_str().expect("profile paths are valid UTF-8"));
+    validate_guest_path(cwd)?;
     validate_env_map(&request.env)
 }
 
 pub(super) fn validate_mount(
     mount: &MountSpec,
     managed_root: &Path,
+    profile: &mobile_linux_api::BrandRuntimeProfile,
 ) -> Result<(), MobileLinuxError> {
     if !mount.host_path.is_absolute() {
         return Err(MobileLinuxError::InvalidRequest(
@@ -289,13 +300,10 @@ pub(super) fn validate_mount(
         ));
     }
     validate_guest_path(&mount.guest_path)?;
-    if [
-        "/",
-        "/home",
-        mobile_linux_api::guest_paths::HOME,
-        mobile_linux_api::guest_paths::ADMIN_HOME,
-    ]
-    .contains(&mount.guest_path.as_str())
+    if mount.guest_path == "/"
+        || mount.guest_path == "/home"
+        || mount.guest_path == profile.guest_home().to_string_lossy()
+        || mount.guest_path == mobile_linux_api::guest_paths::ADMIN_HOME
     {
         return Err(MobileLinuxError::InvalidRequest(
             "request mount may not replace a managed guest home".into(),
@@ -311,7 +319,7 @@ pub(super) fn validate_mount(
         .canonicalize()
         .unwrap_or_else(|_| managed_root.to_path_buf());
     if (host.starts_with(&managed) || managed.starts_with(&host))
-        && !mobile_linux_core::is_persistent_user_workspace(&managed, mount)
+        && !mobile_linux_core::is_persistent_user_workspace(&managed, profile, mount)
     {
         return Err(MobileLinuxError::InvalidRequest(
             "mount must not expose the managed rootfs".to_string(),

@@ -314,17 +314,17 @@ struct LXISHGuestEnvironment {
     static func merged(
         requestEnvironment: [String: String],
         cwd: String?,
-        stableWorkspaceId: String
+        config: LXISHNativeConfig
     ) -> [String: String] {
         var environment = requestEnvironment
-        let workspaceGuestPath = LXISHGuestPaths.workspace(stableWorkspaceId)
-        let defaultHome = LXISHGuestPaths.home
+        let workspaceGuestPath = config.guestWorkspace
+        let defaultHome = config.guestHome
         let defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        let resolvedCwd = cwd?.isEmpty == false ? cwd! : LXISHGuestPaths.workspaceRoot
+        let resolvedCwd = cwd?.isEmpty == false ? cwd! : config.workspaceRoot
         let defaults: [String: String] = [
             "HOME": defaultHome,
-            "USER": LXISHGuestPaths.user,
-            "LOGNAME": LXISHGuestPaths.user,
+            "USER": config.linuxUser,
+            "LOGNAME": config.linuxUser,
             "PWD": resolvedCwd,
             "PATH": defaultPath,
             "TMPDIR": "/tmp",
@@ -424,11 +424,11 @@ struct LXISHRuntimeMountPlanner {
                 )
             }
         }
-        let workspaceGuestPath = LXISHGuestPaths.workspace(config.stableWorkspaceId)
+        let workspaceGuestPath = config.guestWorkspace
         var mounts: [LXISHMountSpec] = [
             LXISHMountSpec(
                 hostPath: config.persistentHomeURL.path,
-                guestPath: LXISHGuestPaths.home,
+                guestPath: config.guestHome,
                 readOnly: false,
                 purpose: "home"
             ),
@@ -447,7 +447,7 @@ struct LXISHRuntimeMountPlanner {
                 )
             )
         }
-        for mount in requestedMounts where mount.guestPath != LXISHGuestPaths.home && mount.guestPath != LXISHGuestPaths.adminHome && mount.guestPath != workspaceGuestPath {
+        for mount in requestedMounts where mount.guestPath != config.guestHome && mount.guestPath != LXISHGuestPaths.adminHome && mount.guestPath != workspaceGuestPath {
             mounts.append(
                 LXISHMountSpec(
                     hostPath: URL(fileURLWithPath: mount.hostPath, isDirectory: true)
@@ -2430,7 +2430,7 @@ private final class LXISHNativeCoordinator {
     /// `/var/lingxi/project-mounts/<id>/store/project` would otherwise leave
     /// its intermediate directories unknown to the guest and every lookup
     /// through them would return ENOENT. Mount points one level under a
-    /// directory baked into the rootfs image (`/home/lingxi/lingxi/<id>`) were the only
+    /// directory baked into the rootfs image (`/home/<linuxUser>/<brandId>/<id>`) were the only
     /// ones that ever worked, and they worked by accident.
     ///
     /// Creating the parents with `FileManager` — which is what this used to do
@@ -2550,7 +2550,7 @@ private final class LXISHNativeCoordinator {
         LXISHGuestEnvironment.merged(
             requestEnvironment: requestEnvironment,
             cwd: cwd,
-            stableWorkspaceId: config.stableWorkspaceId
+            config: config
         )
     }
 
@@ -2676,7 +2676,9 @@ private func encodeError(code: String, message: String) -> String {
 }
 
 private func decodeConfig(_ pointer: UnsafePointer<CChar>?) throws -> LXISHNativeConfig {
-    try decode(pointer, as: LXISHNativeConfig.self)
+    let config = try decode(pointer, as: LXISHNativeConfig.self)
+    try config.validateBrandProfile()
+    return config
 }
 
 private func decode<T: Decodable>(_ pointer: UnsafePointer<CChar>?, as type: T.Type) throws -> T {

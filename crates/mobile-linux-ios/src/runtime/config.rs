@@ -1,3 +1,4 @@
+use mobile_linux_api::BrandRuntimeProfile;
 use mobile_linux_api::{MountPurpose, MountSpec};
 use std::path::PathBuf;
 
@@ -9,11 +10,13 @@ use super::NativeConfigPayload;
 pub struct IosIshRuntimeConfig {
     /// App-private directory that holds active/staged iSH rootfs state.
     pub managed_root: PathBuf,
-    /// Canonical app sandbox root used to protect `.lingxi` and config trees.
+    /// Authoritative product account, guest path, and config identity.
+    pub brand_profile: BrandRuntimeProfile,
+    /// Canonical app sandbox root used to protect the selected brand config and provider trees.
     pub app_sandbox_root: PathBuf,
-    /// Host workspace path exposed as the default `/home/lingxi/lingxi/<id>` mount.
+    /// Host workspace path exposed as the selected brand's default workspace mount.
     pub workspace_host_path: PathBuf,
-    /// Stable guest workspace identifier appended under `/home/lingxi/lingxi`.
+    /// Stable guest workspace identifier appended under the selected brand workspace root.
     pub stable_workspace_id: String,
     /// Guest ABI label surfaced in status responses.
     pub abi: String,
@@ -43,11 +46,15 @@ impl IosIshRuntimeConfig {
     }
 
     pub(super) fn workspace_guest_path(&self) -> String {
-        mobile_linux_api::guest_paths::workspace(&self.stable_workspace_id)
+        mobile_linux_api::guest_paths::workspace_for_profile(
+            &self.brand_profile,
+            &self.stable_workspace_id,
+        )
     }
 
     pub(super) fn persistent_home_host_path(&self) -> PathBuf {
-        mobile_linux_api::guest_paths::home_host_path(&self.managed_root)
+        self.brand_profile
+            .persistent_home_host_path(&self.managed_root)
     }
 
     pub(super) fn default_workspace_mount(&self) -> MountSpec {
@@ -62,7 +69,7 @@ impl IosIshRuntimeConfig {
     pub(super) fn persistent_home_mount(&self) -> MountSpec {
         MountSpec {
             host_path: self.persistent_home_host_path(),
-            guest_path: mobile_linux_api::guest_paths::HOME.to_string(),
+            guest_path: mobile_linux_api::guest_paths::home_for_profile(&self.brand_profile),
             read_only: false,
             purpose: MountPurpose::Shared,
         }
@@ -80,6 +87,9 @@ impl IosIshRuntimeConfig {
     pub(super) fn native_payload(&self) -> NativeConfigPayload {
         NativeConfigPayload {
             managed_root: self.managed_root.display().to_string(),
+            brand_id: self.brand_profile.brand_id.clone(),
+            linux_user: self.brand_profile.linux_user.clone(),
+            config_dir_name: self.brand_profile.config_dir_name.clone(),
             workspace_host_path: self.workspace_host_path.display().to_string(),
             stable_workspace_id: self.stable_workspace_id.clone(),
             abi: self.abi.clone(),

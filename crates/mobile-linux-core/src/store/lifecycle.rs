@@ -66,8 +66,8 @@ impl RootfsStore {
             return Err(RootfsStoreError::UnsafeResetPath(active_root));
         }
         for guest_path in &manifest.writable_paths {
-            // `/root` can contain user SSH material and `/home/lingxi/lingxi` contains
-            // projects. Rootfs reset may clear only runtime scratch paths.
+            // `/root` can contain user SSH material and the selected brand's
+            // workspace root contains projects. Rootfs reset may clear only runtime scratch paths.
             if !RESETTABLE_GUEST_PATHS.contains(&guest_path.as_str()) {
                 continue;
             }

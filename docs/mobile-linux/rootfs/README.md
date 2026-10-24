@@ -54,10 +54,18 @@ uploading candidate artifacts and separately asserts source checkout immutabilit
 
 ## Default guest account
 
-Both mobile backends use `lingxi` (UID/GID 1000), `/bin/sh`, and
-`HOME=/home/lingxi`. A command without a cwd starts in `~/lingxi`.
-Projects bind their existing host directories at `~/lingxi/<stable-id>`;
-explicit cwd values remain authoritative. The host project storage is unchanged.
+The default LingXi profile is `{brandId: lingxi, linuxUser: lingxi,
+configDirName: .lingxi}`. Both mobile backends use its Linux account at UID/GID
+1000, `/bin/sh`, and `HOME=/home/lingxi`. A command without a cwd starts in
+`~/lingxi`; brand projects live below `~/lingxi/projects`. Signed-in Firebase
+and provider accounts do not select this Linux identity.
+
+`guest_user.py` writes passwd, group, shadow, doas, home, and archive ownership
+from the selected brand profile. Rootfs builder commands accept
+`--brand-id`, `--linux-user`, and `--config-dir-name`; the consuming mobile
+application must use the same profile. Defaults preserve the LingXi paths and
+account. Profile repair adds the selected account directories without removing
+other home trees.
 
 `guest_user.py` supplies the same account layer to the Android toolchain image
 and the independently verified iOS base image. Password login is locked.
@@ -66,8 +74,8 @@ The pinned Alpine `doas` and `doas-sudo-shim` packages provide passwordless
 allows SUID only on the hash-pinned regular `/usr/bin/doas`; archive creation
 and Android extraction preserve its 04755 mode and private config permissions.
 
-`persistent/lingxi` and `persistent/root` keep user and administrator homes
-outside replaceable images. Before replacement, a one-time merge preserves
+`persistent/<linuxUser>` and `persistent/root` keep user and administrator
+homes outside replaceable images. Before replacement, a one-time merge preserves
 legacy home contents without overwriting existing user files. Resetting scratch
 areas preserves both homes and project directories. Isolated raw-stdio jobs
 continue to use only their explicitly provided mounts.
@@ -81,4 +89,6 @@ When the toolchains are unchanged, `build-user-rootfs.py --base-archive FILE
 SDK archive. It verifies the archived SHA, installs the pinned account APKs
 offline in a digest-pinned Alpine container, and emits a fresh manifest/SBOM
 with the base-image receipt. It never reads an installed user's filesystem.
+Brand-specific builds can append the same three profile options used by
+`build-local-app-rootfs.sh`.
 APK wall-clock logs are omitted so identical inputs produce identical images.
