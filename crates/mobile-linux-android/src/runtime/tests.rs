@@ -1368,3 +1368,28 @@ fn second_brand_profile_controls_runtime_mounts_environment_and_guest_mapping() 
     );
     assert_eq!(env.get("USER").map(String::as_str), Some("atlas_guest"));
 }
+
+#[test]
+fn command_and_pty_owner_identity_cannot_be_overridden_by_guest_env() {
+    let (_temp, runtime) = runtime();
+    let env = BTreeMap::from([("LINGXI_RUNTIME_OWNER_PID".to_string(), "1".to_string())]);
+    let request = request();
+    let command = runtime
+        .build_command(&request, None, &env, &[], None)
+        .unwrap();
+    let owner = command
+        .as_std()
+        .get_envs()
+        .find(|(name, _)| *name == "LINGXI_RUNTIME_OWNER_PID")
+        .unwrap()
+        .1
+        .unwrap();
+    assert_eq!(owner, std::process::id().to_string().as_str());
+    let (_, _, child_env) = runtime
+        .build_pty_invocation("/bin/sh", &[], None, &env, &[])
+        .unwrap();
+    assert_eq!(
+        child_env["LINGXI_RUNTIME_OWNER_PID"],
+        std::process::id().to_string()
+    );
+}

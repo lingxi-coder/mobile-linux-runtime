@@ -1,0 +1,410 @@
+--- a/fs/fake.c
++++ b/fs/fake.c
+@@ -27,6 +27,7 @@
+ #include "fs/real.h"
+ #define ISH_INTERNAL
+ #include "fs/fake.h"
++#include "lx_mount_path_guard.h"
+ 
+ // TODO document database
+ 
+@@ -103,6 +104,8 @@
+     int  host_path_len;
+     bool active;
+     bool read_only;           /* Reject write syscalls with EROFS at fakefs layer. */
++    bool materialized;        /* Only rootfs-owned top-level mounts have links. */
++    char owned_link_target[PATH_MAX];
+ };
+ 
+ static struct fakefs_bind_mount g_bind_mounts[FAKEFS_MAX_BIND_MOUNTS];
+@@ -348,15 +351,11 @@
+         snprintf(normalized, sizeof(normalized), "/%s", path);
+         cmp_path = normalized;
+     }
+-    for (int i = 0; i < FAKEFS_MAX_BIND_MOUNTS; i++) {
+-        if (!g_bind_mounts[i].active || !g_bind_mounts[i].read_only)
+-            continue;
+-        int len = g_bind_mounts[i].path_len;
+-        if (strncmp(g_bind_mounts[i].path, cmp_path, len) == 0 &&
+-            (cmp_path[len] == '/' || cmp_path[len] == '\0'))
+-            return true;
+-    }
+-    return false;
++    const char *prefixes[FAKEFS_MAX_BIND_MOUNTS];
++    for (int i = 0; i < FAKEFS_MAX_BIND_MOUNTS; i++)
++        prefixes[i] = g_bind_mounts[i].active ? g_bind_mounts[i].path : NULL;
++    int best = lx_mount_longest_prefix(cmp_path, prefixes, FAKEFS_MAX_BIND_MOUNTS);
++    return best >= 0 && g_bind_mounts[best].read_only;
+ }
+ 
+ /* Auto-create a meta.db entry for a path under a bind mount.
+@@ -510,13 +509,23 @@
+         return ERR_PTR(_ENOENT);
+     }
+     const char *path = (const char *) sqlite3_column_text(stmt, 0);
+-    struct fd *fd = realfs.open(mount, path, O_RDWR_, 0);
+-    if (PTR_ERR(fd) == _EISDIR)
+-        fd = realfs.open(mount, path, O_RDONLY_, 0);
++    char host_abs[PATH_MAX];
++    struct fd *fd;
++    if (bind_mount_translate_path(path, host_abs, sizeof(host_abs))) {
++        int number = open(host_abs, O_RDWR);
++        if (number < 0 && errno == EISDIR) number = open(host_abs, O_RDONLY);
++        fd = number < 0 ? ERR_PTR(errno_map()) : fd_create(&realfs_fdops);
++        if (!IS_ERR(fd)) { fd->real_fd = number; fd->dir = NULL; }
++    } else {
++        fd = realfs.open(mount, path, O_RDWR_, 0);
++        if (PTR_ERR(fd) == _EISDIR)
++            fd = realfs.open(mount, path, O_RDONLY_, 0);
++    }
+     if (PTR_ERR(fd) == _ENOENT)
+         goto step;
+     db_reset(fs, stmt);
+     db_commit(fs);
++    if (IS_ERR(fd)) return fd;
+     fd->fake_inode = inode;
+     fd->ops = &fakefs_fdops;
+     return fd;
+@@ -524,7 +533,7 @@
+ 
+ static int fakefs_link(struct mount *mount, const char *src, const char *dst) {
+     struct fakefs_db *fs = &mount->fakefs;
+-    if (is_under_readonly_bind_mount(dst))
++    if (is_under_readonly_bind_mount(src) || is_under_readonly_bind_mount(dst))
+         return _EROFS;
+     /* Hook-routed paths can't share meta.db rows, so hard-linking them is
+      * not supported. Perform a host link() directly between translated host
+@@ -534,7 +543,7 @@
+     bool src_hook = false, dst_hook = false;
+     bool src_bind = bind_mount_translate_path_ex(src, host_src, sizeof(host_src), &src_hook);
+     bool dst_bind = bind_mount_translate_path_ex(dst, host_dst, sizeof(host_dst), &dst_hook);
+-    if (src_hook != dst_hook)
++    if (src_bind != dst_bind || src_hook != dst_hook)
+         return _EXDEV;
+     if (src_hook) {
+         if (link(host_src, host_dst) < 0)
+@@ -542,9 +551,11 @@
+         fakefs_record_change(dst, FAKEFS_CHANGE_OP_WRITE);
+         return 0;
+     }
+-    (void)src_bind; (void)dst_bind;
++    if (src_bind)
++        bind_mount_ensure_inode(fs, mount, src);
+     db_begin_write(fs);
+-    int err = realfs.link(mount, src, dst);
++    int err = src_bind ? (link(host_src, host_dst) < 0 ? errno_map() : 0)
++                       : realfs.link(mount, src, dst);
+     if (err < 0) {
+         db_rollback(fs);
+         return err;
+@@ -681,20 +692,23 @@
+      * recognize as a symlink. */
+     char host_chk[PATH_MAX];
+     bool _vh = false;
+-    if (bind_mount_translate_path_ex(link, host_chk, sizeof(host_chk), &_vh) && _vh)
++    bool via_bind = bind_mount_translate_path_ex(link, host_chk, sizeof(host_chk), &_vh);
++    if (via_bind && _vh)
+         return _EPERM;
+     db_begin_write(fs);
+-    // create a file containing the target
+-    int fd = openat(mount->root_fd, fix_path(link), O_WRONLY | O_CREAT | O_EXCL, 0666);
++    // Keep fakefs's regular-file target plus S_IFLNK metadata representation.
++    int fd = via_bind ? open(host_chk, O_WRONLY | O_CREAT | O_EXCL, 0666)
++                     : openat(mount->root_fd, fix_path(link), O_WRONLY | O_CREAT | O_EXCL, 0666);
+     if (fd < 0) {
+         db_rollback(fs);
+         return errno_map();
+     }
+     ssize_t res = write(fd, target, strlen(target));
+     close(fd);
+-    if (res < 0) {
+-        int saved_errno = errno;
+-        unlinkat(mount->root_fd, fix_path(link), 0);
++    if (res < 0 || (size_t)res != strlen(target)) {
++        int saved_errno = res < 0 ? errno : EIO;
++        if (via_bind) unlink(host_chk);
++        else unlinkat(mount->root_fd, fix_path(link), 0);
+         db_rollback(fs);
+         errno = saved_errno;
+         return errno_map();
+@@ -720,7 +734,22 @@
+         real_mode |= S_IFREG;
+     else
+         real_mode |= mode & S_IFMT;
+-    int err = realfs.mknod(mount, path, real_mode, 0);
++    char host_abs[PATH_MAX];
++    bool via_bind = bind_mount_translate_path(path, host_abs, sizeof(host_abs));
++    int err;
++    if (via_bind) {
++        if (S_ISFIFO(real_mode)) {
++            err = mkfifo(host_abs, real_mode & ~S_IFMT);
++        } else if (S_ISREG(real_mode)) {
++            err = open(host_abs, O_CREAT | O_EXCL | O_RDONLY, real_mode & ~S_IFMT);
++            if (err >= 0) err = close(err);
++        } else {
++            return _EPERM;
++        }
++        if (err < 0) err = errno_map();
++    } else {
++        err = realfs.mknod(mount, path, real_mode, 0);
++    }
+     if (err < 0 && err != _EEXIST) {
+         return err;
+     }
+@@ -774,25 +803,15 @@
+     ino_t inode;
+     if (!path_read_stat(fs, path, &ishstat, &inode)) {
+         db_rollback(fs);
+-        /* Auto-create for bind-mounted paths */
+-        if (is_under_bind_mount(path)) {
+-            inode = bind_mount_ensure_inode(fs, mount, path);
+-            if (inode != 0) {
+-                db_begin_read(fs);
+-                path_read_stat(fs, path, &ishstat, &inode);
+-                db_commit(fs);
+-                int err = realfs.stat(mount, path, fake_stat);
+-                if (err < 0)
+-                    return err;
+-                fake_stat->inode = inode;
+-                fake_stat->mode = ishstat.mode;
+-                fake_stat->uid = ishstat.uid;
+-                fake_stat->gid = ishstat.gid;
+-                fake_stat->rdev = ishstat.rdev;
+-                return 0;
+-            }
+-        }
+-        return _ENOENT;
++        /* A cold inode must reach the same translated-host stat path as
++         * a cached inode; physical rootfs lookup would inspect hidden HOME. */
++        if (!is_under_bind_mount(path) || bind_mount_ensure_inode(fs, mount, path) == 0)
++            return _ENOENT;
++        db_begin_read(fs);
++        if (!path_read_stat(fs, path, &ishstat, &inode)) {
++            db_rollback(fs);
++            return _ENOENT;
++        }
+     }
+     int err;
+     char host_stat_path[PATH_MAX];
+@@ -804,7 +823,12 @@
+             db_commit(fs);
+             return errno_map();
+         }
+-        /* Copy basic fields from real stat */
++        /* Copy basic fields from real stat, including the cold-inode path. */
++        memset(fake_stat, 0, sizeof(*fake_stat));
++        fake_stat->blocks = real_stat.st_blocks;
++        fake_stat->atime_nsec = real_stat.st_atimespec.tv_nsec;
++        fake_stat->mtime_nsec = real_stat.st_mtimespec.tv_nsec;
++        fake_stat->ctime_nsec = real_stat.st_ctimespec.tv_nsec;
+         fake_stat->size = real_stat.st_size;
+         fake_stat->nlink = real_stat.st_nlink;
+         fake_stat->atime = real_stat.st_atimespec.tv_sec;
+@@ -911,8 +935,14 @@
+         }
+         (void)err;
+     }
+-    if (attr.type == attr_size)
++    if (attr.type == attr_size) {
++        if (bind_mount_translate_path(path, host_abs_chk, sizeof(host_abs_chk))) {
++            if (truncate(host_abs_chk, attr.size) < 0) return errno_map();
++            fakefs_record_change(path, FAKEFS_CHANGE_OP_TRUNCATE);
++            return 0;
++        }
+         return realfs.setattr(mount, path, attr);
++    }
+     db_begin_read(fs);
+     struct ish_stat ishstat;
+     ino_t inode;
+@@ -1011,7 +1041,9 @@
+ 
+ static ssize_t file_readlink(struct mount *mount, const char *path, char *buf, size_t bufsize) {
+     // broken symlinks can't be included in an iOS app or else Xcode craps out
+-    int fd = openat(mount->root_fd, fix_path(path), O_RDONLY);
++    char host_abs[PATH_MAX];
++    int fd = bind_mount_translate_path(path, host_abs, sizeof(host_abs))
++        ? open(host_abs, O_RDONLY) : openat(mount->root_fd, fix_path(path), O_RDONLY);
+     if (fd < 0)
+         return errno_map();
+     int err = read(fd, buf, bufsize);
+@@ -1033,9 +1065,14 @@
+         db_rollback(fs);
+         return _EINVAL;
+     }
+-    ssize_t err = realfs.readlink(mount, path, buf, bufsize);
+-    if (err == _EINVAL)
++    char host_abs[PATH_MAX];
++    ssize_t err;
++    if (bind_mount_translate_path(path, host_abs, sizeof(host_abs))) {
+         err = file_readlink(mount, path, buf, bufsize);
++    } else {
++        err = realfs.readlink(mount, path, buf, bufsize);
++        if (err == _EINVAL) err = file_readlink(mount, path, buf, bufsize);
++    }
+     db_commit(fs);
+     return err;
+ }
+@@ -1169,6 +1206,56 @@
+     unlinkat(dir_fd, path, AT_REMOVEDIR);
+ }
+ 
++/* Child mounts are table-only overlays. A physical link below an already
++ * bound HOME would delete the real host directory and replace it with a
++ * self-link. The longest-prefix translator handles these overlays instead. */
++static bool lx_mount_has_parent(const char *path) {
++    for (int i = 0; i < FAKEFS_MAX_BIND_MOUNTS; i++) {
++        const struct fakefs_bind_mount *parent = &g_bind_mounts[i];
++        if (parent->active && strlen(path) > (size_t)parent->path_len &&
++            !strncmp(path, parent->path, parent->path_len) && path[parent->path_len] == '/')
++            return true;
++    }
++    return false;
++}
++
++static int lx_mount_install_link(struct fakefs_bind_mount *mount,
++                                 const char *linux_path, const char *host_path,
++                                 bool replacing) {
++    if (!mount->materialized) return 0;
++    char leaf[PATH_MAX];
++    int parent = lx_mount_parent_fd(g_fakefs_mount->root_fd, fix_path(linux_path), leaf);
++    if (parent < 0) return _EBUSY;
++    if (replacing) {
++        struct stat state;
++        if (fstatat(parent, leaf, &state, AT_SYMLINK_NOFOLLOW) == 0) {
++            if (!lx_mount_link_matches(parent, leaf, mount->owned_link_target) ||
++                unlinkat(parent, leaf, 0) < 0) {
++                close(parent);
++                return _EBUSY;
++            }
++        } else if (errno != ENOENT) {
++            close(parent);
++            return _EBUSY;
++        }
++    } else {
++        /* Every parent was opened with O_NOFOLLOW. No HOME, overlay or guest
++         * symlink can redirect this cleanup into persistent host storage. */
++        remove_tree_at(parent, leaf);
++    }
++    int result = create_relative_symlink(parent, leaf, host_path);
++    if (result == 0) {
++        ssize_t count = readlinkat(parent, leaf, mount->owned_link_target,
++                                  sizeof(mount->owned_link_target) - 1);
++        if (count < 0 || (size_t)count >= sizeof(mount->owned_link_target) - 1)
++            result = -1;
++        else
++            mount->owned_link_target[count] = '\0';
++    }
++    close(parent);
++    return result < 0 ? _EINVAL : 0;
++}
++
+ int fakefs_bind_mount(const char *linux_path, const char *host_path, bool read_only) {
+     fprintf(stderr, "fakefs_bind_mount: ENTER linux_path=\"%s\" (len=%zu) host_path=\"%s\" (len=%zu) read_only=%d\n",
+             linux_path, strlen(linux_path), host_path, strlen(host_path), read_only ? 1 : 0);
+@@ -1223,6 +1310,12 @@
+         if (g_bind_mounts[i].active &&
+             strcmp(g_bind_mounts[i].path, linux_path) == 0) {
+             bool host_changed = strcmp(g_bind_mounts[i].host_path, host_path) != 0;
++            if (host_changed) {
++                int err = lx_mount_install_link(&g_bind_mounts[i], linux_path, host_path, true);
++                if (err < 0) return err; /* Retain old route, mode and owner on conflict. */
++                strlcpy(g_bind_mounts[i].host_path, host_path, sizeof(g_bind_mounts[i].host_path));
++                g_bind_mounts[i].host_path_len = strlen(host_path);
++            }
+             /* Always refresh the read-only flag — the user may have flipped
+              * writability in Settings without changing anything else. */
+             g_bind_mounts[i].read_only = read_only;
+@@ -1259,25 +1352,6 @@
+                 fprintf(stderr, "fakefs_bind_mount: slot[%d] already mounted with same host_path, mode refreshed\n", i);
+                 return 0;
+             }
+-            /* host_path changed (e.g. session switch) — update slot and symlink */
+-            fprintf(stderr, "fakefs_bind_mount: slot[%d] host_path changed from \"%s\" to \"%s\"\n",
+-                    i, g_bind_mounts[i].host_path, host_path);
+-            strlcpy(g_bind_mounts[i].host_path, host_path,
+-                    sizeof(g_bind_mounts[i].host_path));
+-            g_bind_mounts[i].host_path_len = strlen(host_path);
+-
+-            char host_link[PATH_MAX];
+-            snprintf(host_link, sizeof(host_link), "%s", fix_path(linux_path));
+-            fprintf(stderr, "fakefs_bind_mount: slot[%d] UPDATE symlink: host_link=\"%s\" -> host_path=\"%s\" (root_fd=%d)\n",
+-                    i, host_link, host_path, g_fakefs_mount->root_fd);
+-            /* Remove whatever is at the path (file, symlink, or directory tree) */
+-            remove_tree_at(g_fakefs_mount->root_fd, host_link);
+-            int err = create_relative_symlink(g_fakefs_mount->root_fd, host_link, host_path);
+-            fprintf(stderr, "fakefs_bind_mount: slot[%d] symlinkat returned %d (errno=%d)\n", i, err, err < 0 ? errno : 0);
+-            if (err < 0) {
+-                g_bind_mounts[i].active = false;
+-                return _EINVAL;
+-            }
+             return 0;
+         }
+     }
+@@ -1295,33 +1369,11 @@
+             g_bind_mounts[i].active = true;
+             g_bind_mounts[i].read_only = read_only;
+ 
+-            /* Create symlink on host: data/<linux_path> -> <host_path>
+-             * First remove any existing file/dir at the path (may be non-empty) */
+-            char host_link[PATH_MAX];
+-            snprintf(host_link, sizeof(host_link), "%s", fix_path(linux_path));
+-
+-            fprintf(stderr, "fakefs_bind_mount: slot[%d] NEW symlink: host_link=\"%s\" -> host_path=\"%s\" (root_fd=%d)\n",
+-                    i, host_link, host_path, g_fakefs_mount->root_fd);
+-
+-            /* Remove whatever is at the path (file, symlink, or directory tree) */
+-            remove_tree_at(g_fakefs_mount->root_fd, host_link);
+-
+-            /* Create the symlink (relative path to avoid iOS sandbox issues) */
+-            int err = create_relative_symlink(g_fakefs_mount->root_fd, host_link, host_path);
+-            fprintf(stderr, "fakefs_bind_mount: slot[%d] symlinkat returned %d (errno=%d)\n", i, err, err < 0 ? errno : 0);
++            g_bind_mounts[i].materialized = !lx_mount_has_parent(linux_path);
++            int err = lx_mount_install_link(&g_bind_mounts[i], linux_path, host_path, false);
+             if (err < 0) {
+                 g_bind_mounts[i].active = false;
+-                return _EINVAL;
+-            }
+-
+-            /* Verify the symlink was created correctly */
+-            char readbuf[PATH_MAX];
+-            ssize_t rlen = readlinkat(g_fakefs_mount->root_fd, host_link, readbuf, sizeof(readbuf) - 1);
+-            if (rlen > 0) {
+-                readbuf[rlen] = '\0';
+-                fprintf(stderr, "fakefs_bind_mount: slot[%d] VERIFY readlinkat(\"%s\") => \"%s\"\n", i, host_link, readbuf);
+-            } else {
+-                fprintf(stderr, "fakefs_bind_mount: slot[%d] VERIFY readlinkat(\"%s\") FAILED (errno=%d)\n", i, host_link, errno);
++                return err;
+             }
+ 
+             /* Ensure the mount point exists in meta.db (dir or file), with the
+@@ -1366,13 +1418,24 @@
+     for (int i = 0; i < FAKEFS_MAX_BIND_MOUNTS; i++) {
+         if (g_bind_mounts[i].active &&
+             strcmp(g_bind_mounts[i].path, linux_path) == 0) {
++            if (g_bind_mounts[i].materialized) {
++                char leaf[PATH_MAX];
++                int parent = lx_mount_parent_fd(g_fakefs_mount->root_fd, fix_path(linux_path), leaf);
++                if (parent < 0) return _EBUSY;
++                struct stat state;
++                if (fstatat(parent, leaf, &state, AT_SYMLINK_NOFOLLOW) == 0) {
++                    if (!lx_mount_link_matches(parent, leaf, g_bind_mounts[i].owned_link_target) ||
++                        unlinkat(parent, leaf, 0) < 0) {
++                        close(parent);
++                        return _EBUSY;
++                    }
++                } else if (errno != ENOENT) {
++                    close(parent);
++                    return _EBUSY;
++                }
++                close(parent);
++            }
+             g_bind_mounts[i].active = false;
+-
+-            /* Remove the symlink */
+-            char host_link[PATH_MAX];
+-            snprintf(host_link, sizeof(host_link), "%s", fix_path(linux_path));
+-            unlinkat(g_fakefs_mount->root_fd, host_link, 0);
+-
+             return 0;
+         }
+     }

@@ -64,6 +64,10 @@ impl AndroidProotRuntime {
             ),
         ]);
         child_env.extend(env.iter().map(|(key, value)| (key.clone(), value.clone())));
+        child_env.insert(
+            "LINGXI_RUNTIME_OWNER_PID".to_string(),
+            std::process::id().to_string(),
+        );
         if let Some(native_lib_dir) = proot.parent() {
             child_env.insert(
                 "LD_LIBRARY_PATH".to_string(),

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Reproducible iSH native support. All mutable work is confined to explicit cache/output."""
-import argparse, hashlib, json, os, pathlib, plistlib, shutil, subprocess, sys, tarfile, tempfile
+import argparse, hashlib, json, os, pathlib, plistlib, shutil, sqlite3, stat, struct, subprocess, sys, tarfile, tempfile
 sys.dont_write_bytecode = True
 from sdk_artifact_identity import source_identity
 P=pathlib.Path
@@ -23,12 +23,16 @@ PATCH_MARKERS = {
         'lx_ish_guest_execution_context_active',
     ),
 }
+SOURCE_PATCH_MARKERS = {
+    'fs/fake.c': ('lx_mount_install_link', 'owned_link_target'),
+    'fs/lx_mount_path_guard.h': ('lx_mount_parent_fd', 'lx_mount_link_matches'),
+}
 
 def prepared_work_matches(work, identity):
     marker = work/'prepared'
     if not marker.is_file() or marker.read_text() != identity:
         return False
-    for relative, symbols in PATCH_MARKERS.items():
+    for relative, symbols in {**PATCH_MARKERS, **SOURCE_PATCH_MARKERS}.items():
         source = work/'ish'/relative
         if not source.is_file(): return False
         text = source.read_text()
@@ -62,6 +66,8 @@ def prepare(cache):
         if sha(SDK/'native/ios/upstream/openminis'/name)!=digest: raise SystemExit('upstream source hash mismatch: '+name)
     for name,digest in pins['patches'].items():
         if sha(SDK/'native/ios/patches'/name)!=digest: raise SystemExit('patch hash mismatch: '+name)
+    for name,digest in pins.get('support_files', {}).items():
+        if sha(SDK/'native/ios'/name)!=digest: raise SystemExit('support file hash mismatch: '+name)
     identity=hashlib.sha256(PINS.read_bytes()+P(__file__).read_bytes()).hexdigest()
     work=cache/'work'/identity[:20];ish=work/'ish';glue=work/'openminis'
     if not prepared_work_matches(work,identity):
@@ -69,9 +75,10 @@ def prepare(cache):
         copytree(source('ish',pins,cache),ish)
         for name in ['libapps','libarchive']: copytree(source(name,pins,cache),ish/'deps'/name)
         copytree(SDK/'native/ios/upstream/openminis',glue)
-        for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch','ish-mobile-mount-owner.patch'):
+        for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch','ish-mobile-mount-owner.patch','ish-nondestructive-mounts.patch','ish-truncate-cwd.patch','ish-covered-path-preservation.patch'):
             apply_source_patch(ish,name)
-        for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch','openminis-default-user.patch','openminis-pty-exit-identity.patch'):
+        shutil.copy2(SDK/'native/ios/lx_mount_path_guard.h',ish/'fs/lx_mount_path_guard.h')
+        for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch','openminis-default-user.patch','openminis-pty-exit-identity.patch','openminis-process-exit-leader.patch'):
             apply_source_patch(glue,name)
         (work/'prepared').write_text(identity)
         if not prepared_work_matches(work,identity):
@@ -165,6 +172,17 @@ def framework(output,cache,configuration,simulator_only):
     artifacts={str(p.relative_to(output)):sha(p) for base in [result,licenses,provenance] for p in base.rglob('*') if p.is_file()}
     (output/'native-support-manifest.json').write_text(json.dumps({'schema_version':1,'kind':'native-support','contains_rust':False,'source_revision':revision,'source_dirty':dirty,'source_file_sha256':source_hashes,'source_manifest_sha256':sha(PINS),'configuration':configuration,'slices':[entry[0]+'-'+entry[1] for entry in libraries],'artifacts':artifacts},indent=2)+'\n')
 
+def verify_fakefs_root(rootfs):
+    database = (rootfs/'meta.db').resolve(strict=True)
+    with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as connection:
+        row = connection.execute("select stat from paths join stats using(inode) where path=x''").fetchone()
+    if row is None or len(row[0]) != 16:
+        raise ValueError('fakefs root metadata is missing or malformed')
+    mode, = struct.unpack('<I', row[0][:4])
+    if not stat.S_ISDIR(mode) or not (rootfs/'data').is_dir():
+        raise ValueError('fakefs root must have directory type, not just permission bits')
+    return mode
+
 def rootfs(archive,output,cache,native_output,profile,expected_sha256):
     output.mkdir(parents=True,exist_ok=True)
     run(['python3',SDK/'scripts/rootfs/verify-rootfs-profile.py','--archive',archive,'--arch','aarch64','--profile',profile,'--sha256',expected_sha256,'--receipt',output/'archive-verification.json'])
@@ -178,6 +196,7 @@ def rootfs(archive,output,cache,native_output,profile,expected_sha256):
     user_archive=output/'guest-user-rootfs.tar.gz'
     run(['python3',SDK/'scripts/rootfs/guest_user.py','--archive',archive,'--output',user_archive,'--arch','aarch64','--cache',cache/'guest-user-apks'])
     run([build/'tools/fakefsify',user_archive,dest],env=env)
+    verify_fakefs_root(dest)
     (resources/'default_mount').mkdir(exist_ok=True)
     for name in ['RootfsPatch.bundle','libvdso.so.elf']:
         src=native_output/'resources'/name

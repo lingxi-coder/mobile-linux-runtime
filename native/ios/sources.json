@@ -68,7 +68,11 @@
     "openminis-generic-environment.patch": "8d1e6fbebe0f0351177ca2c71af01a93c2576334e4c3c4a872718cb7f83bab09",
     "openminis-default-user.patch": "57d5775f1abc23a02c7ce7c659be8c8d307f8a6f9084a2caee645e34ff6c9988",
     "ish-mobile-mount-owner.patch": "7a1abbe65fe41c27d008bb3e21c9210c61d20ed57d636194d42ae075e61ddbdd",
-    "openminis-pty-exit-identity.patch": "d49565eca771fe260919f9851273a6c136415f4b1f3da96cf4430cb3ee12ce35"
+    "openminis-pty-exit-identity.patch": "d49565eca771fe260919f9851273a6c136415f4b1f3da96cf4430cb3ee12ce35",
+    "ish-nondestructive-mounts.patch": "2799229e385dfea9bd23d394c56ae98e552a698426187402f8d05a78bc27afe1",
+    "openminis-process-exit-leader.patch": "dcbd0f1911a3b8852bff3e9885a63e7f69eb09c37539e11fb657cd40c68e63ff",
+    "ish-truncate-cwd.patch": "423951869aedd58425e702a11c9bec24650256edc744b7d6291122b093b94149",
+    "ish-covered-path-preservation.patch": "0c875fdd642b4f6011853a8992c40e41185ea41360f547aab4ba469d6c68a9a3"
   },
   "features": {
     "native_apple_offloads": false,
@@ -78,5 +82,8 @@
     "environment": "caller values replace defaults; no product browser or Apple offloads",
     "default_user": "lingxi uid/gid 1000; root init; passwordless guest doas",
     "pty_exit": "PID and launch generation identify PTY exits; delayed helper/previous-session exits are ignored"
+  },
+  "support_files": {
+    "lx_mount_path_guard.h": "f79c63e0a86f0655ffa772d127ec498098cfb9b666a9fbc380c6eb715d21f86a"
   }
 }

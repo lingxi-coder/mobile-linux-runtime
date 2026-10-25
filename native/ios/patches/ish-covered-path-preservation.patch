@@ -1,0 +1,519 @@
+--- a/fs/fake.c
++++ b/fs/fake.c
+@@ -49,120 +49,122 @@
+     size_t last_slash = 0;
+     for (size_t i = 0; link_dir[i] && abs_target[i]; i++) {
+         if (link_dir[i] != abs_target[i])
+             break;
+         common = i + 1;
+         if (link_dir[i] == '/')
+             last_slash = common;
+     }
+     /* If both ended at common, check for trailing slash boundary */
+     if (link_dir[common] == '\0' && abs_target[common] == '/') {
+         last_slash = common;
+     } else if (abs_target[common] == '\0' && link_dir[common] == '/') {
+         last_slash = common;
+     } else {
+         common = last_slash;
+     }
+ 
+     /* Count remaining '/' in link_dir after common prefix => number of "../" */
+     int ups = 0;
+     for (const char *p = link_dir + common; *p; p++) {
+         if (*p == '/')
+             ups++;
+     }
+     /* If link_dir doesn't end with '/', the last component is the dir name */
+     size_t ld_len = strlen(link_dir);
+     if (ld_len > 0 && link_dir[ld_len - 1] != '/')
+         ups++;
+ 
+     out[0] = '\0';
+     for (int i = 0; i < ups; i++) {
+         if (i == 0)
+             strlcpy(out, "..", out_size);
+         else
+             strlcat(out, "/..", out_size);
+     }
+ 
+     /* Append the remainder of abs_target after common prefix */
+     const char *suffix = abs_target + common;
+     if (*suffix == '/') suffix++; /* skip leading slash */
+     if (*suffix) {
+         if (ups > 0) strlcat(out, "/", out_size);
+         strlcat(out, suffix, out_size);
+     }
+ 
+     if (out[0] == '\0') {
+         strlcpy(out, ".", out_size);
+     }
+ 
+     return 0;
+ }
+ 
+ struct fakefs_bind_mount {
+     char path[PATH_MAX];      /* Linux path prefix, e.g. "/var/minis/offloads" */
+     char host_path[PATH_MAX]; /* Resolved host path the symlink points to */
+     int  path_len;
+     int  host_path_len;
+     bool active;
+     bool read_only;           /* Reject write syscalls with EROFS at fakefs layer. */
+     bool materialized;        /* Only rootfs-owned top-level mounts have links. */
+     char owned_link_target[PATH_MAX];
++    inode_t covered_inode;
++    struct ish_stat covered_stat;
+ };
+ 
+ static struct fakefs_bind_mount g_bind_mounts[FAKEFS_MAX_BIND_MOUNTS];
+ struct mount *g_fakefs_mount = NULL;
+ 
+ /* Optional host-provided override hooks for guest↔host path translation.
+  * NULL unless host registers via fakefs_set_path_*_hook(). Defined here
+  * (before resolve_path() / bind_mount_translate_path() so both directions
+  * can consult them). */
+ static _Atomic(fakefs_path_translate_hook_t) g_path_translate_hook = NULL;
+ static _Atomic(fakefs_path_reverse_hook_t) g_path_reverse_hook = NULL;
+ 
+ void fakefs_set_path_translate_hook(fakefs_path_translate_hook_t hook) {
+     atomic_store_explicit(&g_path_translate_hook, hook, memory_order_release);
+ }
+ 
+ void fakefs_set_path_reverse_hook(fakefs_path_reverse_hook_t hook) {
+     atomic_store_explicit(&g_path_reverse_hook, hook, memory_order_release);
+ }
+ 
+ /* Absolute host path of the fakefs `data/` directory, registered by the
+  * host via fakefs_set_rootfs_data_path() at boot. Used to detect
+  * "self-containing" bind mounts in fakefs_bind_mount_resolve_path() —
+  * a mount whose host_path is an ancestor of g_rootfs_data_path would
+  * cause every rootfs-internal fd to be reverse-mapped under that mount,
+  * which is never what the caller wants. Empty string means "no rootfs
+  * path registered" (suppression is disabled). */
+ static char g_rootfs_data_path[PATH_MAX] = {0};
+ static int g_rootfs_data_path_len = 0;
+ 
+ void fakefs_set_rootfs_data_path(const char *abs_host_path) {
+     if (abs_host_path == NULL || abs_host_path[0] == '\0') {
+         g_rootfs_data_path[0] = '\0';
+         g_rootfs_data_path_len = 0;
+         fprintf(stderr, "fakefs: rootfs_data_path cleared\n");
+         return;
+     }
+     /* Strip any trailing slash so prefix arithmetic below works uniformly:
+      * the ancestor check compares host_path[hlen] against '/' to enforce
+      * a path-component boundary, which fails if g_rootfs_data_path itself
+      * ends in '/' (it generally won't, but be defensive). */
+     size_t n = strlen(abs_host_path);
+     while (n > 1 && abs_host_path[n - 1] == '/') n--;
+     if (n + 1 > sizeof(g_rootfs_data_path)) {
+         fprintf(stderr,
+                 "fakefs: rootfs_data_path too long (%zu chars, max %zu) — ignored\n",
+                 n, sizeof(g_rootfs_data_path) - 1);
+         return;
+     }
+     memcpy(g_rootfs_data_path, abs_host_path, n);
+     g_rootfs_data_path[n] = '\0';
+     g_rootfs_data_path_len = (int)n;
+     fprintf(stderr, "fakefs: rootfs_data_path registered \"%s\" (len=%d)\n",
+             g_rootfs_data_path, g_rootfs_data_path_len);
+ }
+ 
+ /* True if `host_path` is an ancestor of (or equal to) the registered
+  * fakefs data directory. Returns false when no rootfs path is
+  * registered, so the guard is a no-op until the host opts in. */
+ static bool fakefs_host_path_contains_rootfs(const char *host_path, int host_path_len) {
+@@ -1122,183 +1124,165 @@
+         /* Auto-create for bind-mounted paths */
+         if (is_under_bind_mount(entry_path)) {
+             entry->inode = bind_mount_ensure_inode(fs, fd->mount, entry_path);
+         }
+         /* Still no inode? Skip this entry to avoid crashes */
+         if (entry->inode == 0)
+             goto retry;
+     }
+     return res;
+ }
+ 
+ static struct fd_ops fakefs_fdops;
+ static void __attribute__((constructor)) init_fake_fdops() {
+     fakefs_fdops = realfs_fdops;
+     fakefs_fdops.readdir = fakefs_readdir;
+ }
+ 
+ /* ===== Public Bind Mount API ===== */
+ 
+ /* Create a relative symlink at root_fd/host_link -> host_path.
+  * Computes a relative target so openat() can follow the symlink
+  * without escaping the sandbox (absolute symlinks fail on iOS). */
+ static int create_relative_symlink(int root_fd, const char *host_link,
+                                     const char *host_path) {
+     /* Get the absolute path of root_fd (F_GETPATH resolves symlinks,
+      * e.g. /var -> /private/var on iOS) */
+     char root_abs[PATH_MAX];
+     if (fcntl(root_fd, F_GETPATH, root_abs) != 0) {
+         fprintf(stderr, "create_relative_symlink: F_GETPATH failed\n");
+         /* Fall back to absolute symlink */
+         return symlinkat(host_path, root_fd, host_link);
+     }
+ 
+     /* Resolve host_path too, so both paths use the same prefix
+      * (e.g. both /private/var/... instead of mixing /var/... and /private/var/...) */
+     char host_real[PATH_MAX];
+     if (realpath(host_path, host_real) == NULL) {
+         fprintf(stderr, "create_relative_symlink: realpath(%s) failed, falling back\n", host_path);
+         return symlinkat(host_path, root_fd, host_link);
+     }
+ 
+     /* Build the absolute path of the symlink's parent directory */
+     char link_abs[PATH_MAX];
+     snprintf(link_abs, sizeof(link_abs), "%s/%s", root_abs, host_link);
+     /* Strip the last component to get the parent dir */
+     char *last_slash = strrchr(link_abs, '/');
+     if (last_slash) *last_slash = '\0';
+ 
+     /* Compute relative path from link parent dir to host_path */
+     char rel_target[PATH_MAX];
+     compute_relative_path(link_abs, host_real, rel_target, sizeof(rel_target));
+ 
+     fprintf(stderr, "create_relative_symlink: \"%s\" -> \"%s\" (relative: \"%s\")\n",
+             host_link, host_path, rel_target);
+ 
+     return symlinkat(rel_target, root_fd, host_link);
+ }
+ 
+ /* Recursively remove a directory tree relative to dir_fd.
+  * Handles non-empty directories that unlinkat(AT_REMOVEDIR) can't delete. */
+-static void remove_tree_at(int dir_fd, const char *path) {
+-    int fd = openat(dir_fd, path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW);
+-    if (fd < 0) {
+-        /* Not a directory or doesn't exist — try plain unlink */
+-        unlinkat(dir_fd, path, 0);
+-        return;
+-    }
+-    DIR *dir = fdopendir(fd);
+-    if (!dir) {
+-        close(fd);
+-        unlinkat(dir_fd, path, 0);
+-        return;
+-    }
+-    struct dirent *ent;
+-    while ((ent = readdir(dir)) != NULL) {
+-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+-            continue;
+-        if (ent->d_type == DT_DIR) {
+-            remove_tree_at(dirfd(dir), ent->d_name);
+-        } else {
+-            unlinkat(dirfd(dir), ent->d_name, 0);
+-        }
+-    }
+-    closedir(dir); /* also closes fd */
+-    unlinkat(dir_fd, path, AT_REMOVEDIR);
+-}
+-
+ /* Child mounts are table-only overlays. A physical link below an already
+  * bound HOME would delete the real host directory and replace it with a
+  * self-link. The longest-prefix translator handles these overlays instead. */
+ static bool lx_mount_has_parent(const char *path) {
+     for (int i = 0; i < FAKEFS_MAX_BIND_MOUNTS; i++) {
+         const struct fakefs_bind_mount *parent = &g_bind_mounts[i];
+         if (parent->active && strlen(path) > (size_t)parent->path_len &&
+             !strncmp(path, parent->path, parent->path_len) && path[parent->path_len] == '/')
+             return true;
+     }
+     return false;
+ }
+ 
+ static int lx_mount_install_link(struct fakefs_bind_mount *mount,
+                                  const char *linux_path, const char *host_path,
+                                  bool replacing) {
+     if (!mount->materialized) return 0;
+     char leaf[PATH_MAX];
+     int parent = lx_mount_parent_fd(g_fakefs_mount->root_fd, fix_path(linux_path), leaf);
+     if (parent < 0) return _EBUSY;
+     if (replacing) {
+         struct stat state;
+         if (fstatat(parent, leaf, &state, AT_SYMLINK_NOFOLLOW) == 0) {
+             if (!lx_mount_link_matches(parent, leaf, mount->owned_link_target) ||
+                 unlinkat(parent, leaf, 0) < 0) {
+                 close(parent);
+                 return _EBUSY;
+             }
+         } else if (errno != ENOENT) {
+             close(parent);
+             return _EBUSY;
+         }
+     } else {
+-        /* Every parent was opened with O_NOFOLLOW. No HOME, overlay or guest
+-         * symlink can redirect this cleanup into persistent host storage. */
+-        remove_tree_at(parent, leaf);
++        /* Existing guest content is hidden by the table overlay, never
++         * removed to make a symlink. Unmount exposes the same file/directory. */
++        struct stat covered;
++        if (fstatat(parent, leaf, &covered, AT_SYMLINK_NOFOLLOW) == 0) {
++            mount->materialized = false;
++            close(parent);
++            return 0;
++        }
++        if (errno != ENOENT) {
++            close(parent);
++            return _EBUSY;
++        }
+     }
+     int result = create_relative_symlink(parent, leaf, host_path);
+     if (result == 0) {
+         ssize_t count = readlinkat(parent, leaf, mount->owned_link_target,
+                                   sizeof(mount->owned_link_target) - 1);
+         if (count < 0 || (size_t)count >= sizeof(mount->owned_link_target) - 1)
+             result = -1;
+         else
+             mount->owned_link_target[count] = '\0';
+     }
+     close(parent);
+     return result < 0 ? _EINVAL : 0;
+ }
+ 
+ int fakefs_bind_mount(const char *linux_path, const char *host_path, bool read_only) {
+     fprintf(stderr, "fakefs_bind_mount: ENTER linux_path=\"%s\" (len=%zu) host_path=\"%s\" (len=%zu) read_only=%d\n",
+             linux_path, strlen(linux_path), host_path, strlen(host_path), read_only ? 1 : 0);
+ 
+     if (g_fakefs_mount == NULL) {
+         fprintf(stderr, "fakefs_bind_mount: FAIL g_fakefs_mount is NULL\n");
+         return _ENODEV;
+     }
+ 
+     const char *fixed = fix_path(linux_path);
+     fprintf(stderr, "fakefs_bind_mount: fix_path(\"%s\") => \"%s\" (len=%zu)\n",
+             linux_path, fixed, strlen(fixed));
+ 
+     /* Log root_fd info for context */
+     {
+         char fd_path[PATH_MAX];
+         if (fcntl(g_fakefs_mount->root_fd, F_GETPATH, fd_path) == 0) {
+             fprintf(stderr, "fakefs_bind_mount: root_fd=%d path=\"%s\"\n",
+                     g_fakefs_mount->root_fd, fd_path);
+         } else {
+             fprintf(stderr, "fakefs_bind_mount: root_fd=%d (F_GETPATH failed)\n",
+                     g_fakefs_mount->root_fd);
+         }
+     }
+ 
+     /* Verify host path exists (directory or regular file) */
+     struct stat st;
+     if (stat(host_path, &st) < 0) {
+         fprintf(stderr, "fakefs_bind_mount: FAIL host_path does not exist\n");
+         return _ENOENT;
+     }
+     bool is_file_mount = S_ISREG(st.st_mode);
+     if (!S_ISDIR(st.st_mode) && !is_file_mount) {
+         fprintf(stderr, "fakefs_bind_mount: FAIL host_path is neither a dir nor a regular file\n");
+         return _ENOENT;
+     }
+ 
+     /* Resolve symlinks in host_path so it matches what F_GETPATH returns.
+      * e.g. ~/Library/GroupContainersAlias/... -> ~/Library/Group Containers/... */
+     char resolved_host[PATH_MAX];
+     if (realpath(host_path, resolved_host) != NULL)
+         host_path = resolved_host;
+ 
+     /* Compute the meta.db mode for the top-level mount point based on whether
+      * the mount is read-only and whether it's a file or directory. */
+     uint32_t dir_mode = read_only ? 0555 : 0755;
+@@ -1312,186 +1296,197 @@
+             bool host_changed = strcmp(g_bind_mounts[i].host_path, host_path) != 0;
+             if (host_changed) {
+                 int err = lx_mount_install_link(&g_bind_mounts[i], linux_path, host_path, true);
+                 if (err < 0) return err; /* Retain old route, mode and owner on conflict. */
+                 strlcpy(g_bind_mounts[i].host_path, host_path, sizeof(g_bind_mounts[i].host_path));
+                 g_bind_mounts[i].host_path_len = strlen(host_path);
+             }
+             /* Always refresh the read-only flag — the user may have flipped
+              * writability in Settings without changing anything else. */
+             g_bind_mounts[i].read_only = read_only;
+ 
+             /* Always refresh the meta.db mode — the read-only flag may have
+              * flipped even if host_path is unchanged (e.g. user toggled
+              * writability in Settings). */
+             {
+                 struct fakefs_db *fs = &g_fakefs_mount->fakefs;
+                 db_begin_write(fs);
+                 inode_t existing = path_get_inode(fs, linux_path);
+                 if (existing != 0) {
+                     struct ish_stat prev;
+                     if (inode_read_stat_if_exist(fs, existing, &prev)) {
+                         prev.mode = top_mode;
+                         prev.uid = prev.gid = lx_guest_path_owner(linux_path);
+                         inode_write_stat(fs, existing, &prev);
+                         fprintf(stderr, "fakefs_bind_mount: slot[%d] updated meta.db mode to 0%o\n",
+                                 i, top_mode & 07777);
+                     }
+                 } else {
+                     struct ish_stat ishstat = {
+                         .mode = top_mode, .uid = lx_guest_path_owner(linux_path),
+                         .gid = lx_guest_path_owner(linux_path), .rdev = 0
+                     };
+                     path_create(fs, linux_path, &ishstat);
+                     fprintf(stderr, "fakefs_bind_mount: slot[%d] created meta.db entry with mode 0%o\n",
+                             i, top_mode & 07777);
+                 }
+                 db_commit(fs);
+             }
+ 
+             if (!host_changed) {
+                 fprintf(stderr, "fakefs_bind_mount: slot[%d] already mounted with same host_path, mode refreshed\n", i);
+                 return 0;
+             }
+             return 0;
+         }
+     }
+ 
+     /* Find a free slot */
+     for (int i = 0; i < FAKEFS_MAX_BIND_MOUNTS; i++) {
+         if (!g_bind_mounts[i].active) {
+             fprintf(stderr, "fakefs_bind_mount: using free slot[%d]\n", i);
+             strlcpy(g_bind_mounts[i].path, linux_path,
+                     sizeof(g_bind_mounts[i].path));
+             g_bind_mounts[i].path_len = strlen(linux_path);
+             strlcpy(g_bind_mounts[i].host_path, host_path,
+                     sizeof(g_bind_mounts[i].host_path));
+             g_bind_mounts[i].host_path_len = strlen(host_path);
+             g_bind_mounts[i].active = true;
+             g_bind_mounts[i].read_only = read_only;
+ 
++            g_bind_mounts[i].covered_inode = 0;
+             g_bind_mounts[i].materialized = !lx_mount_has_parent(linux_path);
+             int err = lx_mount_install_link(&g_bind_mounts[i], linux_path, host_path, false);
+             if (err < 0) {
+                 g_bind_mounts[i].active = false;
+                 return err;
+             }
+ 
+             /* Ensure the mount point exists in meta.db (dir or file), with the
+              * correct mode based on the read_only flag. If an entry already
+              * exists from a previous run we rewrite the mode so the read-only
+              * state always matches what Settings says. */
+             struct fakefs_db *fs = &g_fakefs_mount->fakefs;
+             db_begin_write(fs);
+             inode_t ino = path_get_inode(fs, linux_path);
+             if (ino == 0) {
+                 struct ish_stat ishstat = {
+                     .mode = top_mode, .uid = lx_guest_path_owner(linux_path),
+                         .gid = lx_guest_path_owner(linux_path), .rdev = 0
+                 };
+                 path_create(fs, linux_path, &ishstat);
+                 fprintf(stderr, "fakefs_bind_mount: slot[%d] created meta.db entry for \"%s\" mode=0%o\n",
+                         i, linux_path, top_mode & 07777);
+             } else {
+                 struct ish_stat prev;
+                 if (inode_read_stat_if_exist(fs, ino, &prev)) {
++                    g_bind_mounts[i].covered_inode = ino;
++                    g_bind_mounts[i].covered_stat = prev;
+                     prev.mode = top_mode;
+                         prev.uid = prev.gid = lx_guest_path_owner(linux_path);
+                     inode_write_stat(fs, ino, &prev);
+                 }
+                 fprintf(stderr, "fakefs_bind_mount: slot[%d] meta.db entry refreshed for \"%s\" (inode=%lld) mode=0%o\n",
+                         i, linux_path, (long long)ino, top_mode & 07777);
+             }
+             db_commit(fs);
+ 
+             return 0;
+         }
+     }
+ 
+     fprintf(stderr, "fakefs_bind_mount: FAIL no free slots (max=%d)\n", FAKEFS_MAX_BIND_MOUNTS);
+     return _ENOMEM; /* no free slots */
+ }
+ 
+ int fakefs_bind_unmount(const char *linux_path) {
+     if (g_fakefs_mount == NULL)
+         return _ENODEV;
+ 
+     for (int i = 0; i < FAKEFS_MAX_BIND_MOUNTS; i++) {
+         if (g_bind_mounts[i].active &&
+             strcmp(g_bind_mounts[i].path, linux_path) == 0) {
+             if (g_bind_mounts[i].materialized) {
+                 char leaf[PATH_MAX];
+                 int parent = lx_mount_parent_fd(g_fakefs_mount->root_fd, fix_path(linux_path), leaf);
+                 if (parent < 0) return _EBUSY;
+                 struct stat state;
+                 if (fstatat(parent, leaf, &state, AT_SYMLINK_NOFOLLOW) == 0) {
+                     if (!lx_mount_link_matches(parent, leaf, g_bind_mounts[i].owned_link_target) ||
+                         unlinkat(parent, leaf, 0) < 0) {
+                         close(parent);
+                         return _EBUSY;
+                     }
+                 } else if (errno != ENOENT) {
+                     close(parent);
+                     return _EBUSY;
+                 }
+                 close(parent);
+             }
++            if (g_bind_mounts[i].covered_inode != 0) {
++                struct fakefs_db *fs = &g_fakefs_mount->fakefs;
++                db_begin_write(fs);
++                if (path_get_inode(fs, linux_path) == g_bind_mounts[i].covered_inode)
++                    inode_write_stat(fs, g_bind_mounts[i].covered_inode, &g_bind_mounts[i].covered_stat);
++                db_commit(fs);
++                g_bind_mounts[i].covered_inode = 0;
++            }
+             g_bind_mounts[i].active = false;
+             return 0;
+         }
+     }
+ 
+     return _ENOENT;
+ }
+ 
+ static int fakefs_mount(struct mount *mount) {
+     char db_path[PATH_MAX];
+     strcpy(db_path, mount->source);
+     char *basename = strrchr(db_path, '/') + 1;
+     assert(strcmp(basename, "data") == 0);
+     strcpy(basename, "meta.db");
+ 
+     // do this now so rebuilding can use root_fd
+     int err = realfs.mount(mount);
+     if (err < 0)
+         return err;
+ 
+     err = fake_db_init(&mount->fakefs, db_path, mount->root_fd);
+     if (err < 0)
+         return err;
+ 
+     /* Store global reference for bind mount API */
+     g_fakefs_mount = mount;
+     memset(g_bind_mounts, 0, sizeof(g_bind_mounts));
+ 
+     return 0;
+ }
+ 
+ static int fakefs_umount(struct mount *mount) {
+     int err = fake_db_deinit(&mount->fakefs);
+     if (err != SQLITE_OK) {
+         printk("sqlite failed to close: %d\n", err);
+     }
+     /* return realfs.umount(mount); */
+     return 0;
+ }
+ 
+ static void fakefs_inode_orphaned(struct mount *mount, ino_t inode) {
+     struct fakefs_db *fs = &mount->fakefs;
+     db_begin_write(fs);
+     sqlite3_bind_int64(fs->stmt.try_cleanup_inode, 1, inode);
+     db_exec_reset(fs, fs->stmt.try_cleanup_inode);
+     db_commit(fs);
+ }
+ 
+ const struct fs_ops fakefs = {
+     .name = "fake", .magic = 0x66616b65,
+     .mount = fakefs_mount,
+     .umount = fakefs_umount,
+     .statfs = realfs_statfs,
+     .open = fakefs_open,
+     .readlink = fakefs_readlink,
+     .link = fakefs_link,
+     .unlink = fakefs_unlink,
+     .rename = fakefs_rename,
+     .symlink = fakefs_symlink,
+     .mknod = fakefs_mknod,

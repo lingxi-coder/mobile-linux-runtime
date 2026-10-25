@@ -13,6 +13,64 @@ private func testLXISHExecutionPolicyUnregister(_ context: UInt64)
 private func testLXISHNetworkPolicyForContext(_ context: UInt64) -> Int32
 
 final class MobileLinuxNativeRegressionTests: XCTestCase {
+    func testIdentityFilteringPreservesUnchangedHomeAcrossMountTransition() {
+        let home = LXISHMountSpec(hostPath: "/host/home", guestPath: "/home/atlas", readOnly: false, purpose: "home")
+        let identity = LXISHMountSpec(hostPath: "/host/home/atlas/projects", guestPath: "/home/atlas/atlas/projects", readOnly: false, purpose: "workspace")
+        let external = LXISHMountSpec(hostPath: "/host/project", guestPath: "/tmp/project", readOnly: false, purpose: "external")
+        let desired = LXISHRuntimeMountPlanner.nativeMountsRemovingIdentityDescendants(from: [home, identity, external])
+        XCTAssertEqual(desired, [home, external])
+        let transition = LXISHRuntimeMountPlanner.transition(from: [home], to: desired)
+        XCTAssertTrue(transition.retiring.isEmpty)
+        XCTAssertEqual(transition.installing, [external])
+        let readOnly = LXISHMountSpec(hostPath: identity.hostPath, guestPath: identity.guestPath, readOnly: true, purpose: "workspace")
+        XCTAssertEqual(LXISHRuntimeMountPlanner.nativeMountsRemovingIdentityDescendants(from: [home, readOnly]), [home, readOnly])
+    }
+
+    func testMountDeduplicationNeverSkipsAnIntermediateBackingOverlay() {
+        let outer = LXISHMountSpec(hostPath: "/host/a", guestPath: "/var/lingxi/demo", readOnly: false, purpose: "workspace")
+        let middle = LXISHMountSpec(hostPath: "/host/b", guestPath: "/var/lingxi/demo/branch", readOnly: false, purpose: "external")
+        let inner = LXISHMountSpec(hostPath: "/host/a/branch/item", guestPath: "/var/lingxi/demo/branch/item", readOnly: false, purpose: "external")
+        XCTAssertEqual(LXISHRuntimeMountPlanner.nonredundantMounts([inner, outer, middle]), [inner, outer, middle])
+    }
+
+    func testMountDeduplicationNeverSkipsAnIntermediatePermissionOverlay() {
+        let outer = LXISHMountSpec(hostPath: "/host/a", guestPath: "/var/lingxi/demo", readOnly: false, purpose: "workspace")
+        let middle = LXISHMountSpec(hostPath: "/host/a/branch", guestPath: "/var/lingxi/demo/branch", readOnly: true, purpose: "external")
+        let inner = LXISHMountSpec(hostPath: "/host/a/branch/item", guestPath: "/var/lingxi/demo/branch/item", readOnly: false, purpose: "external")
+        let natural = LXISHMountSpec(hostPath: "/host/a/branch/item/source", guestPath: "/var/lingxi/demo/branch/item/source", readOnly: false, purpose: "external")
+        XCTAssertEqual(LXISHRuntimeMountPlanner.nonredundantMounts([natural, inner, outer, middle]), [inner, outer, middle])
+    }
+
+    func testMountTransitionKeepsSharedHomeAndUnchangedOverlayDuringContextSwitch() {
+        let home = LXISHMountSpec(hostPath: "/persistent/home", guestPath: "/home/lingxi", readOnly: false, purpose: "home")
+        let old = LXISHMountSpec(hostPath: "/external/old", guestPath: "/home/lingxi/old", readOnly: false, purpose: "workspace")
+        let added = LXISHMountSpec(hostPath: "/external/new", guestPath: "/home/lingxi/new", readOnly: false, purpose: "workspace")
+        let identical = LXISHRuntimeMountPlanner.transition(from: [home, old], to: [old, home])
+        XCTAssertTrue(identical.retiring.isEmpty)
+        XCTAssertTrue(identical.installing.isEmpty)
+        let transition = LXISHRuntimeMountPlanner.transition(from: [home, old], to: [home, added])
+        XCTAssertEqual(transition.retiring, [old.guestPath])
+        XCTAssertEqual(transition.installing, [added])
+    }
+
+    func testMountTransitionRebuildsChildrenWhenParentMappingChanges() {
+        let home = LXISHMountSpec(hostPath: "/persistent/home", guestPath: "/home/lingxi", readOnly: false, purpose: "home")
+        var changed = home
+        changed.readOnly = true
+        let child = LXISHMountSpec(hostPath: "/external/child", guestPath: "/home/lingxi/child", readOnly: false, purpose: "workspace")
+        let transition = LXISHRuntimeMountPlanner.transition(from: [home, child], to: [child, changed])
+        XCTAssertEqual(transition.retiring, [child.guestPath, home.guestPath])
+        XCTAssertEqual(transition.installing, [changed, child])
+    }
+
+    func testMountTransitionRebuildsExistingChildWhenNewParentIsAdded() {
+        let parent = LXISHMountSpec(hostPath: "/host/base", guestPath: "/var/lingxi/demo", readOnly: false, purpose: "workspace")
+        let child = LXISHMountSpec(hostPath: "/host/job", guestPath: "/var/lingxi/demo/job", readOnly: false, purpose: "external")
+        let transition = LXISHRuntimeMountPlanner.transition(from: [child], to: [child, parent])
+        XCTAssertEqual(transition.retiring, [child.guestPath])
+        XCTAssertEqual(transition.installing, [parent, child])
+    }
+
     func testRawOutputIngressBoundsPendingCallbacksAndReportsOverflowOnce() {
         let ingress = LXISHRawOutputIngress(limit: 4)
         XCTAssertEqual(ingress.reserve(4), .accepted)
@@ -577,11 +635,13 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             defaultMountPath: nil
         )
         let fullPlan = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: [], config: config)
-        XCTAssertEqual(fullPlan.map(\.guestPath), [
-            "/home/lingxi",
-            "/root",
-            "/home/lingxi/lingxi/projects",
-        ])
+        // The shared planner now removes this exact identity descendant
+        // before the native transition, while retaining permission overrides.
+        XCTAssertEqual(fullPlan.map(\.guestPath), ["/home/lingxi", "/root"])
+        let readOnlyWorkspace = LXISHMountSpec(hostPath: workspaceHost.path,
+            guestPath: config.guestWorkspace, readOnly: true, purpose: "workspace")
+        let protectedPlan = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: [readOnlyWorkspace], config: config)
+        XCTAssertEqual(protectedPlan.first(where: { $0.guestPath == config.guestWorkspace })?.readOnly, true)
 
         for _ in 0..<3 {
             let nativePlan = LXISHRuntimeMountPlanner.nativeMountsRemovingIdentityDescendants(from: fullPlan)
@@ -629,6 +689,64 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             mounts[0].hostPath,
             temporaryRoot.appendingPathComponent("build-root", isDirectory: true).path
         )
+    }
+
+    func testPersistentWorkspaceIsCoveredByHomeWithoutDroppingExternalOrReadOnlyOverlays() throws {
+        let managed = temporaryRoot.appendingPathComponent("managed", isDirectory: true)
+        let home = managed.appendingPathComponent("persistent/lingxi", isDirectory: true)
+        let workspace = home.appendingPathComponent("lingxi/projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+        let sentinel = workspace.appendingPathComponent("source.txt")
+        try Data("keep-workspace-source".utf8).write(to: sentinel)
+        let config = LXISHNativeConfig(managedRoot: managed.path, brandId: "lingxi", linuxUser: "lingxi", configDirName: ".lingxi", workspaceHostPath: workspace.path,
+            stableWorkspaceId: "projects", abi: "arm64", rootfsVersion: "3.24.1",
+            archiveSha256: nil, authorizationFile: nil, rootfsArchivePath: nil, defaultMountPath: nil)
+        let external = LXISHMountSpec(hostPath: temporaryRoot.appendingPathComponent("external").path,
+            guestPath: "/home/lingxi/lingxi/projects/external", readOnly: false, purpose: "external")
+        let readOnly = LXISHMountSpec(hostPath: workspace.appendingPathComponent("readonly").path,
+            guestPath: "/home/lingxi/lingxi/projects/readonly", readOnly: true, purpose: "external")
+        for _ in 0..<3 {
+            let mounts = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: [external, readOnly], config: config)
+            XCTAssertFalse(mounts.contains { $0.guestPath == "/home/lingxi/lingxi/projects" })
+            XCTAssertTrue(mounts.contains { $0.guestPath == external.guestPath && $0.hostPath == external.hostPath })
+            XCTAssertTrue(mounts.contains { $0.guestPath == readOnly.guestPath && $0.readOnly })
+            XCTAssertEqual(try Data(contentsOf: sentinel), Data("keep-workspace-source".utf8))
+        }
+    }
+
+    func testScaffoldCleanupNeverCrossesHomeLinkOrRemovesExistingFiles() throws {
+        let data = temporaryRoot.appendingPathComponent("rootfs/data", isDirectory: true)
+        let host = temporaryRoot.appendingPathComponent("persistent/home/projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: data.appendingPathComponent("home"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: host, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: data.appendingPathComponent("home/lingxi"),
+            withDestinationURL: host.deletingLastPathComponent())
+        let source = host.appendingPathComponent("source.txt")
+        try Data("preserve-user-source".utf8).write(to: source)
+        try LXISHRuntimeMountPlanner.removeEmptyScaffold("/home/lingxi/projects", under: data)
+        XCTAssertEqual(try Data(contentsOf: source), Data("preserve-user-source".utf8))
+        let ordinary = data.appendingPathComponent("ordinary", isDirectory: true)
+        try FileManager.default.createDirectory(at: ordinary, withIntermediateDirectories: true)
+        try Data("preserve-rootfs-file".utf8).write(to: ordinary.appendingPathComponent("keep"))
+        XCTAssertThrowsError(try LXISHRuntimeMountPlanner.removeEmptyScaffold("/ordinary", under: data))
+        XCTAssertEqual(try Data(contentsOf: ordinary.appendingPathComponent("keep")), Data("preserve-rootfs-file".utf8))
+        let empty = data.appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        try LXISHRuntimeMountPlanner.removeEmptyScaffold("/empty", under: data)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: empty.path))
+    }
+
+    func testNaturalWorkspaceReadOnlyRequestIsNotOverriddenByHomeDefault() {
+        let managed = temporaryRoot.appendingPathComponent("managed", isDirectory: true)
+        let workspace = managed.appendingPathComponent("persistent/lingxi/lingxi/projects", isDirectory: true)
+        let config = LXISHNativeConfig(managedRoot: managed.path, brandId: "lingxi", linuxUser: "lingxi", configDirName: ".lingxi", workspaceHostPath: workspace.path,
+            stableWorkspaceId: "projects", abi: "arm64", rootfsVersion: "3.24.1",
+            archiveSha256: nil, authorizationFile: nil, rootfsArchivePath: nil, defaultMountPath: nil)
+        let readOnly = LXISHMountSpec(hostPath: workspace.path, guestPath: "/home/lingxi/lingxi/projects",
+            readOnly: true, purpose: "workspace")
+        let mounts = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: [readOnly], config: config)
+        XCTAssertTrue(mounts.contains { $0.guestPath == readOnly.guestPath && $0.hostPath == workspace.path && $0.readOnly })
+        XCTAssertTrue(mounts.contains { $0.guestPath == "/home/lingxi" && !$0.readOnly })
     }
 
     func testExecutionMountScopeRestoresPersistentMountsAfterIsolatedSuccess() throws {

@@ -38,7 +38,9 @@
     "talloc/talloc.c": "15f218ee70beb4da371646d4116622b48f2f552a3d051e5d360e790e2c3d3a37",
     "talloc/talloc.h": "e01fb092aaed2b431be26674e2b791c77fb5984537c29b514e957582c6b31465",
     "talloc/replace.h": "7bc76ccedd248fc6ad8c61c184580d4c00b8987a7a35f1666caa98b994d20deb",
-    "patches/proot-loader-16k.patch": "878ddf1a34879d333725e3b9e33c8b3d31c0b4f668ca8514544509a0d53326e3"
+    "patches/proot-loader-16k.patch": "878ddf1a34879d333725e3b9e33c8b3d31c0b4f668ca8514544509a0d53326e3",
+    "proot_runtime_owner.h": "9ffac21a7117190a1fa652355debcccb4fc7bdb254e350135a38dc1459cfa652",
+    "patches/proot-runtime-owner.patch": "75b283d7311be9b08e471b1860baf5af19f21fb3160eb00001979a646068ed62"
   },
   "distribution_licenses": {
     "talloc-license": {

@@ -27,7 +27,7 @@ def main():
     if pins.get("schema_version") != 1 or set(pins["components"]) != {"openminis", "proot", "talloc"}:
         fail("Android-only source pin schema/components diverged")
     sources = pins.get("sdk_sources", {})
-    required_sources = {"mobile_linux_policy_launcher.c", "proot_lingxi_network_policy.c", "talloc/talloc.c", "talloc/talloc.h", "talloc/replace.h", "patches/proot-loader-16k.patch"}
+    required_sources = {"mobile_linux_policy_launcher.c", "proot_lingxi_network_policy.c", "talloc/talloc.c", "talloc/talloc.h", "talloc/replace.h", "patches/proot-loader-16k.patch", "proot_runtime_owner.h", "patches/proot-runtime-owner.patch"}
     if set(sources) != required_sources: fail("incomplete Android SDK source inventory")
     for relative, expected in sources.items():
         path = SDK / "native/android" / relative

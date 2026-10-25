@@ -47,6 +47,8 @@ class GuestUserTests(unittest.TestCase):
                     guest_user.apply_archive(source, root / output, 'aarch64', root / 'cache')
             self.assertEqual((root / 'one.tar.gz').read_bytes(), (root / 'two.tar.gz').read_bytes())
             with tarfile.open(root / 'one.tar.gz') as tar:
+                self.assertTrue(tar.getmember('.').isdir())
+                self.assertEqual((tar.getmember('.').mode, tar.getmember('.').uid, tar.getmember('.').gid), (0o755, 0, 0))
                 home = tar.getmember('home/lingxi')
                 workspace = tar.getmember('home/lingxi/lingxi')
                 self.assertEqual((home.uid, home.gid, workspace.uid, workspace.gid), (1000, 1000, 1000, 1000))
@@ -165,6 +167,24 @@ class GuestUserTests(unittest.TestCase):
             finally:
                 rootfs_tool.set_guest_profile(guest_user.DEFAULT_PROFILE)
                 output.unlink(missing_ok=True)
+    def test_archive_preserves_explicit_root_and_rejects_a_file_at_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'pins.json').write_text(json.dumps({'guest_user_packages': {'aarch64': []}}))
+            for kind in [tarfile.DIRTYPE, tarfile.REGTYPE]:
+                source = root / 'base.tar'
+                with tarfile.open(source, 'w') as tar:
+                    item = tarfile.TarInfo('.'); item.type = kind; item.mode = 0o751
+                    tar.addfile(item)
+                with mock.patch.object(guest_user, 'PINS', root / 'pins.json'):
+                    if kind == tarfile.REGTYPE:
+                        with self.assertRaisesRegex(ValueError, 'root must be a directory'):
+                            guest_user.apply_archive(source, root / 'out.tar.gz', 'aarch64', root / 'cache')
+                    else:
+                        guest_user.apply_archive(source, root / 'out.tar.gz', 'aarch64', root / 'cache')
+                        with tarfile.open(root / 'out.tar.gz') as tar:
+                            self.assertTrue(tar.getmember('.').isdir())
+                            self.assertEqual(tar.getmember('.').mode, 0o751)
 
     def test_privileged_exception_rejects_unpinned_binary_and_other_modes(self):
         self.assertFalse(rootfs_tool.permitted_doas('/usr/bin/doas', 0o4755, b'changed binary'))

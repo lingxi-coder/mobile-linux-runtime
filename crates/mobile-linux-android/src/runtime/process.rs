@@ -183,7 +183,8 @@ impl AndroidProotRuntime {
             .env("HOME", self.state.config.guest_home())
             .env("USER", &self.state.config.brand_profile.linux_user)
             .env("LOGNAME", &self.state.config.brand_profile.linux_user)
-            .envs(env);
+            .envs(env)
+            .env("LINGXI_RUNTIME_OWNER_PID", std::process::id().to_string());
         if let Some(receipt_path) = receipt_path {
             command.env("LINGXI_ENFORCEMENT_RECEIPT_PATH", receipt_path);
         }
