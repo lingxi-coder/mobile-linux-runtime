@@ -407,6 +407,96 @@ struct LXISHRuntimeMountPlanner {
         return lhsDepth == rhsDepth ? lhs < rhs : lhsDepth < rhsDepth
     }
 
+    /// Remove only a nested native bind that exposes exactly the same host
+    /// directory already visible through its nearest guest ancestor. The
+    /// kernel mount table is not an authorization table: callers retain the
+    /// full planned mount set for policy, and this only avoids registering a
+    /// redundant fakefs bind at the native boundary.
+    ///
+    /// Require a strict canonical guest descendant, an exact host-relative
+    /// mapping, and identical read-only mode. A nearer mount with a different
+    /// mapping or permission mode prevents removing a deeper mount, because it
+    /// may intentionally override what the ancestor exposes.
+    static func nativeMountsRemovingIdentityDescendants(
+        from mounts: [LXISHMountSpec]
+    ) -> [LXISHMountSpec] {
+        let ordered = mounts.enumerated().compactMap { index, mount -> (Int, LXISHMountSpec, [String])? in
+            guard let components = absolutePathComponents(mount.guestPath) else { return nil }
+            return (index, mount, components)
+        }.sorted {
+            if $0.2.count != $1.2.count { return $0.2.count < $1.2.count }
+            return $0.0 < $1.0
+        }
+
+        var retained: [(Int, LXISHMountSpec, [String])] = []
+        var removedIndices = Set<Int>()
+        for candidate in ordered {
+            let ancestors = retained.filter {
+                isStrictDescendant(candidate.2, of: $0.2)
+            }
+            guard let nearestDepth = ancestors.map({ $0.2.count }).max() else {
+                retained.append(candidate)
+                continue
+            }
+            let nearest = ancestors.filter { $0.2.count == nearestDepth }
+            if nearest.count == 1,
+               isIdentityDescendant(candidate.1, of: nearest[0].1,
+                                    guestComponents: candidate.2,
+                                    parentGuestComponents: nearest[0].2) {
+                removedIndices.insert(candidate.0)
+            } else {
+                retained.append(candidate)
+            }
+        }
+        return mounts.enumerated().compactMap { index, mount in
+            removedIndices.contains(index) ? nil : mount
+        }
+    }
+
+    private static func absolutePathComponents(_ path: String) -> [String]? {
+        guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
+        if path == "/" { return [] }
+        guard !path.hasSuffix("/") else { return nil }
+        let components = path.dropFirst().split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard !components.isEmpty,
+              !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." })
+        else {
+            return nil
+        }
+        return components
+    }
+
+    private static func isStrictDescendant(_ child: [String], of parent: [String]) -> Bool {
+        child.count > parent.count && child.starts(with: parent)
+    }
+
+    private static func isIdentityDescendant(
+        _ child: LXISHMountSpec,
+        of parent: LXISHMountSpec,
+        guestComponents: [String],
+        parentGuestComponents: [String]
+    ) -> Bool {
+        guard child.readOnly == parent.readOnly,
+              isStrictDescendant(guestComponents, of: parentGuestComponents),
+              let parentHost = standardizedAbsoluteHostPath(parent.hostPath),
+              let childHost = standardizedAbsoluteHostPath(child.hostPath)
+        else {
+            return false
+        }
+
+        var expectedHost = parentHost == "/" ? "" : parentHost
+        for component in guestComponents.dropFirst(parentGuestComponents.count) {
+            expectedHost += "/" + component
+        }
+        if expectedHost.isEmpty { expectedHost = "/" }
+        return URL(fileURLWithPath: expectedHost, isDirectory: true).standardizedFileURL.path == childHost
+    }
+
+    private static func standardizedAbsoluteHostPath(_ path: String) -> String? {
+        guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
+        return URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL.path
+    }
+
     static func effectiveMounts(
         requestedMounts: [LXISHMountSpec],
         config: LXISHNativeConfig,
@@ -1699,7 +1789,8 @@ private final class LXISHNativeCoordinator {
             try self.ensureHostEndpointsExist(mounts)
             try self.ensureGuestMountParentsExist(mounts, runtime: &runtime)
             if LXISHKernelRuntimeBridge.isDeviceBridgeAvailable() {
-                try runtime.kernel.configureMounts(mounts.map(self.dictionary(from:)))
+                let nativeMounts = LXISHRuntimeMountPlanner.nativeMountsRemovingIdentityDescendants(from: mounts)
+                try runtime.kernel.configureMounts(nativeMounts.map(self.dictionary(from:)))
             }
             return ["status": self.rootfsManager.status(for: config)]
         }
@@ -2404,8 +2495,9 @@ private final class LXISHNativeCoordinator {
             includeDefaultMounts: includeDefaultMounts
         )
         try ensureHostEndpointsExist(mounts)
+        let nativeMounts = LXISHRuntimeMountPlanner.nativeMountsRemovingIdentityDescendants(from: mounts)
         try runtime.kernel.configureMounts([])
-        for mount in mounts.sorted(by: { LXISHRuntimeMountPlanner.shallowestFirst($0.guestPath, $1.guestPath) }) {
+        for mount in nativeMounts.sorted(by: { LXISHRuntimeMountPlanner.shallowestFirst($0.guestPath, $1.guestPath) }) {
             try ensureGuestMountParentsExist([mount], runtime: &runtime)
             try runtime.kernel.configureMounts([dictionary(from: mount)], replacing: false)
         }

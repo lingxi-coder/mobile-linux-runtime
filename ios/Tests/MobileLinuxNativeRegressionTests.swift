@@ -495,6 +495,105 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         )
     }
 
+    func testNativeMountPlanDropsOnlyExactIdentityDescendantWithSamePermissions() {
+        let home = temporaryRoot.appendingPathComponent("identity-home", isDirectory: true).path
+        let mounts = [
+            LXISHMountSpec(
+                hostPath: home + "/projects",
+                guestPath: "/home/lingxi/projects",
+                readOnly: false,
+                purpose: "workspace"
+            ),
+            LXISHMountSpec(
+                hostPath: home + "/cache",
+                guestPath: "/home/lingxi/cache",
+                readOnly: true,
+                purpose: "cache"
+            ),
+            LXISHMountSpec(
+                hostPath: home + "/cache/unlocked",
+                guestPath: "/home/lingxi/cache/unlocked",
+                readOnly: false,
+                purpose: "explicit-permission-override"
+            ),
+            LXISHMountSpec(
+                hostPath: temporaryRoot.appendingPathComponent("separate-projects", isDirectory: true).path,
+                guestPath: "/home/lingxi/separate",
+                readOnly: false,
+                purpose: "separate-source"
+            ),
+            LXISHMountSpec(
+                hostPath: home + "ish",
+                guestPath: "/home/lingxiish",
+                readOnly: false,
+                purpose: "component-prefix-is-not-descendant"
+            ),
+            LXISHMountSpec(
+                hostPath: home + "/projects",
+                guestPath: "/home/lingxi/../secret",
+                readOnly: false,
+                purpose: "noncanonical-guest-path"
+            ),
+            LXISHMountSpec(
+                hostPath: home,
+                guestPath: "/home/lingxi",
+                readOnly: false,
+                purpose: "home"
+            ),
+        ]
+
+        let native = LXISHRuntimeMountPlanner.nativeMountsRemovingIdentityDescendants(from: mounts)
+        XCTAssertEqual(native.map(\.guestPath), [
+            "/home/lingxi/cache",
+            "/home/lingxi/cache/unlocked",
+            "/home/lingxi/separate",
+            "/home/lingxiish",
+            "/home/lingxi/../secret",
+            "/home/lingxi",
+        ])
+        XCTAssertEqual(native.first(where: { $0.guestPath == "/home/lingxi/cache" })?.readOnly, true)
+        XCTAssertEqual(native.first(where: { $0.guestPath == "/home/lingxi/cache/unlocked" })?.readOnly, false)
+    }
+
+    func testRepeatedNativeMountPlanningPreservesNestedPersistentWorkspaceMarker() throws {
+        let managedRoot = temporaryRoot.appendingPathComponent("nested-workspace-managed", isDirectory: true)
+        let persistentHome = managedRoot.appendingPathComponent("persistent/lingxi", isDirectory: true)
+        let workspaceHost = persistentHome.appendingPathComponent("lingxi/projects", isDirectory: true)
+        let marker = workspaceHost.appendingPathComponent("marker.txt")
+        try FileManager.default.createDirectory(at: workspaceHost, withIntermediateDirectories: true)
+        try Data("workspace marker survives repeated mount planning".utf8).write(to: marker)
+        let config = LXISHNativeConfig(
+            managedRoot: managedRoot.path,
+            brandId: "lingxi",
+            linuxUser: "lingxi",
+            configDirName: ".lingxi",
+            workspaceHostPath: workspaceHost.path,
+            stableWorkspaceId: "projects",
+            abi: "arm64",
+            rootfsVersion: "3.24.1",
+            archiveSha256: nil,
+            authorizationFile: nil,
+            rootfsArchivePath: nil,
+            defaultMountPath: nil
+        )
+        let fullPlan = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: [], config: config)
+        XCTAssertEqual(fullPlan.map(\.guestPath), [
+            "/home/lingxi",
+            "/root",
+            "/home/lingxi/lingxi/projects",
+        ])
+
+        for _ in 0..<3 {
+            let nativePlan = LXISHRuntimeMountPlanner.nativeMountsRemovingIdentityDescendants(from: fullPlan)
+            XCTAssertEqual(nativePlan.map(\.guestPath), ["/home/lingxi", "/root"])
+            XCTAssertEqual(try Data(contentsOf: marker), Data("workspace marker survives repeated mount planning".utf8))
+            for path in [persistentHome, workspaceHost, marker] {
+                let values = try path.resourceValues(forKeys: [.isSymbolicLinkKey])
+                XCTAssertNotEqual(values.isSymbolicLink, true, "host source must not become a self-link: \(path.path)")
+            }
+        }
+    }
+
     func testRuntimeMountPlannerCanExcludeManagedHomeAndWorkspaceForIsolatedRequests() {
         let config = LXISHNativeConfig(
             managedRoot: temporaryRoot.appendingPathComponent("managed-root-isolated", isDirectory: true).path,
