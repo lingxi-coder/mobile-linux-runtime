@@ -412,6 +412,9 @@ pub(crate) fn create_ios_or_unavailable(
                 .map(PathBuf::from)
                 .collect(),
             allowed_guest_roots: config.allowed_guest_roots,
+            // The public FFI config cannot authorize Project paths. Trusted
+            // host integrations use `linked_runtime` with exact grant tuples.
+            authorized_project_mounts: Vec::new(),
         })
         .map_err(mobile_linux_error_to_ffi)?;
         return Ok(Arc::new(RuntimeHandle { runtime }));

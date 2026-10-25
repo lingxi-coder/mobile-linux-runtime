@@ -38,6 +38,10 @@ pub struct IosIshRuntimeConfig {
     pub allowed_mount_roots: Vec<PathBuf>,
     /// Guest prefixes allowed for non-workspace request mounts.
     pub allowed_guest_roots: Vec<String>,
+    /// Exact Project directories selected by the trusted iOS host for this
+    /// runtime. These are scoped exceptions to the managed-root fence, not
+    /// roots from which callers may choose arbitrary descendants.
+    pub authorized_project_mounts: Vec<MountSpec>,
 }
 
 impl IosIshRuntimeConfig {

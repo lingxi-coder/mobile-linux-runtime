@@ -22,8 +22,8 @@ pub use config::IosIshRuntimeConfig;
 use rootfs::filesystem_rootfs_state;
 use streaming::cap_capture;
 use validation::{
-    normalize_host_path, validate_guest_path, validate_mount, validate_pty_request,
-    validate_request,
+    normalize_host_path, validate_authorized_project_mounts, validate_guest_path, validate_mount,
+    validate_pty_request, validate_request,
 };
 mod background;
 mod bridge;
@@ -118,6 +118,7 @@ struct PtyControl {
 struct RuntimeState {
     config: IosIshRuntimeConfig,
     mounts: RwLock<Vec<MountSpec>>,
+    mounts_consistent: AtomicBool,
     tasks: Mutex<HashMap<String, Arc<TaskControl>>>,
     events: Mutex<VecDeque<MobileLinuxEvent>>,
     next_id: AtomicU64,

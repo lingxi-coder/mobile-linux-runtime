@@ -154,6 +154,8 @@ impl MobileLinuxRuntime for IosIshRuntime {
         self.ensure_session_open()?;
         validate_request(&request)?;
         self.boot().await?;
+        let _lifecycle = self.state.lifecycle.lock().await;
+        self.ensure_session_open()?;
         let mounts = self.merged_mounts(&request.mounts)?;
         self.apply_mounts(&mounts).await?;
         let (task_id, task) = self.create_task(
@@ -244,6 +246,8 @@ impl MobileLinuxRuntime for IosIshRuntime {
         self.ensure_session_open()?;
         validate_pty_request(&request)?;
         self.boot().await?;
+        let _lifecycle = self.state.lifecycle.lock().await;
+        self.ensure_session_open()?;
         let mounts = self.merged_mounts(&request.mounts)?;
         self.apply_mounts(&mounts).await?;
         {
@@ -361,6 +365,8 @@ impl MobileLinuxRuntime for IosIshRuntime {
         };
         validate_request(&validation_request)?;
         self.boot().await?;
+        let _lifecycle = self.state.lifecycle.lock().await;
+        self.ensure_session_open()?;
         let mounts = self.merged_mounts(&request.mounts)?;
         let (id, enforcement) = self.native_open_raw_stdio(&request, &mounts).await?;
         enforcement.ensure_for(request.network, request.resource_limits)?;
@@ -543,6 +549,9 @@ impl MobileLinuxRuntime for IosIshRuntime {
     }
 
     fn current_mounts(&self) -> Vec<MountSpec> {
+        if !self.state.mounts_consistent.load(Ordering::Acquire) {
+            return Vec::new();
+        }
         self.state
             .mounts
             .read()
@@ -551,6 +560,7 @@ impl MobileLinuxRuntime for IosIshRuntime {
     }
 
     async fn configure_mounts(&self, mounts: Vec<MountSpec>) -> Result<(), MobileLinuxError> {
+        let _lifecycle = self.state.lifecycle.lock().await;
         self.ensure_session_open()?;
         let mut normalized = Vec::with_capacity(mounts.len().saturating_add(2));
         normalized.push(validate_mount(
@@ -559,7 +569,6 @@ impl MobileLinuxRuntime for IosIshRuntime {
         )?);
         normalized.push(self.state.config.persistent_home_mount());
         normalized.push(self.state.config.persistent_admin_home_mount());
-        normalized.sort_by_key(|mount| mount.guest_path.matches('/').count());
         for mount in mounts {
             let mount = validate_mount(&mount, &self.state.config)?;
             if let Some(existing) = normalized
@@ -571,8 +580,11 @@ impl MobileLinuxRuntime for IosIshRuntime {
                 normalized.push(mount);
             }
         }
-        *self.state.mounts.write().expect("ios-ish mounts rwlock") = normalized.clone();
-        self.apply_mounts(&normalized).await
+        normalized.sort_by_key(|mount| mount.guest_path.matches('/').count());
+        self.apply_mounts(&normalized).await?;
+        *self.state.mounts.write().expect("ios-ish mounts rwlock") = normalized;
+        self.state.mounts_consistent.store(true, Ordering::Release);
+        Ok(())
     }
 
     async fn read_events(

@@ -9,7 +9,8 @@ use super::config::IosIshRuntimeConfig;
 use super::rootfs::filesystem_rootfs_state;
 use super::streaming::{append_capped_bytes, append_capped_stdout, cap_capture};
 use super::validation::{
-    normalize_host_path, validate_mount, validate_pty_request, validate_request,
+    normalize_host_path, validate_authorized_project_mounts, validate_mount, validate_pty_request,
+    validate_request,
 };
 use async_trait::async_trait;
 use mobile_linux_api::LinuxEnforcementReceipt;
@@ -42,9 +43,42 @@ pub(super) struct TestProcessTransport {
     events: Mutex<VecDeque<NativeBackgroundEventPayload>>,
     request: Mutex<Option<serde_json::Value>>,
     raw_calls: Mutex<Vec<&'static str>>,
+    mount_apply_conflicts: AtomicU64,
+    mount_apply_failures: AtomicU64,
+    mount_apply_calls: Mutex<Vec<Vec<MountSpec>>>,
 }
 
 impl TestProcessTransport {
+    pub(super) fn configure_mounts(&self, mounts: &[MountSpec]) -> Result<(), MobileLinuxError> {
+        self.mount_apply_calls
+            .lock()
+            .expect("mount calls")
+            .push(mounts.to_vec());
+        if self
+            .mount_apply_conflicts
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(MobileLinuxError::InvalidRequest(
+                "an isolated guest process owns the mount scope; wait or cancel it before starting another session".into(),
+            ));
+        }
+        if self
+            .mount_apply_failures
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(MobileLinuxError::Unavailable(
+                "test mount application failure".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) async fn spawn(
         &self,
         request: &LinuxCommandRequest,
@@ -430,10 +464,46 @@ fn test_config(root: &Path) -> IosIshRuntimeConfig {
         rootfs_archive_path: None,
         default_mount_path: None,
         rootfs_patch_path: None,
-        protected_host_roots: vec![root.join(".lingxi")],
+        protected_host_roots: vec![
+            root.join(".lingxi"),
+            root.join("mobile-linux/persistent/lingxi/.lingxi"),
+        ],
         allowed_mount_roots: vec![root.join("exports")],
         allowed_guest_roots: vec!["/exports".into()],
+        authorized_project_mounts: Vec::new(),
     }
+}
+
+fn project_mount(config: &IosIshRuntimeConfig, relative: &str) -> MountSpec {
+    let managed_root =
+        normalize_host_path(&config.managed_root, "managed_root").expect("canonical managed root");
+    let host_home = config
+        .brand_profile
+        .persistent_home_host_path(&managed_root);
+    let host_path = host_home.join(relative);
+    fs::create_dir_all(&host_path).expect("create Project source directory");
+    let host_path = fs::canonicalize(host_path).expect("canonical Project source directory");
+    let guest_path = config
+        .brand_profile
+        .guest_home()
+        .join(relative)
+        .to_string_lossy()
+        .into_owned();
+    MountSpec {
+        host_path,
+        guest_path,
+        read_only: false,
+        purpose: MountPurpose::External,
+    }
+}
+
+fn config_with_project_mounts(
+    mut config: IosIshRuntimeConfig,
+    mounts: Vec<MountSpec>,
+) -> Result<IosIshRuntimeConfig, MobileLinuxError> {
+    config.authorized_project_mounts = mounts;
+    config.authorized_project_mounts = validate_authorized_project_mounts(&config)?;
+    Ok(config)
 }
 
 #[test]
@@ -505,6 +575,237 @@ fn workspace_mount_accepts_the_managed_workspace_path() {
             .expect("normalized workspace path")
     );
     assert_eq!(mount.guest_path, "/home/lingxi/lingxi/default");
+}
+
+#[test]
+fn project_mount_grants_are_exact_profile_mapped_and_config_scoped() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config = test_config(&temp.path().join("app"));
+    let grant = project_mount(&config, ".lingxi/.apps/agent-wake-acceptance-abc-123");
+    let config = config_with_project_mounts(config, vec![grant.clone()]).expect("valid grant");
+
+    assert!(validate_mount(&grant, &config).is_ok());
+    assert_eq!(config.authorized_project_mounts, vec![grant.clone()]);
+    let changed_capability = MountSpec {
+        read_only: true,
+        ..grant.clone()
+    };
+    assert!(validate_mount(&changed_capability, &config).is_err());
+    let changed_purpose = MountSpec {
+        purpose: MountPurpose::Shared,
+        ..grant.clone()
+    };
+    assert!(validate_mount(&changed_purpose, &config).is_err());
+
+    let sibling = project_mount(&config, ".lingxi/.apps/another-app");
+    assert!(validate_mount(&sibling, &config).is_err());
+
+    for relative in [
+        ".lingxi",
+        ".lingxi/settings",
+        ".lingxi/.apps",
+        ".lingxi/.apps/app/../nested",
+    ] {
+        let invalid = project_mount(&config, relative);
+        let rejected = config_with_project_mounts(config.clone(), vec![invalid]);
+        assert!(
+            rejected.is_err(),
+            "unexpectedly allowed config path {relative}"
+        );
+    }
+
+    let wrong_profile = MountSpec {
+        host_path: grant.host_path.clone(),
+        guest_path: "/home/another-user/.lingxi/.apps/agent-wake-acceptance-abc-123".into(),
+        ..grant.clone()
+    };
+    assert!(config_with_project_mounts(config.clone(), vec![wrong_profile]).is_err());
+
+    let nested_source = project_mount(&config, ".lingxi/.apps/agent app/source");
+    let nested_config = config_with_project_mounts(config.clone(), vec![nested_source.clone()])
+        .expect("nested source is an exact .apps descendant");
+    assert!(validate_mount(&nested_source, &nested_config).is_ok());
+
+    let unsafe_leaf = project_mount(&config, ".lingxi/.apps/agent\\app");
+    assert!(config_with_project_mounts(config, vec![unsafe_leaf]).is_err());
+}
+
+#[test]
+fn project_grants_follow_the_selected_nondefault_brand_profile() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut config = test_config(&temp.path().join("app"));
+    config.brand_profile = mobile_linux_api::BrandRuntimeProfile::new("atlas", "atlas", ".atlas");
+    config.protected_host_roots.push(
+        normalize_host_path(&config.managed_root, "managed_root")
+            .unwrap()
+            .join("persistent/atlas/.atlas"),
+    );
+    let grant = project_mount(&config, ".atlas/.apps/project/source");
+    let config = config_with_project_mounts(config, vec![grant.clone()]).expect("valid grant");
+
+    assert_eq!(grant.guest_path, "/home/atlas/.atlas/.apps/project/source");
+    assert_eq!(
+        grant.host_path,
+        normalize_host_path(&config.managed_root, "managed_root")
+            .unwrap()
+            .join("persistent/atlas/.atlas/.apps/project/source")
+    );
+    assert!(validate_mount(&grant, &config).is_ok());
+}
+
+#[test]
+fn project_additional_directories_must_be_exact_and_non_overlapping() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config = test_config(&temp.path().join("app"));
+    let grant = project_mount(&config, "Documents/selected-source");
+    let config = config_with_project_mounts(config, vec![grant.clone()]).expect("valid grant");
+    assert!(validate_mount(&grant, &config).is_ok());
+
+    let child = project_mount(&config, "Documents/selected-source/child");
+    let overlapping = config_with_project_mounts(config.clone(), vec![grant.clone(), child]);
+    assert!(overlapping.is_err());
+
+    let duplicate = config_with_project_mounts(config, vec![grant.clone(), grant]);
+    assert!(duplicate.is_err());
+}
+
+#[test]
+fn project_mount_grant_list_is_bounded() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config = test_config(&temp.path().join("app"));
+    let grant = project_mount(&config, "Documents/source");
+    let too_many = vec![grant; 65];
+
+    assert!(config_with_project_mounts(config, too_many).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn project_mount_grants_reject_symlink_sources_and_alias_requests() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let config = test_config(&temp.path().join("app"));
+    let grant = project_mount(&config, ".lingxi/.apps/agent-wake-acceptance-symlink");
+    let app_root = grant.host_path.parent().expect(".apps parent");
+    let alias = app_root.join("symlink-alias");
+    std::os::unix::fs::symlink(&grant.host_path, &alias).expect("create source symlink");
+
+    let symlink_grant = MountSpec {
+        host_path: alias.clone(),
+        guest_path: "/home/lingxi/.lingxi/.apps/symlink-alias".into(),
+        ..grant.clone()
+    };
+    assert!(config_with_project_mounts(config.clone(), vec![symlink_grant]).is_err());
+
+    let config = config_with_project_mounts(config, vec![grant.clone()]).expect("valid grant");
+    let alias_request = MountSpec {
+        host_path: alias,
+        guest_path: grant.guest_path.clone(),
+        ..grant
+    };
+    assert!(validate_mount(&alias_request, &config).is_err());
+}
+
+#[tokio::test]
+async fn project_grants_are_seeded_configurable_and_required_before_per_run_use() {
+    use mobile_linux_api::MobileLinuxRuntime as _;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let base = test_config(&temp.path().join("app"));
+    let grant = project_mount(&base, ".lingxi/.apps/agent-wake-acceptance-runtime");
+    let second = project_mount(&base, ".lingxi/.apps/another-acceptance-app");
+    let config = config_with_project_mounts(base, vec![grant.clone(), second.clone()])
+        .expect("valid grants");
+    let mut runtime = IosIshRuntime::new_state(config);
+    Arc::get_mut(&mut runtime.state)
+        .expect("exclusive runtime state")
+        .test_transport = Some(Arc::new(TestProcessTransport::default()));
+
+    assert!(runtime.current_mounts().contains(&grant));
+    assert!(runtime.current_mounts().contains(&second));
+    runtime
+        .configure_mounts(vec![grant.clone()])
+        .await
+        .expect("replace Project mount table");
+    assert!(runtime.current_mounts().contains(&grant));
+    assert!(!runtime.current_mounts().contains(&second));
+    assert!(runtime.merged_mounts(&[second.clone()]).is_err());
+
+    runtime
+        .configure_mounts(Vec::new())
+        .await
+        .expect("remove Project mount from configured table");
+    assert!(!runtime.current_mounts().contains(&grant));
+    assert!(runtime.merged_mounts(&[grant]).is_err());
+}
+
+#[tokio::test]
+async fn failed_project_mount_reconfiguration_hides_uncertain_table_until_repaired() {
+    use mobile_linux_api::MobileLinuxRuntime as _;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let base = test_config(&temp.path().join("app"));
+    let grant = project_mount(&base, ".lingxi/.apps/agent-wake-acceptance-failure");
+    let config = config_with_project_mounts(base, vec![grant.clone()]).expect("valid grant");
+    let mut runtime = IosIshRuntime::new_state(config);
+    let transport = Arc::new(TestProcessTransport::default());
+    transport.mount_apply_failures.store(2, Ordering::Release);
+    Arc::get_mut(&mut runtime.state)
+        .expect("exclusive runtime state")
+        .test_transport = Some(transport.clone());
+
+    let error = runtime
+        .configure_mounts(vec![grant.clone()])
+        .await
+        .expect_err("native setup failure must propagate");
+    assert!(matches!(error, MobileLinuxError::Unavailable(_)));
+    assert!(runtime.current_mounts().is_empty());
+    assert!(runtime.merged_mounts(&[grant.clone()]).is_err());
+    assert!(transport
+        .mount_apply_calls
+        .lock()
+        .expect("mount calls")
+        .last()
+        .is_some_and(Vec::is_empty));
+
+    runtime
+        .configure_mounts(vec![grant.clone()])
+        .await
+        .expect("explicit reconfiguration restores a known mount table");
+    assert!(runtime.current_mounts().contains(&grant));
+    assert!(runtime.merged_mounts(&[grant]).is_ok());
+}
+
+#[tokio::test]
+async fn mount_reconfiguration_preserves_live_scope_when_native_rejects_active_process() {
+    use mobile_linux_api::MobileLinuxRuntime as _;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let base = test_config(&temp.path().join("app"));
+    let grant = project_mount(&base, ".lingxi/.apps/agent-wake-acceptance-running");
+    let config = config_with_project_mounts(base, vec![grant.clone()]).expect("valid grant");
+    let mut runtime = IosIshRuntime::new_state(config);
+    let transport = Arc::new(TestProcessTransport::default());
+    transport.mount_apply_conflicts.store(1, Ordering::Release);
+    Arc::get_mut(&mut runtime.state)
+        .expect("exclusive runtime state")
+        .test_transport = Some(transport.clone());
+
+    let error = runtime
+        .configure_mounts(vec![grant.clone()])
+        .await
+        .expect_err("active native process owns its mount scope");
+    assert!(matches!(error, MobileLinuxError::InvalidRequest(_)));
+    assert!(runtime.current_mounts().contains(&grant));
+    assert!(runtime.merged_mounts(&[grant]).is_ok());
+    assert_eq!(
+        transport
+            .mount_apply_calls
+            .lock()
+            .expect("mount calls")
+            .len(),
+        1,
+        "preflight rejection must not trigger rollback or clear calls"
+    );
 }
 
 #[test]
@@ -1056,4 +1357,51 @@ fn different_workspaces_share_one_kernel_but_distinct_session_state() {
     let mut other_root = a;
     other_root.managed_root = dir.path().join("other-root");
     assert!(IosIshRuntime::from_registry(&mut registry, other_root).is_err());
+}
+
+#[test]
+fn project_grant_changes_create_a_new_session_without_changing_kernel_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = test_config(dir.path());
+    let grant = project_mount(&base, ".lingxi/.apps/agent-wake-acceptance-session");
+    let with_grant =
+        config_with_project_mounts(base.clone(), vec![grant.clone()]).expect("valid Project grant");
+    let without_grant = base;
+    let mut registry = ProcessRegistry::default();
+
+    let first = IosIshRuntime::from_registry(&mut registry, with_grant).unwrap();
+    let second = IosIshRuntime::from_registry(&mut registry, without_grant).unwrap();
+
+    assert!(!Arc::ptr_eq(&first.state, &second.state));
+    assert!(first.current_mounts().contains(&grant));
+    assert!(!second.current_mounts().contains(&grant));
+    assert!(Arc::ptr_eq(
+        &first.state.native_lock,
+        &second.state.native_lock
+    ));
+}
+
+#[test]
+fn public_runtime_constructor_seeds_only_validated_project_grants() {
+    use mobile_linux_api::MobileLinuxRuntime as _;
+
+    let temp = tempfile::tempdir().unwrap();
+    let base = test_config(temp.path());
+    let grant = project_mount(
+        &base,
+        ".lingxi/.apps/agent-wake-acceptance-constructor/source",
+    );
+    let config = config_with_project_mounts(base, vec![grant.clone()]).expect("valid grant");
+    let runtime = IosIshRuntime::new(config).expect("validated runtime configuration");
+
+    assert!(runtime.current_mounts().contains(&grant));
+    assert_eq!(
+        runtime
+            .current_mounts()
+            .iter()
+            .filter(|mount| matches!(mount.purpose, MountPurpose::Workspace))
+            .count(),
+        1,
+        "Project grants must not replace the primary workspace"
+    );
 }

@@ -6,8 +6,9 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use tokio::task::spawn_blocking;
 
 use super::{
-    native, normalize_host_path, parse_availability_reason, parse_native_ok, validate_guest_path,
-    IosIshRuntime, IosIshRuntimeConfig, ProcessRegistry, RuntimeState,
+    native, normalize_host_path, parse_availability_reason, parse_native_ok,
+    validate_authorized_project_mounts, validate_guest_path, IosIshRuntime, IosIshRuntimeConfig,
+    ProcessRegistry, RuntimeState,
 };
 
 pub(super) fn same_kernel_config(left: &IosIshRuntimeConfig, right: &IosIshRuntimeConfig) -> bool {
@@ -17,6 +18,11 @@ pub(super) fn same_kernel_config(left: &IosIshRuntimeConfig, right: &IosIshRunti
     right.workspace_host_path = PathBuf::new();
     left.stable_workspace_id.clear();
     right.stable_workspace_id.clear();
+    // Project grants are immutable per runtime session, but they do not alter
+    // the process-wide kernel/rootfs identity. A new Project selection gets a
+    // new RuntimeState over the same native kernel.
+    left.authorized_project_mounts.clear();
+    right.authorized_project_mounts.clear();
     left == right
 }
 
@@ -53,6 +59,7 @@ impl IosIshRuntime {
         for path in &config.allowed_guest_roots {
             validate_guest_path(path, "allowed guest root", true)?;
         }
+        config.authorized_project_mounts = validate_authorized_project_mounts(&config)?;
         if config.stable_workspace_id.is_empty()
             || config.stable_workspace_id.contains('/')
             || config.stable_workspace_id == "."
@@ -107,14 +114,17 @@ impl IosIshRuntime {
         let workspace_mount = config.default_workspace_mount();
         let persistent_home_mount = config.persistent_home_mount();
         let admin_home_mount = config.persistent_admin_home_mount();
+        let mut mounts = vec![persistent_home_mount, admin_home_mount, workspace_mount];
+        mounts.extend(config.authorized_project_mounts.iter().cloned());
+        mounts.sort_by_key(|mount| mount.guest_path.matches('/').count());
+        // This is the authoritative host translation/configuration table.
+        // Native boot or configure_mounts applies the same table before guest
+        // execution; an unsuccessful native apply clears it fail-closed.
         Self {
             state: Arc::new(RuntimeState {
                 config,
-                mounts: RwLock::new(vec![
-                    persistent_home_mount,
-                    admin_home_mount,
-                    workspace_mount,
-                ]),
+                mounts: RwLock::new(mounts),
+                mounts_consistent: AtomicBool::new(true),
                 tasks: Mutex::new(HashMap::new()),
                 events: Mutex::new(VecDeque::new()),
                 next_id: AtomicU64::new(1),
