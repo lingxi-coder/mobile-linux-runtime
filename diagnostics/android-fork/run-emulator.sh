@@ -19,13 +19,15 @@ done
 adb logcat -d -s LxForkProbe:I '*:S' | tee "$RUNNER_TEMP/fork-diagnostic.log"
 adb shell am force-stop io.lingxi.forkdiagnostic
 test "$ended" = 1
-test "$(grep -c 'RESULT ' "$RUNNER_TEMP/fork-diagnostic.log")" = 16
+test "$(grep -c 'RESULT ' "$RUNNER_TEMP/fork-diagnostic.log")" = 18
 ! grep -q 'DIAGNOSTIC_ERROR' "$RUNNER_TEMP/fork-diagnostic.log"
 # The baseline is the exact pre-fix SDK. Do not mistake collection for a fix:
 # require the real syscall, shell, network policy and process-owner results.
 grep -Eq 'RESULT baseline-fork exit=1 .*fork errno=38' "$RUNNER_TEMP/fork-diagnostic.log"
 grep -Eq 'RESULT baseline-rootfs exit=2 .*can.t fork' "$RUNNER_TEMP/fork-diagnostic.log"
 grep -Eq 'RESULT current-fork exit=0 .*fork child-exit=0' "$RUNNER_TEMP/fork-diagnostic.log"
+grep -Eq 'RESULT current-fork-contract exit=0 .*fork-contract child-exit=37, parent-memory-isolated, parent-pid-correct' "$RUNNER_TEMP/fork-diagnostic.log"
+grep -Eq 'RESULT current-fork-signal exit=0 .*fork-signal child-terminated=SIGTERM' "$RUNNER_TEMP/fork-diagnostic.log"
 grep -Eq 'RESULT current-clone exit=0 .*clone child-exit=0' "$RUNNER_TEMP/fork-diagnostic.log"
 grep -Eq 'RESULT current-clone-untraced exit=1 .*errno=1 ' "$RUNNER_TEMP/fork-diagnostic.log"
 grep -Eq 'RESULT current-clone3 exit=1 .*errno=38 ' "$RUNNER_TEMP/fork-diagnostic.log"

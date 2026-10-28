@@ -35,6 +35,8 @@ public class MainActivity extends Activity {
                     probe("current-" + operation, "libproot_current.so", false, false, operation);
                 }
                 probe("baseline-fork", "libproot_baseline.so", false, false, "fork");
+                probe("current-fork-contract", "libproot_current.so", false, false, "fork-contract");
+                probe("current-fork-signal", "libproot_current.so", false, false, "fork-signal");
                 probe("current-fork-no-proot-seccomp", "libproot_current.so", true, false, "fork");
                 shell("current-rootfs", "libproot_current.so", false, false);
                 shell("current-rootfs-no-proot-seccomp", "libproot_current.so", true, false);

@@ -14,7 +14,45 @@ int main(int argc, char **argv) {
     if (argc != 2) return 2;
     long value;
     errno = 0;
-    if (strcmp(argv[1], "fork") == 0) {
+    if (strcmp(argv[1], "fork-contract") == 0) {
+        int pipefd[2], value_before = 1;
+        if (pipe(pipefd) != 0) return 4;
+        pid_t parent = getpid();
+        value = syscall(__NR_fork);
+        if (value < 0) {
+            printf("fork-contract errno=%d %s\n", errno, strerror(errno));
+            return 1;
+        }
+        if (value == 0) {
+            close(pipefd[0]);
+            if (getpid() == parent || getppid() != parent || value_before != 1) _exit(90);
+            value_before = 2;
+            char marker = 'F';
+            if (write(pipefd[1], &marker, 1) != 1) _exit(91);
+            _exit(37);
+        }
+        close(pipefd[1]);
+        char marker = 0;
+        int status = 0;
+        if (read(pipefd[0], &marker, 1) != 1 || marker != 'F') return 5;
+        if (waitpid((pid_t)value, &status, 0) != value || !WIFEXITED(status)
+            || WEXITSTATUS(status) != 37 || value_before != 1) return 6;
+        puts("fork-contract child-exit=37, parent-memory-isolated, parent-pid-correct");
+        return 0;
+    } else if (strcmp(argv[1], "fork-signal") == 0) {
+        value = syscall(__NR_fork);
+        if (value < 0) {
+            printf("fork-signal errno=%d %s\n", errno, strerror(errno));
+            return 1;
+        }
+        if (value == 0) { for (;;) pause(); }
+        if (kill((pid_t)value, SIGTERM) != 0) return 7;
+        int status = 0;
+        if (waitpid((pid_t)value, &status, 0) != value || !WIFSIGNALED(status)
+            || WTERMSIG(status) != SIGTERM) return 8;
+        puts("fork-signal child-terminated=SIGTERM");
+        return 0;
+    } else if (strcmp(argv[1], "fork") == 0) {
         value = syscall(__NR_fork);
     } else if (strcmp(argv[1], "clone") == 0) {
         value = syscall(__NR_clone, SIGCHLD, NULL, NULL, NULL, 0);
