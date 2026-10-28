@@ -1,0 +1,65 @@
+name: media-android-fork-diagnostic
+on:
+  push:
+    branches:
+      - codex/media-android-fork-diagnostic-20261028
+permissions:
+  contents: read
+jobs:
+  android-fork:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+      - name: Install pinned NDK and APK build tools
+        run: |
+          sdkmanager --install "ndk;27.2.12479018" "platforms;android-35" "build-tools;35.0.0"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Build the current PRoot and syscall probe
+        run: |
+          bash scripts/build/build-android-native.sh --ndk "$ANDROID_NDK_HOME" --abi x86_64 --android-api 26 --output-dir "$RUNNER_TEMP/native" --cache-dir "$RUNNER_TEMP/native-cache"
+          out=diagnostics/android-fork/app/src/main/jniLibs/x86_64
+          cp "$RUNNER_TEMP/native/jniLibs/x86_64/libproot.so" "$out/libproot_current.so"
+          cp "$RUNNER_TEMP/native/jniLibs/x86_64/libproot-loader.so" "$out/"
+          cp "$RUNNER_TEMP/native/jniLibs/x86_64/libmobile_linux_policy_launcher.so" "$out/"
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang" -O2 -Wall -Wextra -Werror -fPIE -pie diagnostics/android-fork/probe.c -o "$out/libforkprobe.so"
+      - name: Obtain the exact product rootfs and previous SDK PRoot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.1.0-rc.3 --repo lingxi-coder/mobile-linux-runtime --dir "$RUNNER_TEMP" --pattern 'mobile-linux-rootfs-android-x86_64-v3.24.2-user1.tar.gz' --pattern 'mobile-linux-android-native-support-0.1.0-rc.3.zip'
+          echo 'd1aeaf2611692032f688c6eee5484234adca332033b0466b4771e7273fc93685  mobile-linux-rootfs-android-x86_64-v3.24.2-user1.tar.gz' > "$RUNNER_TEMP/rootfs.sha256"
+          echo '01b7bcf4bde183f4c6347707e6ba90101c6389fc68e9ca517849cf049f518cc5  mobile-linux-android-native-support-0.1.0-rc.3.zip' > "$RUNNER_TEMP/old.sha256"
+          (cd "$RUNNER_TEMP" && sha256sum -c rootfs.sha256 && sha256sum -c old.sha256)
+          tar -xzf "$RUNNER_TEMP/mobile-linux-rootfs-android-x86_64-v3.24.2-user1.tar.gz" -C diagnostics/android-fork/app/src/main/assets bin/busybox lib/ld-musl-x86_64.so.1
+          unzip -q "$RUNNER_TEMP/mobile-linux-android-native-support-0.1.0-rc.3.zip" -d "$RUNNER_TEMP/old"
+          mapfile -t old < <(find "$RUNNER_TEMP/old" -path '*/x86_64/libproot.so' -type f)
+          test "${#old[@]}" = 1
+          cp "${old[0]}" diagnostics/android-fork/app/src/main/jniLibs/x86_64/libproot_old.so
+          old_loader="$(dirname "${old[0]}")/libproot-loader.so"
+          test -f "$old_loader"
+          cp "$old_loader" diagnostics/android-fork/app/src/main/jniLibs/x86_64/libproot-loader-old.so
+      - name: Build the minimal app
+        run: android/gradlew -p diagnostics/android-fork --no-daemon --max-workers=2 :app:assembleDebug
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Collect app-process and PRoot syscall behavior
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 30
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash diagnostics/android-fork/run-emulator.sh
