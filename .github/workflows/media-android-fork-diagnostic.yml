@@ -26,6 +26,7 @@ jobs:
         run: |
           bash scripts/build/build-android-native.sh --ndk "$ANDROID_NDK_HOME" --abi x86_64 --android-api 26 --output-dir "$RUNNER_TEMP/native" --cache-dir "$RUNNER_TEMP/native-cache"
           out=diagnostics/android-fork/app/src/main/jniLibs/x86_64
+          mkdir -p "$out"
           cp "$RUNNER_TEMP/native/jniLibs/x86_64/libproot.so" "$out/libproot_current.so"
           cp "$RUNNER_TEMP/native/jniLibs/x86_64/libproot-loader.so" "$out/"
           cp "$RUNNER_TEMP/native/jniLibs/x86_64/libmobile_linux_policy_launcher.so" "$out/"
@@ -38,6 +39,7 @@ jobs:
           echo 'd1aeaf2611692032f688c6eee5484234adca332033b0466b4771e7273fc93685  mobile-linux-rootfs-android-x86_64-v3.24.2-user1.tar.gz' > "$RUNNER_TEMP/rootfs.sha256"
           echo '01b7bcf4bde183f4c6347707e6ba90101c6389fc68e9ca517849cf049f518cc5  mobile-linux-android-native-support-0.1.0-rc.3.zip' > "$RUNNER_TEMP/old.sha256"
           (cd "$RUNNER_TEMP" && sha256sum -c rootfs.sha256 && sha256sum -c old.sha256)
+          mkdir -p diagnostics/android-fork/app/src/main/assets
           tar -xzf "$RUNNER_TEMP/mobile-linux-rootfs-android-x86_64-v3.24.2-user1.tar.gz" -C diagnostics/android-fork/app/src/main/assets bin/busybox lib/ld-musl-x86_64.so.1
           unzip -q "$RUNNER_TEMP/mobile-linux-android-native-support-0.1.0-rc.3.zip" -d "$RUNNER_TEMP/old"
           mapfile -t old < <(find "$RUNNER_TEMP/old" -path '*/x86_64/libproot.so' -type f)
