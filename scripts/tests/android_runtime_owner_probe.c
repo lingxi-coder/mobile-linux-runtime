@@ -15,10 +15,18 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-static const char *proot, *self, *root;
+static const char *proot, *self, *root, *temp;
 static volatile sig_atomic_t trapped;
 static void trap_handler(int signal) { (void)signal; trapped = 1; }
 static void fail(const char *message) { perror(message); exit(1); }
+/* The x86_64 Alpine rootfs invokes the legacy fork syscall directly. */
+static pid_t guest_fork(void) {
+#if defined(__x86_64__)
+    return (pid_t) syscall(__NR_fork);
+#else
+    return fork();
+#endif
+}
 static int live(pid_t pid) {
     char path[64], data[1024];
     snprintf(path, sizeof path, "/proc/%d/stat", pid);
@@ -39,7 +47,7 @@ static void execute(const char *mode, const char *pidfile, pid_t owner) {
     setenv("LINGXI_RUNTIME_OWNER_PID", value, 1);
     char loader[1024]; snprintf(loader, sizeof loader, "%s/libproot-loader.so", root);
     setenv("PROOT_LOADER", loader, 1);
-    setenv("PROOT_TMP_DIR", root, 1);
+    setenv("PROOT_TMP_DIR", temp, 1);
     execl(proot, proot, "-r", "/", "-w", "/", self, mode, pidfile, NULL);
     _exit(127);
 }
@@ -53,7 +61,7 @@ static void *spawn_on_retiring_worker(void *input) {
     return NULL;
 }
 static void owner_death_test(void) {
-    char pidfile[1024]; snprintf(pidfile, sizeof pidfile, "%s/owner-tree.pids", root);
+    char pidfile[1024]; snprintf(pidfile, sizeof pidfile, "%s/owner-tree.pids", temp);
     unlink(pidfile);
     int pipefd[2]; if (pipe(pipefd)) fail("pipe");
     pid_t owner = fork();
@@ -99,9 +107,36 @@ static void normal_test(const char *mode, pid_t owner, int expect_success) {
 }
 int main(int argc, char **argv) {
     alarm(45);
+    if (argc >= 2 && !strcmp(argv[1], "--guest-fork-contract")) {
+        int pipefd[2], state = 1;
+        if (pipe(pipefd)) fail("guest pipe");
+        pid_t parent = (pid_t) syscall(__NR_getpid);
+        pid_t child = guest_fork(); if (child < 0) fail("guest fork");
+        if (!child) {
+            close(pipefd[0]);
+            if ((pid_t) syscall(__NR_getpid) == parent || (pid_t) syscall(__NR_getppid) != parent || state != 1) _exit(90);
+            state = 2;
+            if (write(pipefd[1], "F", 1) != 1) _exit(91);
+            _exit(37);
+        }
+        close(pipefd[1]);
+        char marker = 0; int status = 0;
+        if (read(pipefd[0], &marker, 1) != 1 || marker != 'F' ||
+            waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+            WEXITSTATUS(status) != 37 || state != 1) return 92;
+        puts("PASS fork parent/child identity, memory and exit status"); return 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "--guest-fork-signal")) {
+        pid_t child = guest_fork(); if (child < 0) fail("guest fork");
+        if (!child) { for (;;) pause(); }
+        int status = 0;
+        if (kill(child, SIGTERM) || waitpid(child, &status, 0) != child ||
+            !WIFSIGNALED(status) || WTERMSIG(status) != SIGTERM) return 93;
+        puts("PASS fork child signal status"); return 0;
+    }
     if (argc >= 2 && !strcmp(argv[1], "--guest-tree")) {
         signal(SIGTERM, SIG_IGN);
-        pid_t child = fork(); if (child < 0) fail("guest fork");
+        pid_t child = guest_fork(); if (child < 0) fail("guest fork");
         if (!child) { if (setsid() < 0) fail("setsid"); for (;;) pause(); }
         FILE *file = fopen(argv[2], "w"); if (!file) fail("pidfile");
         fprintf(file, "%d %d\n", getpid(), child); fclose(file);
@@ -124,13 +159,15 @@ int main(int argc, char **argv) {
         if (errno != ENOSYS) return 97;
         puts("PASS untraced clone rejected and clone3 reports ENOSYS"); return 0;
     }
-    if (argc != 3) { fprintf(stderr, "usage: probe proot helper-directory\n"); return 2; }
-    self = argv[0]; proot = argv[1]; root = argv[2];
+    if (argc != 3 && argc != 4) { fprintf(stderr, "usage: probe proot helper-directory [temporary-directory]\n"); return 2; }
+    self = argv[0]; proot = argv[1]; root = argv[2]; temp = argc == 4 ? argv[3] : root;
     normal_test("--guest-trap", getpid(), 1);
     normal_test("--guest-clone", getpid(), 1);
+    normal_test("--guest-fork-contract", getpid(), 1);
+    normal_test("--guest-fork-signal", getpid(), 1);
     normal_test("--guest-trap", 1, 0);
     puts("PASS lost owner fails before guest launch");
     owner_death_test();
-    puts("OK (4 native ownership regressions)");
+    puts("OK (6 native ownership regressions)");
     return 0;
 }
