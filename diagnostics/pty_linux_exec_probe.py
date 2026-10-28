@@ -4,6 +4,7 @@
 import ctypes
 import errno
 import os
+import pty
 import select
 import signal
 import struct
@@ -108,6 +109,46 @@ def fast_elf_zombie_is_not_visible_as_target_exe():
         child.cleanup()
 
 
+def linux_pty_last_close_preserves_tail():
+    master, slave = pty.openpty()
+    gate_read, gate_write = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        parent_death_guard()
+        os.close(master)
+        os.close(gate_write)
+        if os.read(gate_read, 1) != b"G":
+            os._exit(90)
+        os.close(gate_read)
+        os.write(slave, b"__LINUX_TAIL__")
+        os.close(slave)
+        os._exit(0)
+    child = OwnedChild(pid)
+    os.close(gate_read)
+    os.close(slave)
+    try:
+        os.write(gate_write, b"G")
+        os.close(gate_write)
+        gate_write = -1
+        expected_exit(child.wait(), 0)
+        assert os.read(master, 4096) == b"__LINUX_TAIL__"
+        poller = select.poll()
+        poller.register(master, select.POLLIN | select.POLLHUP)
+        events = poller.poll(1000)
+        assert events and events[0][1] & select.POLLHUP, events
+        try:
+            os.read(master, 4096)
+        except OSError as error:
+            assert error.errno == errno.EIO, error
+        else:
+            raise AssertionError("expected Linux master EIO after slave hangup")
+    finally:
+        if gate_write != -1:
+            os.close(gate_write)
+        os.close(master)
+        child.cleanup()
+
+
 def live_shebang_has_interpreter_identity(script):
     gate_read, gate_write = os.pipe()
     ready_read, ready_write = os.pipe()
@@ -191,6 +232,9 @@ def main():
         for _ in range(20):
             fast_elf_zombie_is_not_visible_as_target_exe()
         print("PASS: 20 short-lived ELF zombies invisible to /proc/PID/exe", flush=True)
+        for _ in range(20):
+            linux_pty_last_close_preserves_tail()
+        print("PASS: 20 Linux last-slave-close tails followed by POLLHUP/EIO", flush=True)
         live_shebang_has_interpreter_identity(script)
         print("PASS: live shebang /proc/PID/exe differs from script inode", flush=True)
         # This variant does not wait on stdin after exec.
