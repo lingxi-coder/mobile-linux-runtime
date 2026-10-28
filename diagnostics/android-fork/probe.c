@@ -14,21 +14,26 @@ int main(int argc, char **argv) {
     if (argc != 2) return 2;
     long value;
     errno = 0;
-    if (strcmp(argv[1], "fork-contract") == 0) {
+    if (strcmp(argv[1], "fork-contract") == 0 || strcmp(argv[1], "clone-contract") == 0) {
         int pipefd[2], value_before = 1;
         if (pipe(pipefd) != 0) return 4;
-        pid_t parent = getpid();
-        value = syscall(__NR_fork);
+        /* Raw syscalls do not run Android libc fork hooks, so libc getpid()
+         * may use a stale cached value in the child. Compare kernel PIDs. */
+        pid_t parent = (pid_t) syscall(__NR_getpid);
+        value = strcmp(argv[1], "fork-contract") == 0
+            ? syscall(__NR_fork)
+            : syscall(__NR_clone, SIGCHLD, NULL, NULL, NULL, 0);
         if (value < 0) {
-            printf("fork-contract errno=%d %s\n", errno, strerror(errno));
+            printf("%s errno=%d %s\n", argv[1], errno, strerror(errno));
             return 1;
         }
-        dprintf(STDERR_FILENO, "fork-contract observation parent=%ld pid=%ld ppid=%ld result=%ld memory=%d\n",
-                (long) parent, (long) getpid(), (long) getppid(), value, value_before);
+        dprintf(STDERR_FILENO, "%s observation parent=%ld raw-pid=%ld libc-pid=%ld raw-ppid=%ld result=%ld memory=%d\n",
+                argv[1], (long) parent, syscall(__NR_getpid), (long) getpid(),
+                syscall(__NR_getppid), value, value_before);
         if (value == 0) {
             close(pipefd[0]);
-            if (getpid() == parent) _exit(90);
-            if (getppid() != parent) _exit(91);
+            if (syscall(__NR_getpid) == parent) _exit(90);
+            if (syscall(__NR_getppid) != parent) _exit(91);
             if (value_before != 1) _exit(92);
             value_before = 2;
             char marker = 'F';
@@ -41,7 +46,7 @@ int main(int argc, char **argv) {
         if (read(pipefd[0], &marker, 1) != 1 || marker != 'F') return 5;
         if (waitpid((pid_t)value, &status, 0) != value || !WIFEXITED(status)
             || WEXITSTATUS(status) != 37 || value_before != 1) return 6;
-        puts("fork-contract child-exit=37, parent-memory-isolated, parent-pid-correct");
+        printf("%s child-exit=37, parent-memory-isolated, parent-pid-correct\n", argv[1]);
         return 0;
     } else if (strcmp(argv[1], "fork-signal") == 0) {
         value = syscall(__NR_fork);
