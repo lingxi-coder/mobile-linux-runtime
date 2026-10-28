@@ -37,5 +37,5 @@ grep -Eq 'RESULT current-fork-no-proot-seccomp exit=0 .*fork child-exit=0' "$RUN
 grep -Eq 'RESULT current-rootfs exit=0 .*FORK_FIRST.*FORK_SECOND' "$RUNNER_TEMP/fork-diagnostic.log"
 grep -Eq 'RESULT current-rootfs-no-proot-seccomp exit=0 .*FORK_FIRST.*FORK_SECOND' "$RUNNER_TEMP/fork-diagnostic.log"
 grep -Eq 'RESULT current-rootfs-network-disabled exit=0 .*FORK_FIRST.*FORK_SECOND' "$RUNNER_TEMP/fork-diagnostic.log"
-grep -Eq 'RESULT current-owner exit=0 heldPipe=false .*OK \(4 native ownership regressions\)' "$RUNNER_TEMP/fork-diagnostic.log"
+grep -Eq 'RESULT current-owner exit=0 heldPipe=false .*OK \(6 native ownership regressions\)' "$RUNNER_TEMP/fork-diagnostic.log"
 echo 'Android fork and ownership diagnostic assertions passed; full product acceptance remains separate.'

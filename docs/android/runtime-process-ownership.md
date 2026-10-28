@@ -15,6 +15,10 @@ children inherit EXITKILL in the kernel; new sessions do not escape it.
 
 CLONE_UNTRACED is rejected. clone3 returns ENOSYS so libc can use clone: its
 shared-memory argument cannot be checked without a concurrent-write race.
+On Android x86_64, PRoot translates a trapped legacy fork into
+clone(SIGCHLD) through its existing syscall-restart path. This preserves the
+owner checks and allows musl-based Linux shells to start child processes.
+
 Genuine SIGTRAP signals still reach the guest after early options installation.
 The watcher polls at 100 ms, which is not a strict cleanup deadline when Android
 pauses/freezes the tracer. This is lifecycle ownership, not a filesystem or code
@@ -31,8 +35,11 @@ with the matching NDK and run on a device with the built ARM64 helper:
 owner-probe /data/local/tmp/<test-directory>/libproot.so /data/local/tmp/<test-directory>
 ```
 
-Place the matching libproot-loader.so in that test directory. The probe verifies
-real SIGTRAP delivery, clone restrictions, launch with an already-lost owner,
+Place the matching libproot-loader.so in that test directory. An optional
+fourth argument supplies a separate writable temporary directory when the
+helper directory is read-only. The probe verifies
+real SIGTRAP delivery, clone restrictions, fork identity, memory and signal
+semantics, launch with an already-lost owner,
 creator-thread retirement, and host SIGKILL cleanup of a quiet guest and a
 TERM-ignoring child that starts its own session. It does not replace application
 APK/JNI pairing or product cold-start and data-preservation acceptance.

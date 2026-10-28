@@ -39,7 +39,7 @@ jobs:
           cp "$RUNNER_TEMP/native/jniLibs/x86_64/libmobile_linux_policy_launcher.so" "$out/"
           cc="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang"
           "$cc" -O2 -Wall -Wextra -Werror -fPIE -pie diagnostics/android-fork/probe.c -o "$out/libforkprobe.so"
-          "$cc" -O2 -Wall -Wextra -Werror -fPIE -pie -pthread diagnostics/android-fork/owner-probe.c -o "$out/libownerprobe.so"
+          "$cc" -O2 -Wall -Wextra -Werror -fPIE -pie -pthread scripts/tests/android_runtime_owner_probe.c -o "$out/libownerprobe.so"
       - name: Obtain the exact product rootfs and previous SDK PRoot
         env:
           GH_TOKEN: ${{ github.token }}
