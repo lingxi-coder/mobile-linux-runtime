@@ -1,0 +1,18 @@
+name: isolated PTY exec diagnostic
+
+on:
+  push:
+    branches:
+      - diagnostic/pty-exec-20261028-hksyfayx
+
+permissions:
+  contents: read
+
+jobs:
+  linux-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Probe child-only exec observation
+        run: python3 diagnostics/pty_linux_exec_probe.py
