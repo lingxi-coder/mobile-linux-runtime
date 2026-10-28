@@ -23,9 +23,13 @@ int main(int argc, char **argv) {
             printf("fork-contract errno=%d %s\n", errno, strerror(errno));
             return 1;
         }
+        dprintf(STDERR_FILENO, "fork-contract observation parent=%ld pid=%ld ppid=%ld result=%ld memory=%d\n",
+                (long) parent, (long) getpid(), (long) getppid(), value, value_before);
         if (value == 0) {
             close(pipefd[0]);
-            if (getpid() == parent || getppid() != parent || value_before != 1) _exit(90);
+            if (getpid() == parent) _exit(90);
+            if (getppid() != parent) _exit(91);
+            if (value_before != 1) _exit(92);
             value_before = 2;
             char marker = 'F';
             if (write(pipefd[1], &marker, 1) != 1) _exit(91);
