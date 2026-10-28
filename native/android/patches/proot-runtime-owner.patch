@@ -143,3 +143,22 @@
  	{ PR_creat,		0 },
  	{ PR_execve,		FILTER_SYSEXIT },
  	{ PR_execveat,		FILTER_SYSEXIT },
+diff --git a/src/tracee/seccomp.c b/src/tracee/seccomp.c
+index 77d5b27..1ef91df 100644
+--- a/src/tracee/seccomp.c
++++ b/src/tracee/seccomp.c
+@@ -142,0 +143,14 @@ static int handle_seccomp_event_common(Tracee *tracee)
++#if defined(ARCH_X86_64)
++	case PR_fork:
++		/* Android's x86_64 app filter traps the legacy fork syscall.
++		 * clone(SIGCHLD, NULL, ...) has fork's process semantics and
++		 * remains subject to PRoot's clone ownership checks. */
++		set_sysnum(tracee, PR_clone);
++		poke_reg(tracee, SYSARG_1, SIGCHLD);
++		poke_reg(tracee, SYSARG_2, 0);
++		poke_reg(tracee, SYSARG_3, 0);
++		poke_reg(tracee, SYSARG_4, 0);
++		poke_reg(tracee, SYSARG_5, 0);
++		restart_syscall_after_seccomp(tracee);
++		break;
++#endif

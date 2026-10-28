@@ -34,11 +34,14 @@ public class MainActivity extends Activity {
                     probe("direct-" + operation, null, false, false, operation);
                     probe("current-" + operation, "libproot_current.so", false, false, operation);
                 }
+                probe("baseline-fork", "libproot_baseline.so", false, false, "fork");
                 probe("current-fork-no-proot-seccomp", "libproot_current.so", true, false, "fork");
                 shell("current-rootfs", "libproot_current.so", false, false);
                 shell("current-rootfs-no-proot-seccomp", "libproot_current.so", true, false);
                 shell("current-rootfs-network-disabled", "libproot_current.so", false, true);
                 shell("old-rootfs", "libproot_old.so", false, false);
+                shell("baseline-rootfs", "libproot_baseline.so", false, false);
+                ownerProbe();
                 Log.i(TAG, "DIAGNOSTIC_END");
             } catch (Throwable failure) {
                 Log.e(TAG, "DIAGNOSTIC_ERROR " + failure, failure);
@@ -79,6 +82,15 @@ public class MainActivity extends Activity {
         run(name, cmd, noSeccomp, policy);
     }
 
+    private void ownerProbe() throws Exception {
+        List<String> cmd = new ArrayList<>();
+        cmd.add(new File(nativeDir, "libownerprobe.so").getAbsolutePath());
+        cmd.add(new File(nativeDir, "libproot_current.so").getAbsolutePath());
+        cmd.add(nativeDir.getAbsolutePath());
+        cmd.add(temp.getAbsolutePath());
+        run("current-owner", cmd, false, false);
+    }
+
     private void shell(String name, String proot, boolean noSeccomp, boolean policy) throws Exception {
         List<String> cmd = base(proot, policy, root);
         cmd.add("/bin/busybox"); cmd.add("sh"); cmd.add("-c");
@@ -89,12 +101,18 @@ public class MainActivity extends Activity {
     private void run(String name, List<String> command, boolean noSeccomp, boolean policy) throws Exception {
         ProcessBuilder builder = new ProcessBuilder(command).redirectErrorStream(true);
         builder.environment().put("LINGXI_RUNTIME_OWNER_PID", Integer.toString(Process.myPid()));
-        String loader = command.toString().contains("libproot_old.so") ? "libproot-loader-old.so" : "libproot-loader.so";
+        String loader = command.toString().contains("libproot_old.so") ? "libproot-loader-old.so"
+                : command.toString().contains("libproot_baseline.so") ? "libproot-loader-baseline.so"
+                : "libproot-loader.so";
         builder.environment().put("PROOT_LOADER", new File(nativeDir, loader).getAbsolutePath());
         builder.environment().put("PROOT_TMP_DIR", temp.getAbsolutePath());
         if (noSeccomp) builder.environment().put("PROOT_NO_SECCOMP", "1");
         else builder.environment().remove("PROOT_NO_SECCOMP");
-        if (policy) builder.environment().put("LINGXI_ENFORCEMENT_RECEIPT_PATH", new File(temp, "policy-receipt").getAbsolutePath());
+        if (policy) {
+            File receipt = new File(temp, "policy-receipt-" + name);
+            if (!receipt.createNewFile()) throw new Exception("receipt exists");
+            builder.environment().put("LINGXI_ENFORCEMENT_RECEIPT_PATH", receipt.getAbsolutePath());
+        }
         java.lang.Process process = builder.start();
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         Thread reader = new Thread(() -> {
@@ -112,7 +130,7 @@ public class MainActivity extends Activity {
         });
         reader.setDaemon(true);
         reader.start();
-        boolean ended = process.waitFor(15, TimeUnit.SECONDS);
+        boolean ended = process.waitFor(name.equals("current-owner") ? 60 : 15, TimeUnit.SECONDS);
         if (!ended) { process.destroyForcibly(); process.waitFor(); }
         reader.join(2000);
         boolean heldPipe = reader.isAlive();

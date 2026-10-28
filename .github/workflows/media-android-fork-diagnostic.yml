@@ -24,13 +24,20 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - name: Build the current PRoot and syscall probe
         run: |
+          git clone --no-checkout . "$RUNNER_TEMP/sdk-baseline"
+          git -C "$RUNNER_TEMP/sdk-baseline" checkout --detach bfd17e346f7ebbb2bcd5206f3c05f56b83a1858b
+          bash "$RUNNER_TEMP/sdk-baseline/scripts/build/build-android-native.sh" --ndk "$ANDROID_NDK_HOME" --abi x86_64 --android-api 26 --output-dir "$RUNNER_TEMP/native-baseline" --cache-dir "$RUNNER_TEMP/native-baseline-cache"
           bash scripts/build/build-android-native.sh --ndk "$ANDROID_NDK_HOME" --abi x86_64 --android-api 26 --output-dir "$RUNNER_TEMP/native" --cache-dir "$RUNNER_TEMP/native-cache"
           out=diagnostics/android-fork/app/src/main/jniLibs/x86_64
           mkdir -p "$out"
           cp "$RUNNER_TEMP/native/jniLibs/x86_64/libproot.so" "$out/libproot_current.so"
+          cp "$RUNNER_TEMP/native-baseline/jniLibs/x86_64/libproot.so" "$out/libproot_baseline.so"
+          cp "$RUNNER_TEMP/native-baseline/jniLibs/x86_64/libproot-loader.so" "$out/libproot-loader-baseline.so"
           cp "$RUNNER_TEMP/native/jniLibs/x86_64/libproot-loader.so" "$out/"
           cp "$RUNNER_TEMP/native/jniLibs/x86_64/libmobile_linux_policy_launcher.so" "$out/"
-          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang" -O2 -Wall -Wextra -Werror -fPIE -pie diagnostics/android-fork/probe.c -o "$out/libforkprobe.so"
+          cc="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android26-clang"
+          "$cc" -O2 -Wall -Wextra -Werror -fPIE -pie diagnostics/android-fork/probe.c -o "$out/libforkprobe.so"
+          "$cc" -O2 -Wall -Wextra -Werror -fPIE -pie -pthread diagnostics/android-fork/owner-probe.c -o "$out/libownerprobe.so"
       - name: Obtain the exact product rootfs and previous SDK PRoot
         env:
           GH_TOKEN: ${{ github.token }}
