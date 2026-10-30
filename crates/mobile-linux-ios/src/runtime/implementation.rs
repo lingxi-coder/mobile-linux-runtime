@@ -5,7 +5,7 @@ use mobile_linux_api::{
     MobileLinuxError, MobileLinuxEvent, MobileLinuxRuntime, MobileLinuxRuntimeMode,
     MobileLinuxTaskSnapshot, MobileLinuxTaskStatus, MountSpec, ProcessStreamSink, PtyOpenRequest,
     PtySessionHandle, PtySize, RawStdioOpenRequest, RawStdioReadResult, RawStdioSessionHandle,
-    RootfsState, RootfsStatus, SandboxBackend,
+    RawStdioStopResult, RootfsState, RootfsStatus, SandboxBackend,
 };
 use std::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,9 +15,8 @@ use tokio::task::spawn_blocking;
 
 use super::{
     display_command, encode_base64, filesystem_rootfs_state, native, parse_native_ok,
-    parse_raw_stdio_read_response, raw_stdio_close_progress, validate_mount, validate_pty_request,
-    validate_request, IosIshRuntime, PtyControl, RawStdioNativeOperation, RawStdioRequestPayload,
-    BACKGROUND_REAP_BUDGET,
+    validate_mount, validate_pty_request, validate_request, IosIshRuntime, PtyControl,
+    RawStdioNativeOperation, RawStdioRequestPayload, BACKGROUND_REAP_BUDGET,
 };
 
 #[async_trait]
@@ -83,7 +82,13 @@ impl MobileLinuxRuntime for IosIshRuntime {
     }
 
     async fn shutdown(&self) -> Result<(), MobileLinuxError> {
-        let _lifecycle = self.state.lifecycle.lock().await;
+        let _lifecycle = tokio::time::timeout(BACKGROUND_REAP_BUDGET, self.state.lifecycle.lock())
+            .await
+            .map_err(|_| {
+                MobileLinuxError::Io(
+                    "runtime shutdown could not acquire lifecycle; a native operation may still own it".into(),
+                )
+            })?;
         let mut close_errors = Vec::new();
         let current_pty = self.state.pty.lock().expect("ios-ish pty mutex").clone();
         if let Some((session_id, _)) = current_pty {
@@ -91,7 +96,7 @@ impl MobileLinuxRuntime for IosIshRuntime {
                 close_errors.push(error.to_string());
             }
         }
-        let raw_sessions: Vec<_> = self
+        let raw_controls: Vec<_> = self
             .state
             .raw_stdio
             .lock()
@@ -99,9 +104,42 @@ impl MobileLinuxRuntime for IosIshRuntime {
             .values()
             .cloned()
             .collect();
-        for session in raw_sessions {
-            if let Err(error) = self.close_raw_stdio(&session).await {
-                close_errors.push(error.to_string());
+        // Revoke pending read/open handoffs before starting detached cleanup,
+        // including when this shutdown caller is subsequently dropped.
+        for control in &raw_controls {
+            control.stop_requested.send_replace(true);
+        }
+        let mut raw_closes = Vec::with_capacity(raw_controls.len());
+        if !raw_controls.is_empty() {
+            let executor = super::raw_stdio::raw_stdio_executor()?;
+            for control in raw_controls {
+                let session = control.handle.clone();
+                let runtime = self.clone();
+                let id = session.id.clone();
+                let owner = executor.spawn(async move {
+                    let result = runtime.close_raw_stdio_owned(&session).await;
+                    if let Err(error) = &result {
+                        runtime.report_raw_cleanup_failure(&session.id, error);
+                    }
+                    result
+                });
+                raw_closes.push((id, owner));
+            }
+        }
+        // All close owners are independent of the caller's runtime. One
+        // shared deadline bounds this phase without abandoning later owners.
+        let deadline =
+            tokio::time::Instant::now() + BACKGROUND_REAP_BUDGET + Duration::from_secs(1);
+        for (id, mut owner) in raw_closes {
+            match tokio::time::timeout_at(deadline, &mut owner).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => close_errors.push(error.to_string()),
+                Ok(Err(error)) => {
+                    close_errors.push(format!("raw stdio close owner failed: {error}"))
+                }
+                Err(_) => close_errors.push(format!(
+                    "raw stdio session {id} close is still pending; cleanup is unverified"
+                )),
             }
         }
         let task_ids: Vec<_> = self
@@ -365,18 +403,60 @@ impl MobileLinuxRuntime for IosIshRuntime {
         };
         validate_request(&validation_request)?;
         self.boot().await?;
-        let _lifecycle = self.state.lifecycle.lock().await;
-        self.ensure_session_open()?;
-        let mounts = self.merged_mounts(&request.mounts)?;
-        let (id, enforcement) = self.native_open_raw_stdio(&request, &mounts).await?;
-        enforcement.ensure_for(request.network, request.resource_limits)?;
-        let handle = RawStdioSessionHandle { id, enforcement };
-        self.state
-            .raw_stdio
-            .lock()
-            .expect("ios-ish raw stdio mutex")
-            .insert(handle.id.clone(), handle.clone());
-        Ok(handle)
+        let runtime = self.clone();
+        let (reply, response) = tokio::sync::oneshot::channel();
+        let (accept, accepted) = tokio::sync::oneshot::channel();
+        super::raw_stdio::raw_stdio_executor()?.spawn(async move {
+            let _lifecycle = runtime.state.lifecycle.lock().await;
+            if reply.is_closed() {
+                return;
+            }
+            let result = runtime.open_raw_stdio_owned(request).await;
+            let handle = result.as_ref().ok().cloned();
+            let startup_error = result.as_ref().err().cloned();
+            let delivered = reply.send(result).is_ok();
+            // A sent oneshot is not acceptance. Do not let a caller that
+            // stops polling hold the lifecycle lock and block shutdown. The
+            // provisional session remains marked uncertain until acceptance.
+            drop(_lifecycle);
+            if !delivered {
+                if let Some(error) = startup_error {
+                    runtime.emit(
+                        None,
+                        mobile_linux_api::MobileLinuxEventKind::RuntimeError {
+                            detail: format!(
+                                "raw stdio startup failed after caller disconnected: {error}"
+                            ),
+                        },
+                    );
+                }
+            }
+            if let Some(handle) = handle {
+                if !delivered || accepted.await.is_err() {
+                    if let Err(error) = runtime.close_raw_stdio_owned(&handle).await {
+                        runtime.report_raw_cleanup_failure(&handle.id, &error);
+                    }
+                }
+            }
+        });
+        let result = response.await.map_err(|error| {
+            MobileLinuxError::Io(format!("raw stdio startup owner failed: {error}"))
+        })?;
+        if let Ok(handle) = &result {
+            // Serialize acceptance with shutdown after the startup owner has
+            // released lifecycle. A delivered but unpolled response may have
+            // been stopped before the caller resumes.
+            let _lifecycle = self.state.lifecycle.lock().await;
+            self.ensure_session_open()?;
+            self.accept_raw_stdio(&handle.id)?;
+            if accept.send(()).is_err() {
+                self.mark_raw_stdio_uncertain(&handle.id);
+                return Err(MobileLinuxError::Io(
+                    "raw stdio startup owner lost during handoff".into(),
+                ));
+            }
+        }
+        result
     }
 
     async fn write_raw_stdio(
@@ -413,98 +493,86 @@ impl MobileLinuxRuntime for IosIshRuntime {
         handle: &RawStdioSessionHandle,
         max_bytes: usize,
     ) -> Result<RawStdioReadResult, MobileLinuxError> {
-        if !self
-            .state
-            .raw_stdio
-            .lock()
-            .expect("ios-ish raw stdio mutex")
-            .contains_key(&handle.id)
-        {
-            return Err(MobileLinuxError::InvalidRequest(
-                "unknown raw stdio session".to_string(),
-            ));
-        }
-        let response = self
-            .native_raw_stdio_call(
-                RawStdioNativeOperation::Read,
-                RawStdioRequestPayload {
-                    session_id: handle.id.clone(),
-                    data_base64: None,
-                    max_bytes: Some(max_bytes.clamp(1, 1_048_576) as u32),
-                },
-            )
-            .await?;
-        parse_raw_stdio_read_response(&response)
+        self.read_raw_stdio_owned(handle, max_bytes).await
     }
 
     async fn close_raw_stdio(
         &self,
         handle: &RawStdioSessionHandle,
     ) -> Result<(), MobileLinuxError> {
-        if !self
+        let runtime = self.clone();
+        let handle = handle.clone();
+        super::raw_stdio::raw_stdio_executor()?
+            .spawn(async move {
+                let result = runtime.close_raw_stdio_owned(&handle).await;
+                if let Err(error) = &result {
+                    runtime.report_raw_cleanup_failure(&handle.id, error);
+                }
+                result
+            })
+            .await
+            .map_err(|error| {
+                MobileLinuxError::Io(format!("raw stdio close owner failed: {error}"))
+            })?
+    }
+
+    async fn stop_raw_stdio(
+        &self,
+        handle: &RawStdioSessionHandle,
+        max_bytes_per_stream: usize,
+    ) -> Result<RawStdioStopResult, MobileLinuxError> {
+        let control = self
             .state
             .raw_stdio
             .lock()
             .expect("ios-ish raw stdio mutex")
-            .contains_key(&handle.id)
-        {
-            return Ok(());
-        }
-        let request = RawStdioRequestPayload {
-            session_id: handle.id.clone(),
-            data_base64: None,
-            max_bytes: None,
-        };
-        let close_response = self
-            .native_raw_stdio_call(RawStdioNativeOperation::Close, request)
-            .await?;
-        parse_native_ok(&close_response)?;
-
-        let deadline = tokio::time::Instant::now() + BACKGROUND_REAP_BUDGET;
-        let terminal_error = loop {
-            let response = self
-                .native_raw_stdio_call(
-                    RawStdioNativeOperation::Read,
-                    RawStdioRequestPayload {
-                        session_id: handle.id.clone(),
-                        data_base64: None,
-                        max_bytes: Some(65_536),
-                    },
+            .get(&handle.id)
+            .cloned()
+            .ok_or_else(|| {
+                MobileLinuxError::InvalidRequest(
+                    "unknown raw stdio session; cleanup is unverified".into(),
                 )
-                .await?;
-            let (closed, execution_error) = raw_stdio_close_progress(&response)?;
-            if closed {
-                break execution_error;
+            })?;
+        let executor = super::raw_stdio::raw_stdio_executor()?;
+        control.stop_requested.send_replace(true);
+        let mut completion = {
+            let mut slot = control.stop_completion.lock().expect("raw stop completion");
+            if let Some(existing) = slot.as_ref() {
+                existing.clone()
+            } else {
+                let (finished, receiver) = tokio::sync::watch::channel(None);
+                let runtime = self.clone();
+                let handle = handle.clone();
+                executor.spawn(async move {
+                    let result = runtime
+                        .stop_raw_stdio_owned(&handle, usize::MAX)
+                        .await
+                        .map(|_| ());
+                    finished.send_replace(Some(result));
+                });
+                *slot = Some(receiver.clone());
+                receiver
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(MobileLinuxError::Io(format!(
-                    "raw stdio session {} did not reap within 3 seconds",
-                    handle.id
-                )));
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
         };
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        let dispose_response = self
-            .native_raw_stdio_call(
-                RawStdioNativeOperation::Dispose,
-                RawStdioRequestPayload {
-                    session_id: handle.id.clone(),
-                    data_base64: None,
-                    max_bytes: None,
-                },
-            )
-            .await?;
-        parse_native_ok(&dispose_response)?;
-        self.state
-            .raw_stdio
-            .lock()
-            .expect("ios-ish raw stdio mutex")
-            .remove(&handle.id);
-        if let Some(error) = terminal_error {
-            return Err(error);
+        loop {
+            let result = completion.borrow().clone();
+            if let Some(result) = result {
+                result?;
+                let output = control
+                    .stop_result
+                    .lock()
+                    .expect("raw stop result")
+                    .clone()
+                    .ok_or_else(|| MobileLinuxError::Io("raw stop result missing".into()))?;
+                return Ok(super::raw_stdio::bounded_stop_result(
+                    output,
+                    max_bytes_per_stream,
+                ));
+            }
+            completion.changed().await.map_err(|_| {
+                MobileLinuxError::Io("raw stdio stop owner ended without a result".into())
+            })?;
         }
-        Ok(())
     }
 
     async fn rootfs_status(&self) -> Result<RootfsStatus, MobileLinuxError> {

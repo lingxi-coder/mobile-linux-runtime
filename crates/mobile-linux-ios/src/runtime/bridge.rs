@@ -54,6 +54,7 @@ pub(super) struct RunRequestPayload {
 
 #[derive(Debug, Serialize)]
 pub(super) struct RawStdioOpenPayload {
+    pub(super) session_id: String,
     pub(super) command: String,
     pub(super) args: Vec<String>,
     pub(super) cwd: Option<String>,
@@ -64,8 +65,13 @@ pub(super) struct RawStdioOpenPayload {
 }
 
 impl RawStdioOpenPayload {
-    pub(super) fn from_request(request: &RawStdioOpenRequest, mounts: &[MountSpec]) -> Self {
+    pub(super) fn from_request(
+        request: &RawStdioOpenRequest,
+        mounts: &[MountSpec],
+        session_id: &str,
+    ) -> Self {
         Self {
+            session_id: session_id.to_owned(),
             command: request.command.clone(),
             args: request.args.clone(),
             cwd: request.cwd.clone(),
@@ -286,7 +292,24 @@ pub(super) struct NativeRawStdioReadEnvelope {
     pub(super) stderr_base64: Option<String>,
     #[serde(default)]
     pub(super) closed: bool,
+    #[serde(default)]
+    pub(super) stdout_eof: bool,
+    #[serde(default)]
+    pub(super) stderr_eof: bool,
+    #[serde(default)]
+    pub(super) stdout_truncated: bool,
+    #[serde(default)]
+    pub(super) stderr_truncated: bool,
     pub(super) exit_code: Option<i32>,
+}
+
+pub(super) struct NativeRawStdioObservation {
+    pub(super) read: RawStdioReadResult,
+    pub(super) failure: Option<MobileLinuxError>,
+    pub(super) stdout_eof: bool,
+    pub(super) stderr_eof: bool,
+    pub(super) stdout_truncated: bool,
+    pub(super) stderr_truncated: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -473,6 +496,34 @@ pub(super) fn parse_raw_stdio_open_response(
     ))
 }
 
+/// The v2 native bridge asserts this only when the open never attempted a
+/// spawn and the requested id did not already belong to another session.
+pub(super) fn raw_stdio_open_not_started(json: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return false;
+    };
+    value.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+        && value
+            .get("not_started")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        && value
+            .get("session_id")
+            .is_none_or(serde_json::Value::is_null)
+}
+
+pub(super) fn raw_stdio_dispose_confirmed(json: &str) -> Result<(), MobileLinuxError> {
+    parse_native_ok(json)?;
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|error| MobileLinuxError::Io(format!("parse raw stdio dispose: {error}")))?;
+    if value.get("disposed").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err(MobileLinuxError::Io(
+            "native raw stdio dispose did not confirm disposal".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn raw_stdio_close_progress(
     json: &str,
 ) -> Result<(bool, Option<MobileLinuxError>), MobileLinuxError> {
@@ -493,20 +544,29 @@ pub(super) fn raw_stdio_close_progress(
 pub(super) fn parse_raw_stdio_read_response(
     json: &str,
 ) -> Result<RawStdioReadResult, MobileLinuxError> {
+    let observation = parse_raw_stdio_read_observation(json)?;
+    match observation.failure {
+        Some(error) => Err(error),
+        None => Ok(observation.read),
+    }
+}
+
+pub(super) fn parse_raw_stdio_read_observation(
+    json: &str,
+) -> Result<NativeRawStdioObservation, MobileLinuxError> {
     let envelope = serde_json::from_str::<NativeRawStdioReadEnvelope>(json)
         .map_err(|error| MobileLinuxError::Io(format!("parse raw stdio read: {error}")))?;
-    if !envelope.ok {
-        return Err(native_error_to_mobile(envelope.error.unwrap_or(
+    let failure = if !envelope.ok {
+        Some(native_error_to_mobile(envelope.error.unwrap_or(
             NativeErrorPayload {
                 code: "io".to_string(),
                 message: "native raw stdio read indicated failure".to_string(),
             },
-        )));
-    }
-    if let Some(error) = envelope.error {
-        return Err(native_error_to_mobile(error));
-    }
-    Ok(RawStdioReadResult {
+        )))
+    } else {
+        envelope.error.map(native_error_to_mobile)
+    };
+    let result = RawStdioReadResult {
         stdout: envelope
             .stdout_base64
             .as_deref()
@@ -521,6 +581,14 @@ pub(super) fn parse_raw_stdio_read_response(
             .unwrap_or_default(),
         closed: envelope.closed,
         exit_code: envelope.exit_code,
+    };
+    Ok(NativeRawStdioObservation {
+        read: result,
+        failure,
+        stdout_eof: envelope.stdout_eof,
+        stderr_eof: envelope.stderr_eof,
+        stdout_truncated: envelope.stdout_truncated,
+        stderr_truncated: envelope.stderr_truncated,
     })
 }
 

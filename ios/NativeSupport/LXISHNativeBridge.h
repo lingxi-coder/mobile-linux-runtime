@@ -46,7 +46,7 @@ char *mlr_ish_run_sync_json(const char *config_json, const char *request_json);
 char *mlr_ish_background_spawn_json(const char *config_json, const char *request_json);
 char *mlr_ish_background_kill_json(const char *config_json, const char *request_json);
 char *mlr_ish_background_poll_json(const char *config_json, const char *request_json);
-char *mlr_ish_raw_stdio_open_json(const char *config_json, const char *request_json);
+char *mlr_ish_raw_stdio_open_v2_json(const char *config_json, const char *request_json);
 char *mlr_ish_raw_stdio_write_json(const char *config_json, const char *request_json);
 char *mlr_ish_raw_stdio_read_json(const char *config_json, const char *request_json);
 char *mlr_ish_raw_stdio_close_json(const char *config_json, const char *request_json);

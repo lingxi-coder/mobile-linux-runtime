@@ -5,7 +5,7 @@ use mobile_linux_api::LinuxEnforcementReceipt;
 use mobile_linux_api::{
     LinuxCommandRequest, MobileLinuxError, MobileLinuxEventKind, MobileLinuxRuntime,
     MobileLinuxTaskStatus, MountPurpose, MountSpec, NetworkPolicy, ProcessStreamSink,
-    RawStdioOpenRequest, SandboxBackend,
+    RawStdioOpenRequest, RawStdioSessionHandle, RawStdioTreeStatus, SandboxBackend,
 };
 use nix::sys::signal::kill;
 use nix::unistd::Pid;
@@ -907,6 +907,270 @@ async fn raw_exit_preserves_both_binary_tails_before_closed() {
     io_test_timeout(runtime.close_raw_stdio(&handle))
         .await
         .expect("close reaped child");
+}
+
+#[tokio::test]
+async fn raw_stop_collects_both_terminal_streams_without_claiming_tree_exit() {
+    let (_temp, runtime) = runtime();
+    let handle = runtime
+        .open_raw_stdio(raw_request("printf abcdef; printf ghijkl >&2; exit 7"))
+        .await
+        .unwrap();
+    let control = runtime.state.raw_stdio.lock().unwrap()[&handle.id].clone();
+    io_test_timeout(async {
+        while !control.buffers.lock().unwrap().closed {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let limited = io_test_timeout(runtime.stop_raw_stdio(&handle, 3))
+        .await
+        .unwrap();
+    assert_eq!(limited.session_id, handle.id);
+    assert_eq!(limited.stdout, b"abc");
+    assert_eq!(limited.stderr, b"ghi");
+    assert!(limited.stdout_truncated && limited.stderr_truncated);
+    assert!(limited.stdout_eof && limited.stderr_eof);
+    assert_eq!(limited.exit_code, Some(7));
+    assert_eq!(limited.termination_requested, Some(false));
+    assert!(matches!(limited.cleanup, RawStdioTreeStatus::Unverified(_)));
+    assert!(limited.failure.is_none());
+    let all = runtime.stop_raw_stdio(&handle, 64).await.unwrap();
+    assert_eq!(all.stdout, b"abcdef");
+    assert_eq!(all.stderr, b"ghijkl");
+    assert!(!all.stdout_truncated && !all.stderr_truncated);
+    assert!(runtime.close_raw_stdio(&handle).await.is_err());
+    assert!(runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .contains_key(&handle.id));
+}
+
+#[tokio::test]
+async fn raw_stop_after_real_deadline_keeps_output_from_termination() {
+    let (_temp, runtime) = runtime();
+    let handle = runtime.open_raw_stdio(raw_request(
+        "trap 'printf late; printf lateerr >&2; exit 42' TERM; printf ready; printf err >&2; while :; do :; done",
+    )).await.unwrap();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    io_test_timeout(async {
+        while stdout.len() < 5 || stderr.len() < 3 {
+            let result = runtime.read_raw_stdio(&handle, 64).await.unwrap();
+            stdout.extend(result.stdout);
+            stderr.extend(result.stderr);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), std::future::pending::<()>())
+            .await
+            .is_err()
+    );
+    let stopped = io_test_timeout(runtime.stop_raw_stdio(&handle, 64))
+        .await
+        .unwrap();
+    stdout.extend(&stopped.stdout);
+    stderr.extend(&stopped.stderr);
+    assert_eq!(stdout, b"readylate");
+    assert_eq!(stderr, b"errlateerr");
+    assert_eq!(stopped.termination_requested, Some(true));
+    assert!(stopped.stdout_eof && stopped.stderr_eof);
+    assert_eq!(stopped.exit_code, Some(42));
+    assert!(matches!(stopped.cleanup, RawStdioTreeStatus::Unverified(_)));
+    assert!(stopped.failure.is_none());
+}
+
+#[tokio::test]
+async fn raw_stop_rejects_unknown_handle_and_survives_caller_drop() {
+    let (_temp, runtime) = runtime();
+    let missing = RawStdioSessionHandle {
+        id: "missing".into(),
+        enforcement: LinuxEnforcementReceipt::default(),
+    };
+    assert!(matches!(
+        runtime.stop_raw_stdio(&missing, 64).await,
+        Err(MobileLinuxError::InvalidRequest(_))
+    ));
+    let handle = runtime
+        .open_raw_stdio(raw_request("printf captured; sleep 30"))
+        .await
+        .unwrap();
+    let control = runtime.state.raw_stdio.lock().unwrap()[&handle.id].clone();
+    io_test_timeout(async {
+        while control.buffers.lock().unwrap().stdout.len() < 8 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+    let gate = control.stop_gate.lock().await;
+    let mut operation = Box::pin(runtime.stop_raw_stdio(&handle, 64));
+    let pending =
+        std::future::poll_fn(
+            |cx| match std::future::Future::poll(operation.as_mut(), cx) {
+                std::task::Poll::Ready(result) => std::task::Poll::Ready(Some(result)),
+                std::task::Poll::Pending => std::task::Poll::Ready(None),
+            },
+        )
+        .await;
+    assert!(pending.is_none());
+    drop(operation);
+    drop(gate);
+    io_test_timeout(async {
+        while control.stop_result.lock().unwrap().is_none() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+    let stopped = runtime.stop_raw_stdio(&handle, 64).await.unwrap();
+    assert!(stopped.stdout.starts_with(b"captured"));
+    assert_eq!(stopped.termination_requested, Some(true));
+    assert_eq!(
+        stopped.exit_code, None,
+        "a signal sentinel is not an observed exit code"
+    );
+    assert!(matches!(stopped.cleanup, RawStdioTreeStatus::Unverified(_)));
+}
+
+#[test]
+fn raw_bounded_reads_alternate_between_both_nonempty_streams() {
+    let mut buffers = RawStdioBuffers::default();
+    buffers.stdout.extend(b"aaaa".iter().copied());
+    buffers.stderr.extend(b"bbbb".iter().copied());
+    let reads: Vec<_> = (0..8)
+        .map(|_| AndroidProotRuntime::drain_raw_stdio_fair(&mut buffers, 1))
+        .collect();
+    for (index, (stdout, stderr)) in reads.iter().enumerate() {
+        if index % 2 == 0 {
+            assert_eq!(stdout.as_slice(), b"a");
+            assert!(stderr.is_empty());
+        } else {
+            assert!(stdout.is_empty());
+            assert_eq!(stderr.as_slice(), b"b");
+        }
+    }
+}
+
+#[tokio::test]
+async fn duplicate_raw_stops_share_one_owner_and_leave_other_session_stoppable() {
+    let (_temp, runtime) = runtime();
+    let first = runtime
+        .open_raw_stdio(raw_request("printf first; while :; do :; done"))
+        .await
+        .unwrap();
+    let second = runtime
+        .open_raw_stdio(raw_request("printf second; while :; do :; done"))
+        .await
+        .unwrap();
+    let first_control = runtime.state.raw_stdio.lock().unwrap()[&first.id].clone();
+    let second_control = runtime.state.raw_stdio.lock().unwrap()[&second.id].clone();
+    io_test_timeout(async {
+        while first_control.buffers.lock().unwrap().stdout.len() < 5
+            || second_control.buffers.lock().unwrap().stdout.len() < 6
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let gate = first_control.stop_gate.lock().await;
+    let started = Arc::new(AtomicU64::new(0));
+    let mut waiters = Vec::new();
+    for _ in 0..40 {
+        let runtime = runtime.clone();
+        let handle = first.clone();
+        let started = started.clone();
+        waiters.push(tokio::spawn(async move {
+            started.fetch_add(1, Ordering::AcqRel);
+            runtime.stop_raw_stdio(&handle, 64).await
+        }));
+    }
+    io_test_timeout(async {
+        while started.load(Ordering::Acquire) != 40
+            || first_control.stop_completion.lock().unwrap().is_none()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let other = io_test_timeout(runtime.stop_raw_stdio(&second, 64))
+        .await
+        .unwrap();
+    assert_eq!(other.stdout, b"second");
+    drop(gate);
+    for waiter in waiters {
+        assert_eq!(
+            io_test_timeout(waiter).await.unwrap().unwrap().stdout,
+            b"first"
+        );
+    }
+}
+
+#[tokio::test]
+async fn raw_stop_retains_partial_output_when_worker_fails() {
+    let (_temp, runtime) = runtime();
+    let handle = runtime
+        .open_raw_stdio(raw_request("printf captured; while :; do :; done"))
+        .await
+        .unwrap();
+    let control = runtime.state.raw_stdio.lock().unwrap()[&handle.id].clone();
+    io_test_timeout(async {
+        while control.buffers.lock().unwrap().stdout.len() < 8 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await;
+    control.worker.lock().unwrap().as_ref().unwrap().abort();
+    io_test_timeout(async {
+        while !control
+            .worker
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_finished()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let stopped = io_test_timeout(runtime.stop_raw_stdio(&handle, 64))
+        .await
+        .unwrap();
+    assert!(stopped.stdout.starts_with(b"captured"));
+    assert_eq!(stopped.exit_code, None);
+    assert_eq!(stopped.termination_requested, Some(false));
+    assert!(!stopped.stdout_eof && !stopped.stderr_eof);
+    assert!(
+        matches!(stopped.failure, Some(MobileLinuxError::Io(ref detail)) if detail.contains("owner failed"))
+    );
+    assert!(matches!(stopped.cleanup, RawStdioTreeStatus::Unverified(_)));
+}
+
+#[tokio::test]
+async fn raw_stop_rejects_a_handle_from_another_runtime_generation() {
+    let (_first_temp, first) = runtime();
+    let (_second_temp, second) = runtime();
+    let first_handle = first.open_raw_stdio(raw_request("sleep 30")).await.unwrap();
+    let second_handle = second
+        .open_raw_stdio(raw_request("sleep 30"))
+        .await
+        .unwrap();
+    assert_ne!(first_handle.id, second_handle.id);
+    assert!(matches!(
+        second.stop_raw_stdio(&first_handle, 64).await,
+        Err(MobileLinuxError::InvalidRequest(_))
+    ));
+    let second_control = second.state.raw_stdio.lock().unwrap()[&second_handle.id].clone();
+    assert!(!second_control.task.cancel_requested.load(Ordering::Acquire));
+    io_test_timeout(first.close_raw_stdio(&first_handle))
+        .await
+        .unwrap();
+    io_test_timeout(second.close_raw_stdio(&second_handle))
+        .await
+        .unwrap();
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]

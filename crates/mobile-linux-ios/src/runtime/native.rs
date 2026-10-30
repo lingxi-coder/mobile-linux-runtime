@@ -30,7 +30,7 @@ mod device {
             config_json: *const c_char,
             request_json: *const c_char,
         ) -> *mut c_char;
-        fn mlr_ish_raw_stdio_open_json(
+        fn mlr_ish_raw_stdio_open_v2_json(
             config_json: *const c_char,
             request_json: *const c_char,
         ) -> *mut c_char;
@@ -120,7 +120,7 @@ mod device {
     }
 
     pub fn raw_stdio_open_json(config_json: &str, request_json: &str) -> Result<String, String> {
-        call_binary(config_json, request_json, mlr_ish_raw_stdio_open_json)
+        call_binary(config_json, request_json, mlr_ish_raw_stdio_open_v2_json)
     }
 
     pub fn raw_stdio_write_json(config_json: &str, request_json: &str) -> Result<String, String> {

@@ -1,6 +1,7 @@
 use mobile_linux_api::{
     MobileLinuxError, MobileLinuxEvent, MobileLinuxEventKind, MobileLinuxRuntime,
-    MobileLinuxTaskSnapshot, MobileLinuxTaskStatus, MountSpec, RawStdioSessionHandle, RootfsStatus,
+    MobileLinuxTaskSnapshot, MobileLinuxTaskStatus, MountSpec, RawStdioReadResult,
+    RawStdioSessionHandle, RawStdioStopResult, RootfsStatus,
 };
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -11,12 +12,11 @@ use bridge::{
     background_terminal_state, decode_base64, encode_base64, native_error_to_mobile,
     parse_availability_reason, parse_background_events, parse_background_kill_response,
     parse_loopback_probe, parse_native_ok, parse_poll_events, parse_process_id_response,
-    parse_raw_stdio_open_response, parse_raw_stdio_read_response, parse_session_id_response,
-    raw_stdio_close_progress, BackgroundPollPayload, BackgroundProcessPayload,
-    LoopbackProbePayload, MountConfigPayload, NativeBackgroundEventPayload, NativeConfigPayload,
-    NativeProcessStart, NativePtyEventPayload, PtyClosePayload, PtyOpenPayload, PtyPollPayload,
-    PtyResizePayload, PtyWritePayload, RawStdioNativeOperation, RawStdioOpenPayload,
-    RawStdioRequestPayload, RunRequestPayload,
+    parse_raw_stdio_open_response, parse_session_id_response, raw_stdio_close_progress,
+    BackgroundPollPayload, BackgroundProcessPayload, LoopbackProbePayload, MountConfigPayload,
+    NativeBackgroundEventPayload, NativeConfigPayload, NativeProcessStart, NativePtyEventPayload,
+    PtyClosePayload, PtyOpenPayload, PtyPollPayload, PtyResizePayload, PtyWritePayload,
+    RawStdioNativeOperation, RawStdioOpenPayload, RawStdioRequestPayload, RunRequestPayload,
 };
 pub use config::IosIshRuntimeConfig;
 use rootfs::filesystem_rootfs_state;
@@ -115,6 +115,43 @@ struct PtyControl {
 }
 
 #[derive(Debug)]
+struct RawStdioControl {
+    handle: RawStdioSessionHandle,
+    close_gate: tokio::sync::Mutex<()>,
+    read_gate: tokio::sync::Mutex<()>,
+    unaccepted_reads: Mutex<VecDeque<Result<RawStdioReadResult, MobileLinuxError>>>,
+    stop_result: Mutex<Option<RawStdioStopResult>>,
+    stop_requested: tokio::sync::watch::Sender<bool>,
+    stop_completion:
+        Mutex<Option<tokio::sync::watch::Receiver<Option<Result<(), MobileLinuxError>>>>>,
+    _owner_permit: tokio::sync::OwnedSemaphorePermit,
+    disposed: AtomicBool,
+    uncertain: AtomicBool,
+    unexpected_id: Mutex<Option<String>>,
+}
+
+impl RawStdioControl {
+    fn new(handle: RawStdioSessionHandle, owner_permit: tokio::sync::OwnedSemaphorePermit) -> Self {
+        let (stop_requested, _) = tokio::sync::watch::channel(false);
+        Self {
+            handle,
+            close_gate: tokio::sync::Mutex::new(()),
+            read_gate: tokio::sync::Mutex::new(()),
+            unaccepted_reads: Mutex::new(VecDeque::new()),
+            stop_result: Mutex::new(None),
+            stop_requested,
+            stop_completion: Mutex::new(None),
+            _owner_permit: owner_permit,
+            disposed: AtomicBool::new(false),
+            // A provisional id remains uncertain until the caller actually
+            // accepts the successful open, even if an owner task is aborted.
+            uncertain: AtomicBool::new(true),
+            unexpected_id: Mutex::new(None),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct RuntimeState {
     config: IosIshRuntimeConfig,
     mounts: RwLock<Vec<MountSpec>>,
@@ -129,7 +166,7 @@ struct RuntimeState {
     closed: AtomicBool,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
     pty: Mutex<Option<(String, Arc<PtyControl>)>>,
-    raw_stdio: Mutex<HashMap<String, RawStdioSessionHandle>>,
+    raw_stdio: Mutex<HashMap<String, Arc<RawStdioControl>>>,
     native_lock: Arc<Mutex<()>>,
     #[cfg(test)]
     test_transport: Option<Arc<tests::TestProcessTransport>>,

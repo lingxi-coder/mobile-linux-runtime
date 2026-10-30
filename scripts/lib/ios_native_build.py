@@ -27,6 +27,13 @@ SOURCE_PATCH_MARKERS = {
     'fs/fake.c': ('lx_mount_install_link', 'owned_link_target'),
     'fs/lx_mount_path_guard.h': ('lx_mount_parent_fd', 'lx_mount_link_matches'),
 }
+OPENMINIS_PATCH_MARKERS = {
+    'src/ios/iSH/ISHShellExecutor.m': (
+        '_executionsByContext', 'terminateRawContext:', 'disposeRawContext:', 'lx_raw_read_step',
+    ),
+    'src/ios/iSH/ISHKernel.m': ('@"execution_context"',),
+    'src/ios/iSH/lx_raw_stdio_reader.h': ('LX_RAW_READ_EOF', 'LX_RAW_READ_ERROR'),
+}
 
 def prepared_work_matches(work, identity):
     marker = work/'prepared'
@@ -34,6 +41,11 @@ def prepared_work_matches(work, identity):
         return False
     for relative, symbols in {**PATCH_MARKERS, **SOURCE_PATCH_MARKERS}.items():
         source = work/'ish'/relative
+        if not source.is_file(): return False
+        text = source.read_text()
+        if any(symbol not in text for symbol in symbols): return False
+    for relative, symbols in OPENMINIS_PATCH_MARKERS.items():
+        source = work/'openminis'/relative
         if not source.is_file(): return False
         text = source.read_text()
         if any(symbol not in text for symbol in symbols): return False
@@ -78,7 +90,8 @@ def prepare(cache):
         for name in ('ish-socket-network-policy.patch','ish-fakefs-utf8-locale.patch','ish-task-wakeup-signal.patch','ish-mobile-mount-owner.patch','ish-nondestructive-mounts.patch','ish-truncate-cwd.patch','ish-covered-path-preservation.patch'):
             apply_source_patch(ish,name)
         shutil.copy2(SDK/'native/ios/lx_mount_path_guard.h',ish/'fs/lx_mount_path_guard.h')
-        for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch','openminis-default-user.patch','openminis-pty-exit-identity.patch','openminis-process-exit-leader.patch'):
+        shutil.copy2(SDK/'native/ios/lx_raw_stdio_reader.h',glue/'src/ios/iSH/lx_raw_stdio_reader.h')
+        for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch','openminis-explicit-overlay.patch','openminis-explicit-host-state.patch','openminis-default-user.patch','openminis-pty-exit-identity.patch','openminis-process-exit-leader.patch','openminis-raw-context-identity.patch','openminis-raw-reader-evidence.patch'):
             apply_source_patch(glue,name)
         (work/'prepared').write_text(identity)
         if not prepared_work_matches(work,identity):

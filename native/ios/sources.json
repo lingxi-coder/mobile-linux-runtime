@@ -60,6 +60,7 @@
   },
   "patches": {
     "openminis-raw-stdio.patch": "04fe10dbf0965af4c2d44d49ef7a62fee6f6056ef8cef77f8e6ec5593fb50d1e",
+    "openminis-raw-context-identity.patch": "a07e0dab2979fc7f3e6d5b7a687785d62131b903d7c33af1db9639003c018985",
     "ish-socket-network-policy.patch": "7353b08ada9ef393e6c1453a2cf65993054bf1e8e3e59c427399df84f7cd7d3d",
     "openminis-explicit-overlay.patch": "379880442ad6e430f782bf6f8d6c792ff81531057ba870e5ac89e316f26dbd16",
     "openminis-explicit-host-state.patch": "7db605c45e3e583fb0a22ff9c853fc0f3fbcfdfc3547c985689d762868f4c8ba",
@@ -72,18 +73,20 @@
     "ish-nondestructive-mounts.patch": "2799229e385dfea9bd23d394c56ae98e552a698426187402f8d05a78bc27afe1",
     "openminis-process-exit-leader.patch": "dcbd0f1911a3b8852bff3e9885a63e7f69eb09c37539e11fb657cd40c68e63ff",
     "ish-truncate-cwd.patch": "423951869aedd58425e702a11c9bec24650256edc744b7d6291122b093b94149",
-    "ish-covered-path-preservation.patch": "0c875fdd642b4f6011853a8992c40e41185ea41360f547aab4ba469d6c68a9a3"
+    "ish-covered-path-preservation.patch": "0c875fdd642b4f6011853a8992c40e41185ea41360f547aab4ba469d6c68a9a3",
+    "openminis-raw-reader-evidence.patch": "5ba2052042b7a515c71590ea7910aa8583f2f658d568f4975f30079d9c185b01"
   },
   "features": {
     "native_apple_offloads": false,
     "process_kernel": "one immutable kernel identity with scoped workspace sessions; physical teardown unavailable",
-    "raw_stdio_patch": "byte-exact pipes, context-bound process-group cancellation, EOF-before-completion",
+    "raw_stdio_patch": "raw pipes with context-bound cancellation; per-stream EOF and read-error evidence; tree-exit proof unresolved",
     "guest_wakeup": "guest pthreads unblock only internal SIGUSR1 for cancellation from embedded hosts",
     "environment": "caller values replace defaults; no product browser or Apple offloads",
     "default_user": "lingxi uid/gid 1000; root init; passwordless guest doas",
     "pty_exit": "PID and launch generation identify PTY exits; delayed helper/previous-session exits are ignored"
   },
   "support_files": {
-    "lx_mount_path_guard.h": "f79c63e0a86f0655ffa772d127ec498098cfb9b666a9fbc380c6eb715d21f86a"
+    "lx_mount_path_guard.h": "f79c63e0a86f0655ffa772d127ec498098cfb9b666a9fbc380c6eb715d21f86a",
+    "lx_raw_stdio_reader.h": "a2bb050deeddd297382b6dcd2a0bcc5642e4795c696e90458c95d0e4d4dd616c"
   }
 }

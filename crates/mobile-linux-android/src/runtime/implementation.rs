@@ -5,7 +5,8 @@ use mobile_linux_api::{
     MobileLinuxError, MobileLinuxEvent, MobileLinuxEventKind, MobileLinuxRuntime,
     MobileLinuxRuntimeMode, MobileLinuxTaskSnapshot, MobileLinuxTaskStatus, MountSpec,
     ProcessStreamSink, PtyOpenRequest, PtySessionHandle, PtySize, RawStdioOpenRequest,
-    RawStdioReadResult, RawStdioSessionHandle, RootfsState, RootfsStatus, SandboxBackend,
+    RawStdioReadResult, RawStdioSessionHandle, RawStdioStopResult, RootfsState, RootfsStatus,
+    SandboxBackend,
 };
 use nix::sys::signal::Signal;
 use std::collections::HashSet;
@@ -364,11 +365,16 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         request: RawStdioOpenRequest,
     ) -> Result<RawStdioSessionHandle, MobileLinuxError> {
         self.prepare_execution()?;
-        let (id, task) = self.create_task(
-            "stdio",
-            display_command(&request.command, &request.args),
-            MobileLinuxTaskStatus::Running,
-        );
+        let executor = super::raw_stdio::raw_stdio_stop_executor()?;
+        // Reserve cleanup capacity before a process can be created. An
+        // admitted session must never lose its ability to request stop.
+        let owner_permit = super::raw_stdio::raw_stdio_stop_capacity()
+            .try_acquire_owned()
+            .map_err(|_| {
+                MobileLinuxError::ResourceLimitExceeded("raw stdio owner capacity exhausted".into())
+            })?;
+        let (id, task) =
+            self.create_raw_stdio_task(display_command(&request.command, &request.args))?;
         let (stop, mut stopped) = tokio::sync::watch::channel(false);
         let mut cancellation = CallerCancellation {
             task: task.clone(),
@@ -377,9 +383,9 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         };
         let (reply, response) = tokio::sync::oneshot::channel();
         let runtime = self.clone();
-        tokio::spawn(async move {
+        executor.spawn(async move {
             let result = runtime
-                .open_raw_stdio_owned(request, id.clone(), task.clone())
+                .open_raw_stdio_owned(request, id.clone(), task.clone(), owner_permit)
                 .await;
             if let Err(error) = &result {
                 runtime.finish_task(
@@ -466,23 +472,39 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
             .ok_or_else(|| {
                 MobileLinuxError::InvalidRequest("unknown raw stdio session".to_string())
             })?;
+        let _gate = control.stop_gate.lock().await;
+        if control
+            .stop_result
+            .lock()
+            .expect("raw stop result")
+            .is_some()
+            || !self
+                .state
+                .raw_stdio
+                .lock()
+                .expect("raw stdio mutex")
+                .get(&handle.id)
+                .is_some_and(|entry| Arc::ptr_eq(entry, &control))
+        {
+            return Err(MobileLinuxError::InvalidRequest(
+                "raw stdio session is stopping or closed".into(),
+            ));
+        }
         let mut guard = control.buffers.lock().expect("raw stdio buffers mutex");
         if let Some(error) = &guard.error {
             return Err(error.clone());
         }
-        if guard.overflowed {
+        if guard.stdout_overflowed || guard.stderr_overflowed {
             return Err(MobileLinuxError::Io(
                 "raw stdio unread output exceeded 512 KiB".to_string(),
             ));
         }
-        let stdout = Self::drain_raw_stdio_bytes(&mut guard.stdout, max_bytes);
-        let stderr =
-            Self::drain_raw_stdio_bytes(&mut guard.stderr, max_bytes.saturating_sub(stdout.len()));
+        let (stdout, stderr) = Self::drain_raw_stdio_fair(&mut guard, max_bytes);
         Ok(RawStdioReadResult {
             stdout,
             stderr,
             closed: guard.closed && guard.stdout.is_empty() && guard.stderr.is_empty(),
-            exit_code: guard.exit_code,
+            exit_code: guard.exit_code.filter(|code| *code >= 0),
         })
     }
 
@@ -490,16 +512,72 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         &self,
         handle: &RawStdioSessionHandle,
     ) -> Result<(), MobileLinuxError> {
+        let runtime = self.clone();
+        let id = handle.id.clone();
+        super::raw_stdio::raw_stdio_stop_executor()?
+            .spawn(async move { runtime.close_raw_stdio_owned(&id, false).await })
+            .await
+            .map_err(|error| {
+                MobileLinuxError::Io(format!("raw stdio close owner failed: {error}"))
+            })?
+    }
+
+    async fn stop_raw_stdio(
+        &self,
+        handle: &RawStdioSessionHandle,
+        max_bytes_per_stream: usize,
+    ) -> Result<RawStdioStopResult, MobileLinuxError> {
         let control = self
             .state
             .raw_stdio
             .lock()
-            .expect("mobile-linux raw stdio mutex")
-            .remove(&handle.id)
+            .expect("raw stdio mutex")
+            .get(&handle.id)
+            .cloned()
             .ok_or_else(|| {
-                MobileLinuxError::InvalidRequest("unknown raw stdio session".to_string())
+                MobileLinuxError::InvalidRequest(
+                    "unknown raw stdio session; cleanup is unverified".into(),
+                )
             })?;
-        Self::dispose_raw_control(control).await
+        let executor = super::raw_stdio::raw_stdio_stop_executor()?;
+        let mut completion = {
+            let mut slot = control.stop_completion.lock().expect("raw stop completion");
+            if let Some(existing) = slot.as_ref() {
+                existing.clone()
+            } else {
+                let (finished, receiver) = tokio::sync::watch::channel(None);
+                let runtime = self.clone();
+                let handle = handle.clone();
+                executor.spawn(async move {
+                    let result = runtime
+                        .stop_raw_stdio_owned(&handle, usize::MAX)
+                        .await
+                        .map(|_| ());
+                    finished.send_replace(Some(result));
+                });
+                *slot = Some(receiver.clone());
+                receiver
+            }
+        };
+        loop {
+            let result = completion.borrow().clone();
+            if let Some(result) = result {
+                result?;
+                let output = control
+                    .stop_result
+                    .lock()
+                    .expect("raw stop result")
+                    .clone()
+                    .ok_or_else(|| MobileLinuxError::Io("raw stop result missing".into()))?;
+                return Ok(super::raw_stdio::bounded_stop_result(
+                    output,
+                    max_bytes_per_stream,
+                ));
+            }
+            completion.changed().await.map_err(|_| {
+                MobileLinuxError::Io("raw stdio stop owner ended without a result".into())
+            })?;
+        }
     }
 
     async fn write_pty(

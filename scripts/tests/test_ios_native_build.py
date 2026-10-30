@@ -9,6 +9,7 @@ import unittest
 import sqlite3
 import struct
 import re
+import shutil
 from unittest import mock
 
 sys.dont_write_bytecode = True
@@ -22,6 +23,60 @@ spec.loader.exec_module(verifier)
 
 
 class IosNativeBuildTests(unittest.TestCase):
+    def test_raw_reader_distinguishes_data_eof_and_bad_descriptor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            probe = root/'raw-reader.c'
+            probe.write_text(r"""
+#include <assert.h>
+#include <errno.h>
+#include <string.h>
+#include "lx_raw_stdio_reader.h"
+int main(void) {
+    int pipefd[2]; char bytes[8]; ssize_t count = 0; int error = 0;
+    assert(pipe(pipefd) == 0);
+#ifdef F_SETNOSIGPIPE
+    assert(lx_raw_prepare_writer(pipefd[1]) == 0);
+    assert((fcntl(pipefd[1], F_GETFL) & O_NONBLOCK) != 0);
+#else
+    assert(lx_raw_prepare_writer(pipefd[1]) == -1 && errno == ENOTSUP);
+#endif
+    assert(write(pipefd[1], "tail", 4) == 4);
+    assert(lx_raw_read_step(pipefd[0], bytes, sizeof(bytes), &count, &error) == LX_RAW_READ_DATA);
+    assert(count == 4 && memcmp(bytes, "tail", 4) == 0 && error == 0);
+    assert(close(pipefd[1]) == 0);
+    assert(lx_raw_read_step(pipefd[0], bytes, sizeof(bytes), &count, &error) == LX_RAW_READ_EOF);
+    assert(count == 0 && error == 0);
+    int closed_fd = pipefd[0]; assert(close(closed_fd) == 0);
+    assert(lx_raw_prepare_writer(closed_fd) == -1 && errno == EBADF);
+    assert(lx_raw_read_step(closed_fd, bytes, sizeof(bytes), &count, &error) == LX_RAW_READ_ERROR);
+    assert(error == EBADF);
+    return 0;
+}
+""")
+            binary = root/'raw-reader'
+            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror',
+                            '-I',str(SCRIPTS.parent/'native/ios'),str(probe),'-o',str(binary)],check=True)
+            subprocess.run([str(binary)],check=True)
+
+    def test_raw_reader_patch_applies_after_identity_patch(self):
+        sdk = SCRIPTS.parent
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            shutil.copytree(sdk/'native/ios/upstream/openminis', root, dirs_exist_ok=True)
+            for name in ('openminis-raw-stdio.patch','openminis-generic-environment.patch',
+                         'openminis-explicit-overlay.patch','openminis-explicit-host-state.patch',
+                         'openminis-default-user.patch','openminis-pty-exit-identity.patch',
+                         'openminis-process-exit-leader.patch','openminis-raw-context-identity.patch',
+                         'openminis-raw-reader-evidence.patch'):
+                subprocess.run(['patch','-s','-F','0','-p1','-d',str(root),
+                                '-i',str(sdk/'native/ios/patches'/name)],check=True)
+            executor = (root/'src/ios/iSH/ISHShellExecutor.m').read_text()
+            self.assertIn('state == LX_RAW_READ_EOF', executor)
+            self.assertIn('ctx.result.rawReadErrno = readError ? readError : EIO', executor)
+            self.assertLess(executor.index('lx_raw_prepare_writer(stdinPipe[1])'),
+                            executor.index('int err = become_new_init_child()'))
+
     def test_fakefs_root_verification_rejects_permission_only_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -188,8 +243,16 @@ int main(void) {
                 source = work / 'ish' / relative
                 source.parent.mkdir(parents=True, exist_ok=True)
                 source.write_text('\n'.join(symbols))
+            for relative, symbols in ios_native_build.OPENMINIS_PATCH_MARKERS.items():
+                source = work / 'openminis' / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text('\n'.join(symbols))
             self.assertTrue(ios_native_build.prepared_work_matches(work, 'identity'))
             self.assertFalse(ios_native_build.prepared_work_matches(work, 'different'))
+            identity_patch = work / 'openminis/src/ios/iSH/ISHShellExecutor.m'
+            identity_patch.write_text('unpatched source')
+            self.assertFalse(ios_native_build.prepared_work_matches(work, 'identity'))
+            identity_patch.write_text('\n'.join(ios_native_build.OPENMINIS_PATCH_MARKERS['src/ios/iSH/ISHShellExecutor.m']))
             (work / 'ish/fs/sock.c').write_text('unpatched source')
             self.assertFalse(ios_native_build.prepared_work_matches(work, 'identity'))
 

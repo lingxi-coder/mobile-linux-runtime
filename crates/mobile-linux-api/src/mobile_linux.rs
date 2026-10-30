@@ -571,6 +571,28 @@ pub struct RawStdioSessionHandle {
     pub enforcement: LinuxEnforcementReceipt,
 }
 
+/// Allocate an opaque random raw session identity. Fail before spawning if the
+/// operating system cannot supply cryptographically secure randomness.
+pub fn allocate_raw_stdio_session_id() -> Result<String, MobileLinuxError> {
+    allocate_raw_stdio_session_id_with(|bytes| {
+        getrandom::getrandom(bytes).map_err(|error| error.to_string())
+    })
+}
+
+fn allocate_raw_stdio_session_id_with(
+    fill: impl FnOnce(&mut [u8]) -> Result<(), String>,
+) -> Result<String, MobileLinuxError> {
+    let mut bytes = [0_u8; 16];
+    fill(&mut bytes)
+        .map_err(|error| MobileLinuxError::Io(format!("allocate raw session identity: {error}")))?;
+    let mut value = String::from("raw-");
+    for byte in bytes {
+        use std::fmt::Write;
+        write!(&mut value, "{byte:02x}").expect("format into String");
+    }
+    Ok(value)
+}
+
 /// One bounded poll of stdout/stderr bytes from a raw-stdio mobile process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawStdioReadResult {
@@ -580,6 +602,61 @@ pub struct RawStdioReadResult {
     pub stderr: Vec<u8>,
     pub closed: bool,
     pub exit_code: Option<i32>,
+}
+
+/// Evidence about the complete process tree belonging to one raw session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RawStdioTreeStatus {
+    /// An identity-bound backend proof established that the tree has exited.
+    TreeReaped,
+    /// No such proof is available; a closed handle or signal is not proof.
+    Unverified(String),
+}
+
+/// Final bounded output and independent cleanup evidence from stopping a
+/// raw session. This result is tied to the exact session that was stopped.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct RawStdioStopResult {
+    pub session_id: String,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    /// Whether the backend observed EOF for each stream. Empty buffers alone
+    /// do not establish EOF, and truncation is reported separately.
+    pub stdout_eof: bool,
+    pub stderr_eof: bool,
+    /// An observed nonnegative process exit code. A sentinel such as -1 does
+    /// not represent an observed code and must be returned as None.
+    pub exit_code: Option<i32>,
+    /// Whether this stop operation requested termination, if known. This
+    /// does not describe earlier requests or prove delivery or tree exit.
+    pub termination_requested: Option<bool>,
+    pub cleanup: RawStdioTreeStatus,
+    /// Preserve execution/IO failure even when output was also recovered.
+    pub failure: Option<MobileLinuxError>,
+}
+
+impl std::fmt::Debug for RawStdioStopResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RawStdioStopResult")
+            .field("session_id", &self.session_id)
+            .field("stdout_bytes", &self.stdout.len())
+            .field("stderr_bytes", &self.stderr.len())
+            .field("stdout_truncated", &self.stdout_truncated)
+            .field("stderr_truncated", &self.stderr_truncated)
+            .field("stdout_eof", &self.stdout_eof)
+            .field("stderr_eof", &self.stderr_eof)
+            .field("exit_code", &self.exit_code)
+            .field("termination_requested", &self.termination_requested)
+            .field(
+                "cleanup_verified",
+                &matches!(&self.cleanup, RawStdioTreeStatus::TreeReaped),
+            )
+            .field("has_failure", &self.failure.is_some())
+            .finish()
+    }
 }
 
 /// PTY open request.
@@ -937,13 +1014,26 @@ pub trait MobileLinuxRuntime: Send + Sync {
         Err(MobileLinuxError::Unsupported)
     }
 
-    /// Close one raw stdio session and synchronously reap its full guest
-    /// process tree.
+    /// Close one raw stdio session. A successful close alone is not evidence
+    /// that every descendant exited or that unread output was preserved.
     async fn close_raw_stdio(
         &self,
         handle: &RawStdioSessionHandle,
     ) -> Result<(), MobileLinuxError> {
         let _ = handle;
+        Err(MobileLinuxError::Unsupported)
+    }
+
+    /// Stop one exact session and collect its remaining bounded output, while
+    /// reporting output completeness and tree-reap evidence separately.
+    /// Backends that cannot provide this contract must fail closed. Dropping a
+    /// caller must not discard an in-flight read or abandon the stop owner.
+    async fn stop_raw_stdio(
+        &self,
+        handle: &RawStdioSessionHandle,
+        max_bytes_per_stream: usize,
+    ) -> Result<RawStdioStopResult, MobileLinuxError> {
+        let _ = (handle, max_bytes_per_stream);
         Err(MobileLinuxError::Unsupported)
     }
 
@@ -1245,6 +1335,27 @@ impl MobileLinuxRuntime for UnavailableMobileLinuxRuntime {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn raw_session_identifiers_do_not_reuse_runtime_counters() {
+        let ids: std::collections::HashSet<_> = (0..128)
+            .map(|_| allocate_raw_stdio_session_id().expect("OS randomness"))
+            .collect();
+        assert_eq!(ids.len(), 128);
+        assert!(ids
+            .iter()
+            .all(|id| id.starts_with("raw-") && id.len() == 36));
+    }
+
+    #[test]
+    fn raw_session_identity_fails_closed_when_random_source_fails() {
+        let error = allocate_raw_stdio_session_id_with(|_| Err("random source unavailable".into()))
+            .unwrap_err();
+        assert!(
+            matches!(error, MobileLinuxError::Io(ref detail) if detail.contains("random source unavailable"))
+        );
+    }
+
     #[tokio::test]
     async fn blocked_runtime_reports_license_error_and_status() {
         let runtime = UnavailableMobileLinuxRuntime::blocked(
@@ -1293,6 +1404,53 @@ mod tests {
             .await
             .expect_err("pty must fail");
         assert!(matches!(err, MobileLinuxError::Unavailable(_)));
+        let handle = RawStdioSessionHandle {
+            id: "unknown".into(),
+            enforcement: LinuxEnforcementReceipt::default(),
+        };
+        assert!(matches!(
+            runtime.stop_raw_stdio(&handle, 64).await,
+            Err(MobileLinuxError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn stop_result_preserves_unknown_exit_output_and_separate_evidence() {
+        let result = RawStdioStopResult {
+            session_id: "session-1".into(),
+            stdout: b"partial".to_vec(),
+            stderr: b"late".to_vec(),
+            stdout_truncated: false,
+            stderr_truncated: true,
+            stdout_eof: true,
+            stderr_eof: false,
+            exit_code: None,
+            termination_requested: Some(true),
+            cleanup: RawStdioTreeStatus::Unverified("no tree proof".into()),
+            failure: Some(MobileLinuxError::Io("read failed".into())),
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let debug = format!("{result:?}");
+        assert!(debug.contains("stdout_bytes: 7"));
+        assert!(!debug.contains("stdout: ["));
+        assert!(!debug.contains("stderr: ["));
+        assert!(!debug.contains("partial"));
+        assert!(!debug.contains("late"));
+        assert!(!debug.contains("read failed"));
+        let decoded: RawStdioStopResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.session_id, "session-1");
+        assert_eq!(decoded.stdout, b"partial");
+        assert_eq!(decoded.stderr, b"late");
+        assert!(!decoded.stdout_truncated && decoded.stderr_truncated);
+        assert!(decoded.stdout_eof && !decoded.stderr_eof);
+        assert_eq!(decoded.exit_code, None);
+        assert_eq!(decoded.termination_requested, Some(true));
+        assert!(
+            matches!(decoded.cleanup, RawStdioTreeStatus::Unverified(ref detail) if detail == "no tree proof")
+        );
+        assert!(
+            matches!(decoded.failure, Some(MobileLinuxError::Io(ref detail)) if detail == "read failed")
+        );
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use mobile_linux_api::LinuxEnforcementReceipt;
 use mobile_linux_api::{
     MobileLinuxError, MobileLinuxEvent, MobileLinuxEventKind, MobileLinuxTaskSnapshot,
-    MobileLinuxTaskStatus, MountSpec,
+    MobileLinuxTaskStatus, MountSpec, RawStdioStopResult,
 };
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -85,7 +85,11 @@ struct RawStdioBuffers {
     stderr: VecDeque<u8>,
     closed: bool,
     exit_code: Option<i32>,
-    overflowed: bool,
+    stdout_overflowed: bool,
+    stderr_overflowed: bool,
+    stdout_eof: bool,
+    stderr_eof: bool,
+    stderr_first: bool,
     error: Option<MobileLinuxError>,
 }
 
@@ -96,6 +100,11 @@ struct RawStdioControl {
     worker: Mutex<Option<tokio::task::JoinHandle<Result<(), MobileLinuxError>>>>,
     buffers: Arc<Mutex<RawStdioBuffers>>,
     snapshot_roots: Vec<PathBuf>,
+    stop_gate: tokio::sync::Mutex<()>,
+    stop_result: Mutex<Option<RawStdioStopResult>>,
+    stop_completion:
+        Mutex<Option<tokio::sync::watch::Receiver<Option<Result<(), MobileLinuxError>>>>>,
+    _owner_permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 struct CallerCancellation {

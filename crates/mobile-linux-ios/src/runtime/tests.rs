@@ -18,7 +18,7 @@ use mobile_linux_api::{
     LinuxCommandRequest, LinuxProcessHandle, MobileLinuxError, MobileLinuxEventKind,
     MobileLinuxRuntime, MobileLinuxTaskSnapshot, MobileLinuxTaskStatus, MountPurpose, MountSpec,
     ProcessStreamSink, PtyOpenRequest, PtySize, RawStdioOpenRequest, RawStdioSessionHandle,
-    RootfsState,
+    RawStdioTreeStatus, RootfsState,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
@@ -43,6 +43,20 @@ pub(super) struct TestProcessTransport {
     events: Mutex<VecDeque<NativeBackgroundEventPayload>>,
     request: Mutex<Option<serde_json::Value>>,
     raw_calls: Mutex<Vec<&'static str>>,
+    raw_ids: Mutex<Vec<String>>,
+    raw_open_response: Mutex<Option<Result<String, MobileLinuxError>>>,
+    raw_open_entered: AtomicBool,
+    raw_open_blocked: AtomicBool,
+    raw_open_release: tokio::sync::Notify,
+    raw_close_blocked: AtomicBool,
+    raw_close_entered: AtomicBool,
+    raw_close_release: tokio::sync::Notify,
+    raw_close_responses: Mutex<VecDeque<Result<String, MobileLinuxError>>>,
+    raw_read_responses: Mutex<VecDeque<Result<String, MobileLinuxError>>>,
+    raw_read_blocked: AtomicBool,
+    raw_read_entered: AtomicBool,
+    raw_read_release: tokio::sync::Notify,
+    raw_dispose_responses: Mutex<VecDeque<Result<String, MobileLinuxError>>>,
     mount_apply_conflicts: AtomicU64,
     mount_apply_failures: AtomicU64,
     mount_apply_calls: Mutex<Vec<Vec<MountSpec>>>,
@@ -151,25 +165,67 @@ impl TestProcessTransport {
         .unwrap()
     }
 
-    pub(super) fn raw_call(
+    pub(super) async fn raw_open(&self, payload: &str) -> Result<String, MobileLinuxError> {
+        let request: serde_json::Value = serde_json::from_str(payload).unwrap();
+        let id = request["session_id"].as_str().unwrap().to_owned();
+        self.raw_ids.lock().unwrap().push(id.clone());
+        self.raw_open_entered.store(true, Ordering::Release);
+        if self.raw_open_blocked.load(Ordering::Acquire) {
+            self.raw_open_release.notified().await;
+        }
+        let response = self.raw_open_response.lock().unwrap().take();
+        response.unwrap_or_else(|| Ok(format!(
+            r#"{{"ok":true,"session_id":"{id}","network_policy_enforced":true,"memory_limit_enforced":true}}"#
+        ))).map(|response| response.replace("$ID", &id))
+    }
+
+    pub(super) async fn raw_call(
         &self,
         operation: RawStdioNativeOperation,
+        payload: &RawStdioRequestPayload,
     ) -> Result<String, MobileLinuxError> {
-        let mut calls = self.raw_calls.lock().unwrap();
         let name = match operation {
             RawStdioNativeOperation::Write => "write",
             RawStdioNativeOperation::Read => "read",
             RawStdioNativeOperation::Close => "close",
             RawStdioNativeOperation::Dispose => "dispose",
         };
-        calls.push(name);
-        Ok(if name == "read" {
+        self.raw_calls.lock().unwrap().push(name);
+        self.raw_ids
+            .lock()
+            .unwrap()
+            .push(payload.session_id.clone());
+        if name == "close" {
+            self.raw_close_entered.store(true, Ordering::Release);
+            if self.raw_close_blocked.load(Ordering::Acquire) {
+                self.raw_close_release.notified().await;
+            }
+        }
+        if name == "read" {
+            self.raw_read_entered.store(true, Ordering::Release);
+            if self.raw_read_blocked.load(Ordering::Acquire) {
+                self.raw_read_release.notified().await;
+            }
+        }
+        let response = match operation {
+            RawStdioNativeOperation::Close => self.raw_close_responses.lock().unwrap().pop_front(),
+            RawStdioNativeOperation::Read => self.raw_read_responses.lock().unwrap().pop_front(),
+            RawStdioNativeOperation::Dispose => {
+                self.raw_dispose_responses.lock().unwrap().pop_front()
+            }
+            RawStdioNativeOperation::Write => None,
+        };
+        response.unwrap_or_else(|| Ok(if name == "read" {
             // A failure is reported at the final empty read; disposal must
             // still happen before the typed execution error is returned.
             r#"{"ok":true,"closed":true,"exit_code":137,"error":{"code":"resource_limit_exceeded","message":"test resource limit"}}"#.into()
+        } else if name == "close" {
+            r#"{"ok":true,"termination_requested":true,"closed":false}"#.into()
+        } else if name == "dispose" {
+            r#"{"ok":true,"disposed":true}"#.into()
         } else {
             r#"{"ok":true}"#.into()
-        })
+        }))
     }
 }
 
@@ -428,12 +484,15 @@ async fn raw_resource_failure_disposes_native_session_before_returning_typed_err
         id: "test-raw".into(),
         enforcement: Default::default(),
     };
-    runtime
-        .state
-        .raw_stdio
-        .lock()
-        .unwrap()
-        .insert(handle.id.clone(), handle.clone());
+    runtime.state.raw_stdio.lock().unwrap().insert(
+        handle.id.clone(),
+        Arc::new(RawStdioControl::new(
+            handle.clone(),
+            super::raw_stdio::raw_stdio_stop_capacity()
+                .try_acquire_owned()
+                .unwrap(),
+        )),
+    );
     assert!(matches!(
         bounded(runtime.close_raw_stdio(&handle)).await,
         Err(MobileLinuxError::ResourceLimitExceeded(_))
@@ -444,6 +503,985 @@ async fn raw_resource_failure_disposes_native_session_before_returning_typed_err
         .lock()
         .unwrap()
         .contains_key(&handle.id));
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["close", "read", "dispose"]
+    );
+}
+
+fn raw_request(network: NetworkPolicy) -> RawStdioOpenRequest {
+    RawStdioOpenRequest {
+        command: "/bin/sh".into(),
+        args: Vec::new(),
+        cwd: None,
+        env: BTreeMap::new(),
+        network,
+        resource_limits: Default::default(),
+        mounts: Vec::new(),
+    }
+}
+
+fn raw_closed_response(transport: &TestProcessTransport) {
+    transport
+        .raw_read_responses
+        .lock()
+        .unwrap()
+        .push_back(Ok(r#"{"ok":true,"closed":true,"exit_code":0}"#.into()));
+}
+
+#[tokio::test]
+async fn raw_cancelled_read_replays_unaccepted_output_before_a_second_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    transport.raw_read_responses.lock().unwrap().push_back(Ok(
+        r#"{"ok":true,"stdout_base64":"YWJjZA==","stderr_base64":"ZWY=","closed":true,"exit_code":0}"#.into(),
+    ));
+    transport.raw_read_blocked.store(true, Ordering::Release);
+    let reader_runtime = runtime.clone();
+    let reader_handle = handle.clone();
+    let reader =
+        tokio::spawn(async move { reader_runtime.read_raw_stdio(&reader_handle, 64).await });
+    bounded(async {
+        while !transport.raw_read_entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    reader.abort();
+    let _ = reader.await;
+    transport.raw_read_blocked.store(false, Ordering::Release);
+    transport.raw_read_release.notify_one();
+    let first = bounded(runtime.read_raw_stdio(&handle, 2)).await.unwrap();
+    assert_eq!(first.stdout, b"ab");
+    assert!(!first.closed);
+    let second = bounded(runtime.read_raw_stdio(&handle, 4)).await.unwrap();
+    assert_eq!(second.stdout, b"cd");
+    assert_eq!(second.stderr, b"ef");
+    assert!(second.closed);
+    assert_eq!(second.exit_code, Some(0));
+    assert_eq!(*transport.raw_calls.lock().unwrap(), vec!["read"]);
+    raw_closed_response(&transport);
+    bounded(runtime.close_raw_stdio(&handle)).await.unwrap();
+}
+
+#[tokio::test]
+async fn raw_zero_byte_read_does_not_consume_native_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    transport.raw_read_responses.lock().unwrap().push_back(Ok(
+        r#"{"ok":true,"stdout_base64":"YQ==","closed":false}"#.into(),
+    ));
+    let zero = bounded(runtime.read_raw_stdio(&handle, 0)).await.unwrap();
+    assert!(zero.stdout.is_empty() && zero.stderr.is_empty() && !zero.closed);
+    assert!(transport.raw_calls.lock().unwrap().is_empty());
+    assert_eq!(
+        bounded(runtime.read_raw_stdio(&handle, 1))
+            .await
+            .unwrap()
+            .stdout,
+        b"a"
+    );
+    raw_closed_response(&transport);
+    bounded(runtime.close_raw_stdio(&handle)).await.unwrap();
+}
+
+#[tokio::test]
+async fn raw_stop_collects_cancelled_inflight_read_and_late_output_without_false_eof() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    transport.raw_read_responses.lock().unwrap().extend([
+        Ok(r#"{"ok":true,"stdout_base64":"ZWFybHk=","closed":false}"#.into()),
+        Ok(r#"{"ok":true,"stdout_base64":"bGF0ZQ==","stderr_base64":"d2Fybg==","closed":true,"exit_code":137}"#.into()),
+    ]);
+    transport.raw_read_blocked.store(true, Ordering::Release);
+    let reader_runtime = runtime.clone();
+    let reader_handle = handle.clone();
+    let reader =
+        tokio::spawn(async move { reader_runtime.read_raw_stdio(&reader_handle, 64).await });
+    bounded(async {
+        while !transport.raw_read_entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    reader.abort();
+    let _ = reader.await;
+    let stopping_runtime = runtime.clone();
+    let stopping_handle = handle.clone();
+    let stop =
+        tokio::spawn(async move { stopping_runtime.stop_raw_stdio(&stopping_handle, 64).await });
+    transport.raw_read_blocked.store(false, Ordering::Release);
+    transport.raw_read_release.notify_one();
+    let result = bounded(stop).await.unwrap().unwrap();
+    assert_eq!(result.session_id, handle.id);
+    assert_eq!(result.stdout, b"earlylate");
+    assert_eq!(result.stderr, b"warn");
+    assert!(!result.stdout_truncated && !result.stderr_truncated);
+    assert!(!result.stdout_eof && !result.stderr_eof);
+    assert_eq!(
+        result.exit_code, None,
+        "137 may denote a signal rather than a real exit code"
+    );
+    assert_eq!(result.termination_requested, Some(true));
+    assert!(matches!(result.cleanup, RawStdioTreeStatus::Unverified(_)));
+    assert!(result.failure.is_none());
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["read", "close", "read"]
+    );
+    assert!(runtime.close_raw_stdio(&handle).await.is_err());
+    assert!(runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .contains_key(&handle.id));
+}
+
+async fn stalled_read_does_not_block_cleanup(typed_stop: bool) {
+    struct WakeFlag(AtomicBool);
+    impl std::task::Wake for WakeFlag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    transport.raw_read_responses.lock().unwrap().extend([
+        Ok(r#"{"ok":true,"stdout_base64":"ZWFybHk=","closed":false}"#.into()),
+        Ok(r#"{"ok":true,"stdout_base64":"bGF0ZQ==","closed":true,"exit_code":0}"#.into()),
+    ]);
+    let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+    let waker = std::task::Waker::from(flag.clone());
+    let mut read = Box::pin(runtime.read_raw_stdio(&handle, 64));
+    {
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(std::future::Future::poll(read.as_mut(), &mut context).is_pending());
+    }
+    // The first response has been delivered to a future that remains alive,
+    // but this test deliberately does not poll it again until after cleanup.
+    bounded(async {
+        while !flag.0.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    if typed_stop {
+        let result = bounded(runtime.stop_raw_stdio(&handle, 64)).await.unwrap();
+        assert_eq!(result.stdout, b"earlylate");
+        assert!(matches!(result.cleanup, RawStdioTreeStatus::Unverified(_)));
+    } else {
+        // Legacy close has no output-returning contract; this checks its
+        // progress only, not that it delivers the recovered bytes.
+        bounded(runtime.close_raw_stdio(&handle)).await.unwrap();
+    }
+    assert!(matches!(
+        bounded(read).await,
+        Err(MobileLinuxError::InvalidRequest(_))
+    ));
+}
+
+#[tokio::test]
+async fn raw_stalled_read_does_not_block_typed_stop_or_duplicate_output() {
+    stalled_read_does_not_block_cleanup(true).await;
+}
+
+#[tokio::test]
+async fn raw_stalled_read_does_not_block_legacy_close() {
+    stalled_read_does_not_block_cleanup(false).await;
+}
+
+#[tokio::test]
+async fn raw_stop_preserves_output_and_error_and_never_accepts_unknown_handle() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let missing = RawStdioSessionHandle {
+        id: "missing".into(),
+        enforcement: Default::default(),
+    };
+    assert!(matches!(
+        runtime.stop_raw_stdio(&missing, 64).await,
+        Err(MobileLinuxError::InvalidRequest(_))
+    ));
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    transport.raw_read_responses.lock().unwrap().push_back(Ok(
+        r#"{"ok":true,"stdout_base64":"cGFydGlhbA==","stderr_base64":"ZXJy","closed":true,"exit_code":0,"error":{"code":"resource_limit_exceeded","message":"native failure"}}"#.into(),
+    ));
+    let result = bounded(runtime.stop_raw_stdio(&handle, 64)).await.unwrap();
+    assert_eq!(result.stdout, b"partial");
+    assert_eq!(result.stderr, b"err");
+    assert!(
+        matches!(result.failure, Some(MobileLinuxError::ResourceLimitExceeded(ref detail)) if detail == "native failure")
+    );
+    assert!(
+        matches!(result.cleanup, RawStdioTreeStatus::Unverified(ref detail) if detail.contains("native failure"))
+    );
+    assert!(!result.stdout_eof && !result.stderr_eof);
+}
+
+#[tokio::test]
+async fn raw_stop_reports_explicit_per_stream_eof_and_reader_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    transport.raw_read_responses.lock().unwrap().extend([
+        Ok(r#"{"ok":true,"stdout_base64":"YQ==","closed":false,"stdout_eof":true,"stderr_eof":false}"#.into()),
+        Ok(r#"{"ok":true,"stderr_base64":"Yg==","closed":true,"stdout_eof":true,"stderr_eof":false,"stdout_truncated":true,"stderr_truncated":true,"exit_code":0,"error":{"code":"io","message":"raw reader failed"}}"#.into()),
+    ]);
+    let result = bounded(runtime.stop_raw_stdio(&handle, 64)).await.unwrap();
+    assert_eq!(result.stdout, b"a");
+    assert_eq!(result.stderr, b"b");
+    assert!(result.stdout_eof);
+    assert!(!result.stderr_eof);
+    assert!(result.stdout_truncated && result.stderr_truncated);
+    assert!(
+        matches!(result.failure, Some(MobileLinuxError::Io(ref detail)) if detail == "raw reader failed")
+    );
+    assert!(matches!(result.cleanup, RawStdioTreeStatus::Unverified(_)));
+}
+
+#[tokio::test]
+async fn raw_stop_transport_failure_leaves_termination_request_unknown() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    transport
+        .raw_close_responses
+        .lock()
+        .unwrap()
+        .push_back(Err(MobileLinuxError::Io(
+            "close transport failed after possible request".into(),
+        )));
+    transport.raw_read_responses.lock().unwrap().push_back(Ok(
+        r#"{"ok":true,"stdout_base64":"dGFpbA==","closed":true,"exit_code":0}"#.into(),
+    ));
+    let result = bounded(runtime.stop_raw_stdio(&handle, 64)).await.unwrap();
+    assert_eq!(result.stdout, b"tail");
+    assert_eq!(result.termination_requested, None);
+    assert!(
+        matches!(result.failure, Some(MobileLinuxError::Io(ref detail)) if detail.contains("possible request"))
+    );
+    assert!(matches!(result.cleanup, RawStdioTreeStatus::Unverified(_)));
+}
+
+#[tokio::test]
+async fn raw_read_delivers_bytes_before_the_native_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    transport.raw_read_responses.lock().unwrap().push_back(Ok(
+        r#"{"ok":true,"stdout_base64":"YWJj","stderr_base64":"ZGU=","closed":true,"error":{"code":"resource_limit_exceeded","message":"after bytes"}}"#.into(),
+    ));
+    let bytes = bounded(runtime.read_raw_stdio(&handle, 64)).await.unwrap();
+    assert_eq!(bytes.stdout, b"abc");
+    assert_eq!(bytes.stderr, b"de");
+    assert!(!bytes.closed);
+    assert!(matches!(bounded(runtime.read_raw_stdio(&handle, 64)).await,
+        Err(MobileLinuxError::ResourceLimitExceeded(detail)) if detail == "after bytes"));
+    assert_eq!(*transport.raw_calls.lock().unwrap(), vec!["read"]);
+    raw_closed_response(&transport);
+    bounded(runtime.close_raw_stdio(&handle)).await.unwrap();
+}
+
+#[tokio::test]
+async fn raw_stop_survives_caller_drop_and_replays_its_result() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    let control = runtime.state.raw_stdio.lock().unwrap()[&handle.id].clone();
+    transport.raw_close_blocked.store(true, Ordering::Release);
+    transport.raw_read_responses.lock().unwrap().push_back(Ok(
+        r#"{"ok":true,"stdout_base64":"dGFpbA==","closed":true,"exit_code":0}"#.into(),
+    ));
+    let stopping_runtime = runtime.clone();
+    let stopping_handle = handle.clone();
+    let caller =
+        tokio::spawn(async move { stopping_runtime.stop_raw_stdio(&stopping_handle, 64).await });
+    bounded(async {
+        while !transport.raw_close_entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    caller.abort();
+    let _ = caller.await;
+    transport.raw_close_blocked.store(false, Ordering::Release);
+    transport.raw_close_release.notify_one();
+    bounded(async {
+        while control.stop_result.lock().unwrap().is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let stopped = bounded(runtime.stop_raw_stdio(&handle, 64)).await.unwrap();
+    assert_eq!(stopped.stdout, b"tail");
+    assert_eq!(stopped.exit_code, Some(0));
+    assert!(matches!(stopped.cleanup, RawStdioTreeStatus::Unverified(_)));
+    assert_eq!(*transport.raw_calls.lock().unwrap(), vec!["close", "read"]);
+}
+
+#[tokio::test]
+async fn duplicate_raw_stops_share_one_owner_and_leave_other_session_stoppable() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let first = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    let second = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    let control = runtime.state.raw_stdio.lock().unwrap()[&first.id].clone();
+    let gate = control.read_gate.lock().await;
+    let started = Arc::new(AtomicU64::new(0));
+    let mut waiters = Vec::new();
+    for _ in 0..40 {
+        let runtime = runtime.clone();
+        let handle = first.clone();
+        let started = started.clone();
+        waiters.push(tokio::spawn(async move {
+            started.fetch_add(1, Ordering::AcqRel);
+            runtime.stop_raw_stdio(&handle, 64).await
+        }));
+    }
+    bounded(async {
+        while started.load(Ordering::Acquire) != 40
+            || control.stop_completion.lock().unwrap().is_none()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    transport.raw_read_responses.lock().unwrap().push_back(Ok(
+        r#"{"ok":true,"stdout_base64":"c2Vjb25k","closed":true,"exit_code":0}"#.into(),
+    ));
+    let other = bounded(runtime.stop_raw_stdio(&second, 64)).await.unwrap();
+    assert_eq!(other.stdout, b"second");
+    transport.raw_read_responses.lock().unwrap().push_back(Ok(
+        r#"{"ok":true,"stdout_base64":"Zmlyc3Q=","closed":true,"exit_code":0}"#.into(),
+    ));
+    drop(gate);
+    for waiter in waiters {
+        assert_eq!(bounded(waiter).await.unwrap().unwrap().stdout, b"first");
+    }
+    assert_eq!(
+        transport
+            .raw_calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|call| **call == "close")
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn raw_stop_rejects_a_handle_from_another_runtime_generation() {
+    let first_temp = tempfile::tempdir().unwrap();
+    let second_temp = tempfile::tempdir().unwrap();
+    let (first, first_transport) = process_test_runtime(&first_temp);
+    let (second, second_transport) = process_test_runtime(&second_temp);
+    let first_handle = bounded(first.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    let second_handle = bounded(second.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    assert_ne!(first_handle.id, second_handle.id);
+    assert!(matches!(
+        second.stop_raw_stdio(&first_handle, 64).await,
+        Err(MobileLinuxError::InvalidRequest(_))
+    ));
+    assert!(second_transport.raw_calls.lock().unwrap().is_empty());
+    raw_closed_response(&first_transport);
+    raw_closed_response(&second_transport);
+    bounded(first.close_raw_stdio(&first_handle)).await.unwrap();
+    bounded(second.close_raw_stdio(&second_handle))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn raw_open_passes_reserved_id_and_successfully_disposes() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Disabled)))
+        .await
+        .unwrap();
+    assert!(handle.enforcement.network_policy_enforced);
+    assert_eq!(transport.raw_ids.lock().unwrap()[0], handle.id);
+    raw_closed_response(&transport);
+    bounded(runtime.close_raw_stdio(&handle)).await.unwrap();
+    assert!(!runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .contains_key(&handle.id));
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["close", "read", "dispose"]
+    );
+}
+
+#[tokio::test]
+async fn raw_open_rejected_policy_disposes_before_returning_original_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    *transport.raw_open_response.lock().unwrap() = Some(Ok(
+        r#"{"ok":true,"session_id":"$ID","network_policy_enforced":false}"#.into(),
+    ));
+    raw_closed_response(&transport);
+    let error = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Disabled)))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        MobileLinuxError::NetworkPolicyUnavailable(_)
+    ));
+    assert!(runtime.state.raw_stdio.lock().unwrap().is_empty());
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["close", "read", "dispose"]
+    );
+    let ids = transport.raw_ids.lock().unwrap();
+    assert!(ids.iter().all(|id| id == &ids[0]));
+}
+
+#[tokio::test]
+async fn raw_open_policy_failure_with_failed_close_keeps_id_and_both_errors() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    *transport.raw_open_response.lock().unwrap() = Some(Ok(
+        r#"{"ok":true,"session_id":"$ID","network_policy_enforced":false}"#.into(),
+    ));
+    transport
+        .raw_close_responses
+        .lock()
+        .unwrap()
+        .push_back(Err(MobileLinuxError::Io("close failed".into())));
+    let error = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Disabled)))
+        .await
+        .unwrap_err();
+    let MobileLinuxError::NetworkPolicyUnavailable(detail) = error else {
+        panic!("policy error must remain typed")
+    };
+    assert!(detail.contains("cleanup unconfirmed") && detail.contains("close failed"));
+    let id = transport.raw_ids.lock().unwrap()[0].clone();
+    assert!(runtime.state.raw_stdio.lock().unwrap().contains_key(&id));
+    raw_closed_response(&transport);
+    bounded(runtime.shutdown()).await.unwrap();
+    assert!(runtime.state.raw_stdio.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn raw_open_malformed_receipt_still_closes_reserved_id() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    *transport.raw_open_response.lock().unwrap() = Some(Ok(
+        r#"{"ok":true,"session_id":"$ID","network_policy_enforced":"invalid"}"#.into(),
+    ));
+    raw_closed_response(&transport);
+    assert!(matches!(
+        bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed))).await,
+        Err(MobileLinuxError::Io(_))
+    ));
+    let ids = transport.raw_ids.lock().unwrap();
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["close", "read", "dispose"]
+    );
+    assert!(ids.iter().all(|id| id == &ids[0]));
+    assert!(runtime.state.raw_stdio.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn raw_open_unknown_absent_session_is_not_claimed_reaped() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    *transport.raw_open_response.lock().unwrap() =
+        Some(Err(MobileLinuxError::Io("null response".into())));
+    transport
+        .raw_close_responses
+        .lock()
+        .unwrap()
+        .push_back(Ok(r#"{"ok":true,"already_closed":true}"#.into()));
+    let error = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("cleanup unconfirmed"));
+    let id = transport.raw_ids.lock().unwrap()[0].clone();
+    assert!(runtime.state.raw_stdio.lock().unwrap().contains_key(&id));
+    assert_eq!(*transport.raw_calls.lock().unwrap(), vec!["close"]);
+    let next = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap_err();
+    assert!(next
+        .to_string()
+        .contains("previous raw stdio cleanup remains unconfirmed"));
+    let weak = Arc::downgrade(&runtime.state);
+    drop(runtime);
+    assert!(
+        weak.upgrade().is_some(),
+        "an unknown native owner must survive the last runtime handle"
+    );
+}
+
+#[tokio::test]
+async fn raw_open_mismatched_id_is_retained_without_terminating_an_unverified_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    *transport.raw_open_response.lock().unwrap() = Some(Ok(
+        r#"{"ok":true,"session_id":"unexpected-native-id","network_policy_enforced":true}"#.into(),
+    ));
+    let error = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("unexpected-native-id"));
+    let id = transport.raw_ids.lock().unwrap()[0].clone();
+    let control = runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        control.unexpected_id.lock().unwrap().as_deref(),
+        Some("unexpected-native-id")
+    );
+    assert!(control.uncertain.load(Ordering::Acquire));
+    assert!(transport.raw_calls.lock().unwrap().is_empty());
+    assert!(bounded(runtime.shutdown()).await.is_err());
+    assert!(transport.raw_calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn concurrent_raw_opens_get_distinct_process_unique_ids() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let (first, second) = tokio::join!(
+        runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)),
+        runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)),
+    );
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_ne!(first.id, second.id);
+    raw_closed_response(&transport);
+    raw_closed_response(&transport);
+    let (first_closed, second_closed) = tokio::join!(
+        runtime.close_raw_stdio(&first),
+        runtime.close_raw_stdio(&second)
+    );
+    first_closed.unwrap();
+    second_closed.unwrap();
+    assert!(runtime.state.raw_stdio.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn raw_open_explicit_not_started_error_does_not_claim_a_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    *transport.raw_open_response.lock().unwrap() = Some(Ok(
+        r#"{"ok":false,"not_started":true,"error":{"code":"invalid_request","message":"bad request"}}"#.into(),
+    ));
+    assert!(matches!(
+        bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed))).await,
+        Err(MobileLinuxError::InvalidRequest(_))
+    ));
+    assert!(runtime.state.raw_stdio.lock().unwrap().is_empty());
+    assert!(transport.raw_calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn raw_dispose_requires_positive_receipt_and_retains_session_for_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    raw_closed_response(&transport);
+    transport
+        .raw_dispose_responses
+        .lock()
+        .unwrap()
+        .push_back(Ok(r#"{"ok":true}"#.into()));
+    assert!(bounded(runtime.close_raw_stdio(&handle)).await.is_err());
+    assert!(runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .contains_key(&handle.id));
+    raw_closed_response(&transport);
+    bounded(runtime.close_raw_stdio(&handle)).await.unwrap();
+    assert!(!runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .contains_key(&handle.id));
+}
+
+#[tokio::test]
+async fn raw_open_caller_drop_during_native_start_waits_and_cleans_up() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    transport.raw_open_blocked.store(true, Ordering::Release);
+    raw_closed_response(&transport);
+    let open_runtime = runtime.clone();
+    let caller = tokio::spawn(async move {
+        open_runtime
+            .open_raw_stdio(raw_request(NetworkPolicy::Allowed))
+            .await
+    });
+    bounded(async {
+        while !transport.raw_open_entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    caller.abort();
+    let _ = caller.await;
+    let shutdown_runtime = runtime.clone();
+    let mut shutdown = tokio::spawn(async move { shutdown_runtime.shutdown().await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), &mut shutdown)
+            .await
+            .is_err()
+    );
+    transport.raw_open_release.notify_one();
+    bounded(shutdown).await.unwrap().unwrap();
+    assert!(runtime.state.raw_stdio.lock().unwrap().is_empty());
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["close", "read", "dispose"]
+    );
+}
+
+#[tokio::test]
+async fn shutdown_can_close_a_delivered_but_unaccepted_raw_open() {
+    struct WakeFlag(AtomicBool);
+    impl std::task::Wake for WakeFlag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    raw_closed_response(&transport);
+    transport.raw_close_blocked.store(true, Ordering::Release);
+    let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+    let waker = std::task::Waker::from(flag.clone());
+    let mut open = Box::pin(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)));
+    {
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(std::future::Future::poll(open.as_mut(), &mut context).is_pending());
+    }
+    bounded(async {
+        while !flag.0.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    // Keep the delivered response alive without accepting it until shutdown.
+    let shutdown_runtime = runtime.clone();
+    let shutdown = tokio::spawn(async move { shutdown_runtime.shutdown().await });
+    bounded(async {
+        while !transport.raw_close_entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    {
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(std::future::Future::poll(open.as_mut(), &mut context).is_pending());
+    }
+    transport.raw_close_blocked.store(false, Ordering::Release);
+    transport.raw_close_release.notify_one();
+    bounded(shutdown).await.unwrap().unwrap();
+    assert!(bounded(open).await.is_err());
+    assert!(runtime.state.raw_stdio.lock().unwrap().is_empty());
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["close", "read", "dispose"]
+    );
+}
+
+#[tokio::test]
+async fn shutdown_reports_a_lifecycle_owner_that_does_not_release() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, _) = process_test_runtime(&temp);
+    let guard = runtime.state.lifecycle.lock().await;
+    let error = bounded(runtime.shutdown()).await.unwrap_err();
+    assert!(
+        matches!(error, MobileLinuxError::Io(ref detail) if detail.contains("could not acquire lifecycle"))
+    );
+    drop(guard);
+}
+
+#[tokio::test]
+async fn dropped_shutdown_still_revokes_an_unaccepted_raw_open() {
+    struct WakeFlag(AtomicBool);
+    impl std::task::Wake for WakeFlag {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    raw_closed_response(&transport);
+    transport.raw_close_blocked.store(true, Ordering::Release);
+    let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+    let waker = std::task::Waker::from(flag.clone());
+    let mut open = Box::pin(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)));
+    {
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(std::future::Future::poll(open.as_mut(), &mut context).is_pending());
+    }
+    bounded(async {
+        while !flag.0.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let shutdown_runtime = runtime.clone();
+    let shutdown = tokio::spawn(async move { shutdown_runtime.shutdown().await });
+    bounded(async {
+        while !transport.raw_close_entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    shutdown.abort();
+    let _ = shutdown.await;
+    assert!(bounded(open).await.is_err());
+    transport.raw_close_blocked.store(false, Ordering::Release);
+    transport.raw_close_release.notify_one();
+    bounded(async {
+        while !runtime.state.raw_stdio.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["close", "read", "dispose"]
+    );
+}
+
+#[tokio::test]
+async fn shutdown_reports_stalled_raw_close_and_retains_its_owner() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    raw_closed_response(&transport);
+    transport.raw_close_blocked.store(true, Ordering::Release);
+    let error = bounded(runtime.shutdown()).await.unwrap_err();
+    assert!(
+        matches!(error, MobileLinuxError::Io(ref detail) if detail.contains("close is still pending"))
+    );
+    assert!(transport.raw_close_entered.load(Ordering::Acquire));
+    assert!(runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .contains_key(&handle.id));
+    let ids_before = transport.raw_ids.lock().unwrap().len();
+    assert!(
+        bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+            .await
+            .is_err()
+    );
+    assert_eq!(transport.raw_ids.lock().unwrap().len(), ids_before);
+    transport.raw_close_blocked.store(false, Ordering::Release);
+    transport.raw_close_release.notify_one();
+    bounded(async {
+        while runtime
+            .state
+            .raw_stdio
+            .lock()
+            .unwrap()
+            .contains_key(&handle.id)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+}
+
+#[test]
+fn raw_open_caller_runtime_shutdown_keeps_owner_until_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    transport.raw_open_blocked.store(true, Ordering::Release);
+    raw_closed_response(&transport);
+
+    let caller_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    caller_runtime.block_on(async {
+        let open_runtime = runtime.clone();
+        tokio::spawn(async move {
+            open_runtime
+                .open_raw_stdio(raw_request(NetworkPolicy::Allowed))
+                .await
+        });
+        bounded(async {
+            while !transport.raw_open_entered.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    });
+    // This really destroys the caller runtime, not merely its open future.
+    drop(caller_runtime);
+    assert!(!runtime.state.raw_stdio.lock().unwrap().is_empty());
+    transport.raw_open_release.notify_one();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !runtime.state.raw_stdio.lock().unwrap().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached owner did not finish cleanup"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["close", "read", "dispose"]
+    );
+}
+
+#[test]
+fn raw_close_caller_runtime_shutdown_keeps_owner_until_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let caller_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let handle = caller_runtime
+        .block_on(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .unwrap();
+    raw_closed_response(&transport);
+    transport.raw_close_blocked.store(true, Ordering::Release);
+    caller_runtime.block_on(async {
+        let close_runtime = runtime.clone();
+        let close_handle = handle.clone();
+        tokio::spawn(async move { close_runtime.close_raw_stdio(&close_handle).await });
+        bounded(async {
+            while !transport.raw_close_entered.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    });
+    drop(caller_runtime);
+    assert!(runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .contains_key(&handle.id));
+    transport.raw_close_release.notify_one();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .contains_key(&handle.id)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached owner did not finish cleanup"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        *transport.raw_calls.lock().unwrap(),
+        vec!["close", "read", "dispose"]
+    );
+}
+
+#[tokio::test]
+async fn raw_close_caller_drop_does_not_abandon_native_cleanup() {
+    let temp = tempfile::tempdir().unwrap();
+    let (runtime, transport) = process_test_runtime(&temp);
+    let handle = bounded(runtime.open_raw_stdio(raw_request(NetworkPolicy::Allowed)))
+        .await
+        .unwrap();
+    transport.raw_close_blocked.store(true, Ordering::Release);
+    raw_closed_response(&transport);
+    let close_runtime = runtime.clone();
+    let close_handle = handle.clone();
+    let caller = tokio::spawn(async move { close_runtime.close_raw_stdio(&close_handle).await });
+    bounded(async {
+        while !transport.raw_close_entered.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    caller.abort();
+    let _ = caller.await;
+    assert!(runtime
+        .state
+        .raw_stdio
+        .lock()
+        .unwrap()
+        .contains_key(&handle.id));
+    transport.raw_close_release.notify_one();
+    bounded(async {
+        while runtime
+            .state
+            .raw_stdio
+            .lock()
+            .unwrap()
+            .contains_key(&handle.id)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
     assert_eq!(
         *transport.raw_calls.lock().unwrap(),
         vec!["close", "read", "dispose"]

@@ -53,6 +53,19 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertEqual(transition.installing, [added])
     }
 
+    func testRawContextBlocksOnlyActualGlobalMountChanges() {
+        let home = LXISHMountSpec(hostPath: "/host/home", guestPath: "/home/guest", readOnly: false, purpose: "home")
+        let project = LXISHMountSpec(hostPath: "/host/project", guestPath: "/workspace", readOnly: true, purpose: "workspace")
+        var changedGrant = project
+        changedGrant.readOnly = false
+        let requestMount = LXISHMountSpec(hostPath: "/host/other", guestPath: "/request", readOnly: false, purpose: "external")
+        let existing = [home, project]
+        XCTAssertTrue(LXISHRuntimeMountPlanner.permitsMountTransition(from: existing, to: [project, home], rawSessionsTracked: true))
+        XCTAssertFalse(LXISHRuntimeMountPlanner.permitsMountTransition(from: existing, to: [home, changedGrant], rawSessionsTracked: true))
+        XCTAssertFalse(LXISHRuntimeMountPlanner.permitsMountTransition(from: existing, to: [home, project, requestMount], rawSessionsTracked: true))
+        XCTAssertTrue(LXISHRuntimeMountPlanner.permitsMountTransition(from: existing, to: [home, changedGrant], rawSessionsTracked: false))
+    }
+
     func testMountTransitionRebuildsChildrenWhenParentMappingChanges() {
         let home = LXISHMountSpec(hostPath: "/persistent/home", guestPath: "/home/lingxi", readOnly: false, purpose: "home")
         var changed = home
@@ -88,8 +101,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         var error = expectedError
         var receivedOutput = Data()
         var receivedError = Data()
+        var stderrFirst = false
         for index in 0..<4 {
-            let chunk = LXISHRawOutputChunk.drain(stdout: &output, stderr: &error, terminal: true, maxBytes: 3)
+            let chunk = LXISHRawOutputChunk.drain(stdout: &output, stderr: &error, terminal: true, maxBytes: 3, stderrFirst: &stderrFirst)
             XCTAssertLessThanOrEqual(chunk.stdout.count + chunk.stderr.count, 3)
             XCTAssertEqual(chunk.closed, index == 3)
             receivedOutput.append(chunk.stdout)
@@ -97,7 +111,29 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         }
         XCTAssertEqual(receivedOutput, expectedOutput)
         XCTAssertEqual(receivedError, expectedError)
-        XCTAssertFalse(LXISHRawOutputChunk.drain(stdout: &output, stderr: &error, terminal: false, maxBytes: 3).closed)
+        XCTAssertFalse(LXISHRawOutputChunk.drain(stdout: &output, stderr: &error, terminal: false, maxBytes: 3, stderrFirst: &stderrFirst).closed)
+    }
+
+    func testRawSingleByteReadsAlternateBetweenBothNonemptyStreams() {
+        var output = Data(repeating: 97, count: 4)
+        var error = Data(repeating: 98, count: 4)
+        var stderrFirst = false
+        for index in 0..<8 {
+            let chunk = LXISHRawOutputChunk.drain(
+                stdout: &output, stderr: &error, terminal: true, maxBytes: 1, stderrFirst: &stderrFirst
+            )
+            XCTAssertEqual(chunk.stdout, index.isMultiple(of: 2) ? Data([97]) : Data())
+            XCTAssertEqual(chunk.stderr, index.isMultiple(of: 2) ? Data() : Data([98]))
+            XCTAssertEqual(chunk.closed, index == 7)
+        }
+    }
+
+    func testRawCallbacksRejectReusedSessionWithAnotherExecutionContext() {
+        let current = LXISHRawExecutionIdentity(sessionId: "session-1", executionContext: 101)
+        XCTAssertTrue(current.matches(sessionId: "session-1", executionContext: 101))
+        XCTAssertFalse(current.matches(sessionId: "session-1", executionContext: 100))
+        XCTAssertFalse(current.matches(sessionId: "session-2", executionContext: 101))
+        XCTAssertFalse(current.matches(sessionId: "session-1", executionContext: 0))
     }
 
     func testRawTerminalResourceFailureUsesStructuredBridgeError() throws {
@@ -110,6 +146,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let encodedError = try XCTUnwrap(object["error"] as? [String: String])
         XCTAssertEqual(encodedError["code"], "resource_limit_exceeded")
         XCTAssertEqual(encodedError["message"], "buffer limit")
+        let readerError = LXISHRawOutputChunk.failurePayload("reader failed", code: "io") as? [String: String]
+        XCTAssertEqual(readerError?["code"], "io")
+        XCTAssertEqual(readerError?["message"], "reader failed")
     }
 
     func testExplicitCallerHomeAndBrowserSurviveDefaultEnvironment() {

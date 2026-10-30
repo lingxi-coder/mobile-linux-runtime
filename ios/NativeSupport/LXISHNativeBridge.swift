@@ -271,6 +271,7 @@ private struct LXISHBackgroundEventPayload: Codable {
 }
 
 private struct LXISHRawStdioOpenRequest: Codable {
+    var sessionId: String
     var command: String
     var args: [String]
     var cwd: String?
@@ -281,6 +282,7 @@ private struct LXISHRawStdioOpenRequest: Codable {
 
     enum CodingKeys: String, CodingKey {
         case command, args, cwd, env, network, mounts
+        case sessionId = "session_id"
         case resourceLimits = "resource_limits"
     }
 }
@@ -303,6 +305,9 @@ private struct LXISHShellExecutionResultBox {
     var stdoutText: String
     var stderrText: String
     var durationSeconds: Double
+    var rawStdoutEOF = false
+    var rawStderrEOF = false
+    var rawReadErrno = 0
 }
 
 enum LXISHPtyExitIdentity {
@@ -575,6 +580,16 @@ struct LXISHRuntimeMountPlanner {
     /// Keep shared HOME and unchanged overlays mounted while another context
     /// adds or retires its own mapping. A changed parent also retires its
     /// children so physical links and virtual overlays are rebuilt in order.
+    /// The native mount table is process-wide, including across distinct
+    /// scopes which happen to have the same workspace key.  A retained raw
+    /// session may still have descendants or an unconfirmed start/close.
+    static func permitsMountTransition(
+        from current: [LXISHMountSpec], to desired: [LXISHMountSpec], rawSessionsTracked: Bool
+    ) -> Bool {
+        let plan = transition(from: current, to: desired)
+        return !rawSessionsTracked || (plan.retiring.isEmpty && plan.installing.isEmpty)
+    }
+
     static func transition(from current: [LXISHMountSpec], to desired: [LXISHMountSpec])
         -> (retiring: [String], installing: [LXISHMountSpec]) {
         func sameMapping(_ left: LXISHMountSpec, _ right: LXISHMountSpec) -> Bool {
@@ -738,6 +753,12 @@ private final class LXISHKernelRuntimeBridge {
         guard result >= 0 else {
             throw LXISHBridgeError.unavailable("ISHKernel boot failed: \(result)")
         }
+    }
+
+    func permitsMountTransition(to mounts: [LXISHMountSpec], rawSessionsTracked: Bool) -> Bool {
+        LXISHRuntimeMountPlanner.permitsMountTransition(
+            from: Array(mountedSpecs.values), to: mounts, rawSessionsTracked: rawSessionsTracked
+        )
     }
 
     func prepareMountTransition(to mounts: [LXISHMountSpec]) throws -> [LXISHMountSpec] {
@@ -1499,9 +1520,9 @@ private final class LXISHShellExecutorRuntimeBridge {
         cwd: String?,
         networkPolicy: Int32,
         memoryLimitBytes: UInt64?,
-        dataSink: @escaping (Data, Bool) -> Void,
-        completion: @escaping (LXISHShellExecutionResultBox) -> Void
-    ) throws -> Int32 {
+        dataSink: @escaping (UInt64, Data, Bool) -> Void,
+        completion: @escaping (UInt64, LXISHShellExecutionResultBox) -> Void
+    ) throws -> (pid: Int32, context: UInt64, policyLease: LXISHExecutionPolicyLease) {
         guard let executorClass = NSClassFromString("ISHShellExecutor") else {
             throw LXISHBridgeError.unavailable(Self.availabilityReason())
         }
@@ -1513,6 +1534,18 @@ private final class LXISHShellExecutorRuntimeBridge {
             if networkPolicy != 0 { throw LXISHBridgeError.networkPolicyUnavailable(message) }
             if memoryLimitBytes != nil { throw LXISHBridgeError.resourceLimitExceeded(message) }
             throw LXISHBridgeError.unavailable(message)
+        }
+        for name in ["writeRawStdin:fsContext:", "terminateRawContext:", "disposeRawContext:"] {
+            guard class_getClassMethod(executorClass, NSSelectorFromString(name)) != nil else {
+                throw LXISHBridgeError.unavailable("ISHShellExecutor is missing raw context identity support")
+            }
+        }
+        guard let resultClass = NSClassFromString("ISHShellExecutionResult"),
+              ["rawStdoutEOF", "rawStderrEOF", "rawReadErrno"].allSatisfy({
+                  class_getInstanceMethod(resultClass, NSSelectorFromString($0)) != nil
+              })
+        else {
+            throw LXISHBridgeError.unavailable("ISHShellExecutor is missing raw reader evidence")
         }
         let policyLease = try LXISHExecutionPolicyLease(
             networkPolicy: networkPolicy,
@@ -1527,19 +1560,27 @@ private final class LXISHShellExecutorRuntimeBridge {
         } else {
             launch = (executable, arguments)
         }
+        let executionContext = policyLease.fsContext
         typealias DataBlock = @convention(block) (NSData, Bool) -> Void
-        let dataBlock: DataBlock = { data, isStdErr in dataSink(data as Data, isStdErr) }
+        let dataBlock: DataBlock = { data, isStdErr in dataSink(executionContext, data as Data, isStdErr) }
         typealias CompletionBlock = @convention(block) (AnyObject) -> Void
         let completionBlock: CompletionBlock = { [weak self] result in
             guard let self else { return }
-            let outcome = policyLease.finish()
+            // The root and pipes can complete while a detached descendant is
+            // still running. Keep the watchdog and network policy owned by
+            // the raw session until native disposal confirms inactivity.
+            let outcome = policyLease.currentOutcome()
             completion(
+                executionContext,
                 LXISHShellExecutionResultBox(
                     exitCode: self.intValue(from: result, selector: "exitCode"),
                     errorCode: outcome.resourceLimitExceeded ? -5 : self.intValue(from: result, selector: "error"),
                     stdoutText: "",
                     stderrText: outcome.resourceLimitExceeded ? outcome.resourceLimitMessage : "",
-                    durationSeconds: self.doubleValue(from: result, selector: "duration")
+                    durationSeconds: self.doubleValue(from: result, selector: "duration"),
+                    rawStdoutEOF: self.intValue(from: result, selector: "rawStdoutEOF") != 0,
+                    rawStderrEOF: self.intValue(from: result, selector: "rawStderrEOF") != 0,
+                    rawReadErrno: self.intValue(from: result, selector: "rawReadErrno")
                 )
             )
         }
@@ -1562,37 +1603,62 @@ private final class LXISHShellExecutorRuntimeBridge {
             throw LXISHBridgeError.unavailable("ISHShellExecutor failed to launch raw stdio process: \(pid)")
         }
         policyLease.startWatchdog { [weak self] in
-            self?.killProcessGroup(pid, executorClass: executorClass)
+            _ = self?.terminateRawContext(executionContext, executorClass: executorClass)
         }
-        return pid
+        return (pid, policyLease.fsContext, policyLease)
     }
 
-    func writeRawStdin(_ data: Data, pid: Int32) throws {
+    func writeRawStdin(_ data: Data, context: UInt64) throws {
         guard let executorClass = NSClassFromString("ISHShellExecutor") else {
             throw LXISHBridgeError.unavailable(Self.availabilityReason())
         }
-        let selector = NSSelectorFromString("writeRawStdin:pid:")
+        let selector = NSSelectorFromString("writeRawStdin:fsContext:")
         guard let method = class_getClassMethod(executorClass, selector) else {
-            throw LXISHBridgeError.unavailable("ISHShellExecutor is missing writeRawStdin:pid:")
+            throw LXISHBridgeError.unavailable("ISHShellExecutor is missing context-bound raw stdin")
         }
-        typealias Fn = @convention(c) (AnyClass, Selector, NSData, Int32) -> Bool
+        typealias Fn = @convention(c) (AnyClass, Selector, NSData, UInt64) -> Bool
         let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
-        guard fn(executorClass, selector, data as NSData, pid) else {
+        guard fn(executorClass, selector, data as NSData, context) else {
             throw LXISHBridgeError.io("raw stdio stdin is closed")
         }
     }
 
-    func closeRawStdin(pid: Int32) throws {
+    func terminateRawContext(_ context: UInt64) throws {
         guard let executorClass = NSClassFromString("ISHShellExecutor") else {
             throw LXISHBridgeError.unavailable(Self.availabilityReason())
         }
-        let selector = NSSelectorFromString("closeRawStdinForPid:")
+        let selector = NSSelectorFromString("terminateRawContext:")
         guard let method = class_getClassMethod(executorClass, selector) else {
-            throw LXISHBridgeError.unavailable("ISHShellExecutor is missing closeRawStdinForPid:")
+            throw LXISHBridgeError.unavailable("ISHShellExecutor is missing context-bound raw termination")
         }
-        typealias Fn = @convention(c) (AnyClass, Selector, Int32) -> Bool
+        typealias Fn = @convention(c) (AnyClass, Selector, UInt64) -> Bool
         let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
-        _ = fn(executorClass, selector, pid)
+        guard context != 0, fn(executorClass, selector, context) else {
+            throw LXISHBridgeError.io("raw execution identity is unavailable")
+        }
+    }
+
+    private func terminateRawContext(_ context: UInt64, executorClass: AnyClass) -> Bool {
+        let selector = NSSelectorFromString("terminateRawContext:")
+        guard context != 0, let method = class_getClassMethod(executorClass, selector) else { return false }
+        typealias Fn = @convention(c) (AnyClass, Selector, UInt64) -> Bool
+        let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
+        return fn(executorClass, selector, context)
+    }
+
+    func disposeRawContext(_ context: UInt64) throws {
+        guard let executorClass = NSClassFromString("ISHShellExecutor") else {
+            throw LXISHBridgeError.unavailable(Self.availabilityReason())
+        }
+        let selector = NSSelectorFromString("disposeRawContext:")
+        guard let method = class_getClassMethod(executorClass, selector) else {
+            throw LXISHBridgeError.unavailable("ISHShellExecutor is missing context-bound raw disposal")
+        }
+        typealias Fn = @convention(c) (AnyClass, Selector, UInt64) -> Bool
+        let fn = unsafeBitCast(method_getImplementation(method), to: Fn.self)
+        guard context != 0, fn(executorClass, selector, context) else {
+            throw LXISHBridgeError.io("raw execution identity or cleanup is unverified")
+        }
     }
 
     func killProcessGroup(_ pid: Int32) throws {
@@ -1744,24 +1810,40 @@ private final class LXISHNativeCoordinator {
     private final class RawStdioState {
         let sessionId: String
         let guestPid: Int32
+        let executionContext: UInt64
         let networkPolicyEnforced: Bool
         let memoryLimitEnforced: Bool
+        let policyLease: LXISHExecutionPolicyLease
         var stdout = Data()
         var stderr = Data()
+        var readStderrFirst = false
         var terminal = false
         var exitCode: Int?
         var failure: String?
+        var failureCode = "resource_limit_exceeded"
+        var outputTruncated = false
+        var stdoutEOF = false
+        var stderrEOF = false
+
+        func matches(sessionId: String, executionContext: UInt64) -> Bool {
+            LXISHRawExecutionIdentity(sessionId: self.sessionId, executionContext: self.executionContext)
+                .matches(sessionId: sessionId, executionContext: executionContext)
+        }
 
         init(
             sessionId: String,
             guestPid: Int32,
+            executionContext: UInt64,
             networkPolicyEnforced: Bool,
-            memoryLimitEnforced: Bool
+            memoryLimitEnforced: Bool,
+            policyLease: LXISHExecutionPolicyLease
         ) {
             self.sessionId = sessionId
             self.guestPid = guestPid
+            self.executionContext = executionContext
             self.networkPolicyEnforced = networkPolicyEnforced
             self.memoryLimitEnforced = memoryLimitEnforced
+            self.policyLease = policyLease
         }
     }
 
@@ -1854,13 +1936,13 @@ private final class LXISHNativeCoordinator {
     func configureMounts(config: LXISHNativeConfig, mounts: [LXISHMountSpec]) -> String {
         execute(config: config) { runtime in
             try self.requireNoIsolatedProcess(runtime)
-            runtime.mounts = mounts
             if runtime.kernelBooted {
                 try self.applyMountsIfNeeded(requestedMounts: mounts, to: &runtime)
             } else {
                 let effective = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: mounts, config: config)
                 try self.ensureHostEndpointsExist(effective)
             }
+            runtime.mounts = mounts
             return ["status": self.rootfsManager.status(for: config)]
         }
     }
@@ -1940,7 +2022,7 @@ private final class LXISHNativeCoordinator {
             if isolated && (runtime.ptySessionId != nil || runtime.rawStdioSessions.values.contains(where: { !$0.terminal }) || runtime.backgroundProcesses.values.contains(where: { !$0.terminal })) {
                 throw LXISHBridgeError.invalidRequest("isolated execution requires other guest sessions to be closed")
             }
-            runtime.mounts = request.mounts ?? runtime.mounts
+            let requestedMounts = request.mounts ?? runtime.mounts
             guard LXISHKernelRuntimeBridge.isDeviceBridgeAvailable(),
                   LXISHShellExecutorRuntimeBridge.isDeviceBridgeAvailable()
             else {
@@ -1954,7 +2036,8 @@ private final class LXISHNativeCoordinator {
                 throw LXISHBridgeError.unavailable(message)
             }
             try self.bootKernel(config: config, runtime: &runtime)
-            try self.applyMountsIfNeeded(requestedMounts: runtime.mounts, to: &runtime, includeDefaultMounts: !isolated)
+            try self.applyMountsIfNeeded(requestedMounts: requestedMounts, to: &runtime, includeDefaultMounts: !isolated)
+            runtime.mounts = requestedMounts
             var launched = false
             defer {
                 if isolated && !launched {
@@ -2041,7 +2124,20 @@ private final class LXISHNativeCoordinator {
     }
 
     func openRawStdio(config: LXISHNativeConfig, request: LXISHRawStdioOpenRequest) -> String {
-        execute(config: config) { runtime in
+        // An explicit negative receipt is safe only before attempting spawn,
+        // and never when this id already names another native session.
+        var attemptedSpawn = false
+        var duplicateId = false
+        var idChecked = false
+        let response = execute(config: config) { runtime in
+            guard !request.sessionId.isEmpty else {
+                throw LXISHBridgeError.invalidRequest("raw stdio session_id must not be empty")
+            }
+            idChecked = true
+            if runtime.rawStdioSessions[request.sessionId] != nil {
+                duplicateId = true
+                throw LXISHBridgeError.invalidRequest("duplicate raw stdio session_id")
+            }
             try self.requireNoIsolatedProcess(runtime)
             let runRequest = LXISHRunRequest(
                 command: request.command,
@@ -2058,48 +2154,54 @@ private final class LXISHNativeCoordinator {
             let executionPolicy = try self.executionPolicy(for: runRequest)
             let environment = self.preparedEnvironment(from: request.env, cwd: request.cwd, config: config)
             _ = try self.rootfsManager.installIfNeeded(for: config)
-            runtime.mounts = request.mounts ?? runtime.mounts
+            let requestedMounts = request.mounts ?? runtime.mounts
             guard LXISHKernelRuntimeBridge.isDeviceBridgeAvailable(),
                   LXISHShellExecutorRuntimeBridge.isDeviceBridgeAvailable()
             else {
                 throw LXISHBridgeError.unavailable(LXISHShellExecutorRuntimeBridge.availabilityReason())
             }
             try self.bootKernel(config: config, runtime: &runtime)
-            try self.applyMountsIfNeeded(requestedMounts: runtime.mounts, to: &runtime)
+            try self.applyMountsIfNeeded(requestedMounts: requestedMounts, to: &runtime)
+            runtime.mounts = requestedMounts
             try self.validateEnvironment(environment)
 
-            let sessionId = UUID().uuidString.lowercased()
+            let sessionId = request.sessionId
             let runtimeKey = config.runtimeKey
             let ingress = LXISHRawOutputIngress()
-            let pid = try runtime.executor.spawnRawExecutable(
+            attemptedSpawn = true
+            let execution = try runtime.executor.spawnRawExecutable(
                 request.command,
                 arguments: request.args,
                 environment: environment,
                 cwd: request.cwd ?? environment["PWD"],
                 networkPolicy: executionPolicy.networkPolicy,
                 memoryLimitBytes: executionPolicy.memoryLimitBytes,
-                dataSink: { [weak self] data, isStdErr in
+                dataSink: { [weak self] context, data, isStdErr in
                     self?.recordRawStdioData(
                         runtimeKey: runtimeKey,
                         sessionId: sessionId,
+                        executionContext: context,
                         ingress: ingress,
                         data: data,
                         isStdErr: isStdErr
                     )
                 },
-                completion: { [weak self] result in
+                completion: { [weak self] context, result in
                     self?.recordRawStdioCompletion(
                         runtimeKey: runtimeKey,
                         sessionId: sessionId,
+                        executionContext: context,
                         result: result
                     )
                 }
             )
             runtime.rawStdioSessions[sessionId] = RawStdioState(
                 sessionId: sessionId,
-                guestPid: pid,
+                guestPid: execution.pid,
+                executionContext: execution.context,
                 networkPolicyEnforced: executionPolicy.networkPolicy != 0,
-                memoryLimitEnforced: executionPolicy.memoryLimitBytes != nil
+                memoryLimitEnforced: executionPolicy.memoryLimitBytes != nil,
+                policyLease: execution.policyLease
             )
             return [
                 "session_id": sessionId,
@@ -2107,25 +2209,36 @@ private final class LXISHNativeCoordinator {
                 "memory_limit_enforced": executionPolicy.memoryLimitBytes != nil,
             ]
         }
+        if idChecked && !attemptedSpawn && !duplicateId,
+           let bytes = response.data(using: .utf8),
+           var object = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+           object["ok"] as? Bool == false {
+            object["not_started"] = true
+            if let encoded = try? JSONSerialization.data(withJSONObject: object),
+               let result = String(data: encoded, encoding: .utf8) {
+                return result
+            }
+        }
+        return response
     }
 
     func writeRawStdio(config: LXISHNativeConfig, request: LXISHRawStdioRequest) -> String {
         guard let encoded = request.dataBase64, let data = Data(base64Encoded: encoded) else {
             return encodeError(code: "invalid_request", message: "raw stdio write requires valid data_base64")
         }
-        var target: (LXISHShellExecutorRuntimeBridge, Int32)?
+        var target: (LXISHShellExecutorRuntimeBridge, UInt64)?
         let validation = execute(config: config) { runtime in
             guard let session = runtime.rawStdioSessions[request.sessionId], !session.terminal else {
                 throw LXISHBridgeError.invalidRequest("unknown or closed raw stdio session")
             }
-            target = (runtime.executor, session.guestPid)
+            target = (runtime.executor, session.executionContext)
             return [:]
         }
-        guard let (executor, pid) = target else { return validation }
+        guard let (executor, context) = target else { return validation }
         // Do not hold the coordinator while waiting for guest stdin capacity:
         // close/cancel and output callbacks must continue to make progress.
         do {
-            try executor.writeRawStdin(data, pid: pid)
+            try executor.writeRawStdin(data, context: context)
             return encodeEnvelope(ok: true, payload: ["written": data.count])
         } catch let error as LXISHBridgeError {
             return encodeError(code: error.code, message: error.localizedDescription)
@@ -2135,47 +2248,58 @@ private final class LXISHNativeCoordinator {
     }
 
     func readRawStdio(config: LXISHNativeConfig, request: LXISHRawStdioRequest) -> String {
-        execute(config: config) { runtime in
+        execute(config: config, allowForeignLive: true) { runtime in
             guard let session = runtime.rawStdioSessions[request.sessionId] else {
                 throw LXISHBridgeError.invalidRequest("unknown raw stdio session")
+            }
+            let policyOutcome = session.policyLease.currentOutcome()
+            if policyOutcome.resourceLimitExceeded && session.failure == nil {
+                session.failure = policyOutcome.resourceLimitMessage
             }
             let maxBytes = max(1, min(Int(request.maxBytes ?? 65_536), 1_048_576))
             let reportFailure = session.terminal && session.stdout.isEmpty && session.stderr.isEmpty
             let chunk = LXISHRawOutputChunk.drain(
                 stdout: &session.stdout, stderr: &session.stderr,
-                terminal: session.terminal, maxBytes: maxBytes
+                terminal: session.terminal, maxBytes: maxBytes, stderrFirst: &session.readStderrFirst
             )
             return [
                 "stdout_base64": chunk.stdout.base64EncodedString(),
                 "stderr_base64": chunk.stderr.base64EncodedString(),
-                "closed": chunk.closed && (session.failure == nil || reportFailure),
+                "closed": chunk.closed && lxISHExecutionContextActive(session.executionContext) == 0
+                    && (session.failure == nil || reportFailure),
+                "stdout_eof": session.terminal && session.stdoutEOF && session.stdout.isEmpty,
+                "stderr_eof": session.terminal && session.stderrEOF && session.stderr.isEmpty,
+                "stdout_truncated": session.outputTruncated,
+                "stderr_truncated": session.outputTruncated,
                 "exit_code": session.exitCode ?? NSNull(),
-                "error": reportFailure ? LXISHRawOutputChunk.failurePayload(session.failure) : NSNull(),
+                "error": reportFailure ? LXISHRawOutputChunk.failurePayload(session.failure, code: session.failureCode) : NSNull(),
             ]
         }
     }
 
     func closeRawStdio(config: LXISHNativeConfig, request: LXISHRawStdioRequest) -> String {
-        execute(config: config) { runtime in
+        execute(config: config, allowForeignLive: true) { runtime in
             guard let session = runtime.rawStdioSessions[request.sessionId] else {
                 return ["already_closed": true]
             }
-            if !session.terminal {
-                try runtime.executor.closeRawStdin(pid: session.guestPid)
-                try runtime.executor.killProcessGroup(session.guestPid)
-            }
-            return ["termination_requested": !session.terminal, "closed": session.terminal]
+            // The root may already have exited while a descendant still owns
+            // the execution context; never use a recycled guest PID here.
+            try runtime.executor.terminateRawContext(session.executionContext)
+            return ["termination_requested": true,
+                    "closed": session.terminal && lxISHExecutionContextActive(session.executionContext) == 0]
         }
     }
 
     func disposeRawStdio(config: LXISHNativeConfig, request: LXISHRawStdioRequest) -> String {
-        execute(config: config) { runtime in
+        execute(config: config, allowForeignLive: true) { runtime in
             guard let session = runtime.rawStdioSessions[request.sessionId] else {
-                return ["disposed": true]
+                throw LXISHBridgeError.invalidRequest("unknown raw stdio session")
             }
-            guard session.terminal else {
+            guard session.terminal && lxISHExecutionContextActive(session.executionContext) == 0 else {
                 throw LXISHBridgeError.invalidRequest("raw stdio process has not been reaped")
             }
+            try runtime.executor.disposeRawContext(session.executionContext)
+            _ = session.policyLease.finish()
             runtime.rawStdioSessions.removeValue(forKey: request.sessionId)
             return ["disposed": true]
         }
@@ -2184,6 +2308,7 @@ private final class LXISHNativeCoordinator {
     private func recordRawStdioData(
         runtimeKey: String,
         sessionId: String,
+        executionContext: UInt64,
         ingress: LXISHRawOutputIngress,
         data: Data,
         isStdErr: Bool
@@ -2194,9 +2319,12 @@ private final class LXISHNativeCoordinator {
         case .overflow:
             queue.async {
                 guard let runtime = self.runtimes[runtimeKey],
-                      let session = runtime.rawStdioSessions[sessionId], !session.terminal else { return }
+                      let session = runtime.rawStdioSessions[sessionId],
+                      session.matches(sessionId: sessionId, executionContext: executionContext), !session.terminal else { return }
                 session.failure = "raw stdio pending output exceeded the 4 MiB callback buffer"
-                try? runtime.executor.killProcessGroup(session.guestPid)
+                session.outputTruncated = true
+                do { try runtime.executor.terminateRawContext(executionContext) }
+                catch { session.failure = "raw stdio callback overflow; termination request failed: \(error.localizedDescription)" }
             }
             return
         case .accepted:
@@ -2206,12 +2334,15 @@ private final class LXISHNativeCoordinator {
             defer { ingress.release(data.count) }
             guard let runtime = self.runtimes[runtimeKey],
                   let session = runtime.rawStdioSessions[sessionId],
+                  session.matches(sessionId: sessionId, executionContext: executionContext),
                   !session.terminal
             else { return }
             let buffered = session.stdout.count + session.stderr.count
             if buffered + data.count > 4 * 1_048_576 {
                 session.failure = "raw stdio output exceeded the 4 MiB unread buffer"
-                try? runtime.executor.killProcessGroup(session.guestPid)
+                session.outputTruncated = true
+                do { try runtime.executor.terminateRawContext(executionContext) }
+                catch { session.failure = "raw stdio output overflow; termination request failed: \(error.localizedDescription)" }
             } else if isStdErr {
                 session.stderr.append(data)
             } else {
@@ -2223,18 +2354,37 @@ private final class LXISHNativeCoordinator {
     private func recordRawStdioCompletion(
         runtimeKey: String,
         sessionId: String,
+        executionContext: UInt64,
         result: LXISHShellExecutionResultBox
     ) {
         queue.async {
             guard let runtime = self.runtimes[runtimeKey],
-                  let session = runtime.rawStdioSessions[sessionId]
+                  let session = runtime.rawStdioSessions[sessionId],
+                  session.matches(sessionId: sessionId, executionContext: executionContext)
             else { return }
             session.terminal = true
             session.exitCode = result.exitCode
+            session.stdoutEOF = result.rawStdoutEOF
+            session.stderrEOF = result.rawStderrEOF
+            if result.rawReadErrno != 0 {
+                let message = "raw stdio reader failed (errno \(result.rawReadErrno))"
+                if let failure = session.failure {
+                    session.failure = failure + "; " + message
+                } else {
+                    session.failure = message
+                    session.failureCode = "io"
+                }
+            }
             if result.errorCode == -5 {
-                session.failure = result.stderrText.isEmpty
+                let message = result.stderrText.isEmpty
                     ? "raw stdio process exceeded its memory limit"
                     : result.stderrText
+                session.failure = session.failure.map { $0 + "; " + message } ?? message
+                session.failureCode = "resource_limit_exceeded"
+            } else if result.errorCode != 0 {
+                let message = "raw stdio execution failed (error \(result.errorCode))"
+                session.failure = session.failure.map { $0 + "; " + message } ?? message
+                if !session.outputTruncated { session.failureCode = "io" }
             }
         }
     }
@@ -2285,12 +2435,13 @@ private final class LXISHNativeCoordinator {
             try self.requireNoIsolatedProcess(runtime)
             let environment = self.preparedEnvironment(from: request.env, cwd: request.cwd, config: config)
             _ = try self.rootfsManager.installIfNeeded(for: config)
-            runtime.mounts = request.mounts ?? runtime.mounts
+            let requestedMounts = request.mounts ?? runtime.mounts
             guard LXISHKernelRuntimeBridge.isDeviceBridgeAvailable() else {
                 throw LXISHBridgeError.unavailable(LXISHKernelRuntimeBridge.availabilityReason())
             }
             try self.bootKernel(config: config, runtime: &runtime)
-            try self.applyMountsIfNeeded(requestedMounts: runtime.mounts, to: &runtime)
+            try self.applyMountsIfNeeded(requestedMounts: requestedMounts, to: &runtime)
+            runtime.mounts = requestedMounts
             if runtime.ptySessionId != nil {
                 throw LXISHBridgeError.unavailable("only one interactive PTY session is supported per managed root")
             }
@@ -2523,17 +2674,21 @@ private final class LXISHNativeCoordinator {
         runtime.kernelBooted = true
     }
 
-    private func execute(config: LXISHNativeConfig, work: (inout RuntimeState) throws -> [String: Any]) -> String {
+    private func execute(
+        config: LXISHNativeConfig,
+        allowForeignLive: Bool = false,
+        work: (inout RuntimeState) throws -> [String: Any]
+    ) -> String {
         queue.sync {
             // The embedded iSH kernel and mount namespace are process-global.
             // Never let a second logical root silently reuse that kernel.
             if let existing = runtimes.values.first, !existing.config.sameKernel(as: config) {
                 return encodeError(code: "invalid_request", message: "iSH permits one immutable configuration per app process")
             }
-            if runtimes.contains(where: { key, state in
+            if !allowForeignLive && runtimes.contains(where: { key, state in
                 key != config.runtimeKey && (state.ptySessionId != nil
                     || state.backgroundProcesses.values.contains(where: { !$0.terminal })
-                    || state.rawStdioSessions.values.contains(where: { !$0.terminal }))
+                    || !state.rawStdioSessions.isEmpty)
             }) {
                 return encodeError(code: "invalid_request", message: "another workspace has live guest tasks; close those sessions before switching mounts")
             }
@@ -2563,8 +2718,18 @@ private final class LXISHNativeCoordinator {
             config: runtime.config,
             includeDefaultMounts: includeDefaultMounts
         )
-        try ensureHostEndpointsExist(mounts)
         let nativeMounts = LXISHRuntimeMountPlanner.nativeMountsRemovingIdentityDescendants(from: mounts)
+        // Check before creating directories, unmounting, or installing any
+        // bind. The current inout runtime may not yet be in `runtimes`.
+        let trackedRaw = !runtime.rawStdioSessions.isEmpty || runtimes.values.contains {
+            !$0.rawStdioSessions.isEmpty
+        }
+        guard runtime.kernel.permitsMountTransition(to: nativeMounts, rawSessionsTracked: trackedRaw) else {
+            throw LXISHBridgeError.invalidRequest(
+                "a raw stdio session has an active or unconfirmed execution context; close it before changing mounts"
+            )
+        }
+        try ensureHostEndpointsExist(mounts)
         for mount in try runtime.kernel.prepareMountTransition(to: nativeMounts) {
             try ensureGuestMountParentsExist([mount], runtime: &runtime)
             try runtime.kernel.installMount(mount)
@@ -3010,8 +3175,8 @@ func mlr_ish_background_poll_json(
     }
 }
 
-@_cdecl("mlr_ish_raw_stdio_open_json")
-func mlr_ish_raw_stdio_open_json(
+@_cdecl("mlr_ish_raw_stdio_open_v2_json")
+func mlr_ish_raw_stdio_open_v2_json(
     _ configJSON: UnsafePointer<CChar>?,
     _ requestJSON: UnsafePointer<CChar>?
 ) -> UnsafeMutablePointer<CChar>? {
@@ -3178,20 +3343,38 @@ final class LXISHRawOutputIngress {
     }
 }
 
-/// EOF is observable only after the final bytes of both streams have been delivered.
+/// A callback must retain both the session identity and the native execution
+/// context that were bound at spawn, even if a guest PID is later reused.
+struct LXISHRawExecutionIdentity {
+    let sessionId: String
+    let executionContext: UInt64
+
+    func matches(sessionId: String, executionContext: UInt64) -> Bool {
+        executionContext != 0 && self.executionContext == executionContext && self.sessionId == sessionId
+    }
+}
+
+/// A terminal queue is reported closed only after its retained bytes are delivered.
 struct LXISHRawOutputChunk {
     let stdout: Data
     let stderr: Data
     let closed: Bool
 
-    static func failurePayload(_ message: String?) -> Any {
+    static func failurePayload(_ message: String?, code: String = "resource_limit_exceeded") -> Any {
         guard let message else { return NSNull() }
-        return ["code": "resource_limit_exceeded", "message": message]
+        return ["code": code, "message": message]
     }
 
-    static func drain(stdout: inout Data, stderr: inout Data, terminal: Bool, maxBytes: Int) -> Self {
-        let stdoutCount = min(maxBytes, stdout.count)
-        let stderrCount = min(maxBytes - stdoutCount, stderr.count)
+    static func drain(
+        stdout: inout Data, stderr: inout Data, terminal: Bool, maxBytes: Int, stderrFirst: inout Bool
+    ) -> Self {
+        let limit = max(0, maxBytes)
+        let both = !stdout.isEmpty && !stderr.isEmpty
+        let stdoutBudget = both ? (limit / 2 + (stderrFirst ? 0 : limit % 2)) : limit
+        let initialStdout = min(stdoutBudget, stdout.count)
+        let stderrCount = min(limit - initialStdout, stderr.count)
+        let stdoutCount = min(limit - stderrCount, stdout.count)
+        if both { stderrFirst.toggle() }
         let output = Data(stdout.prefix(stdoutCount))
         let error = Data(stderr.prefix(stderrCount))
         stdout.removeFirst(stdoutCount)

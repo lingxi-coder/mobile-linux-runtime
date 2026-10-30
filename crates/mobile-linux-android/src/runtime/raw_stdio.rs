@@ -1,29 +1,58 @@
 use mobile_linux_api::{
-    LinuxCommandRequest, MobileLinuxError, MobileLinuxTaskStatus, RawStdioOpenRequest,
-    RawStdioSessionHandle,
+    allocate_raw_stdio_session_id, LinuxCommandRequest, MobileLinuxError, MobileLinuxEventKind,
+    MobileLinuxTaskStatus, RawStdioOpenRequest, RawStdioSessionHandle, RawStdioStopResult,
+    RawStdioTreeStatus,
 };
 use nix::sys::signal::Signal;
 use std::collections::VecDeque;
 use std::fs;
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::process::ChildStdin;
+use tokio::process::{Child, ChildStdin};
 
 use super::{
-    check_snapshot_cancelled, snapshot_read_only_mounts, terminate_and_reap, terminate_group,
-    wait_for_child, AndroidProotRuntime, ChildWaitOutcome, ForegroundMountMode, RawStdioBuffers,
-    RawStdioControl, RawStdioWrite, SnapshotCleanup, SpawnedChild, TaskControl,
-    MAX_RAW_STDIO_BUFFER_BYTES, REAP_BUDGET,
+    check_snapshot_cancelled, snapshot_read_only_mounts, terminate_group, wait_for_child,
+    AndroidProotRuntime, ChildWaitOutcome, ForegroundMountMode, RawStdioBuffers, RawStdioControl,
+    RawStdioWrite, SnapshotCleanup, SpawnedChild, TaskControl, MAX_RAW_STDIO_BUFFER_BYTES,
+    REAP_BUDGET,
 };
 
 impl AndroidProotRuntime {
+    pub(super) fn create_raw_stdio_task(
+        &self,
+        command: String,
+    ) -> Result<(String, Arc<TaskControl>), MobileLinuxError> {
+        let id = allocate_raw_stdio_session_id()?;
+        let status = MobileLinuxTaskStatus::Running;
+        let task = Arc::new(TaskControl::new(id.clone(), command, status));
+        {
+            let mut tasks = self.state.tasks.lock().expect("mobile-linux tasks mutex");
+            if tasks.contains_key(&id) {
+                return Err(MobileLinuxError::Io(
+                    "raw stdio session identity collision".into(),
+                ));
+            }
+            tasks.insert(id.clone(), task.clone());
+        }
+        self.emit(
+            Some(id.clone()),
+            MobileLinuxEventKind::TaskStatusChanged {
+                status,
+                exit_code: None,
+                detail: None,
+            },
+        );
+        Ok((id, task))
+    }
+
     pub(super) async fn open_raw_stdio_owned(
         &self,
         request: RawStdioOpenRequest,
         id: String,
         task: Arc<TaskControl>,
+        owner_permit: tokio::sync::OwnedSemaphorePermit,
     ) -> Result<RawStdioSessionHandle, MobileLinuxError> {
         let snapshot_root = self
             .state
@@ -157,7 +186,7 @@ impl AndroidProotRuntime {
             .ok_or_else(|| MobileLinuxError::Io("PRoot child has no pid".to_string()))?;
         task.pid.store(u64::from(pid), Ordering::Release);
         if task.cancel_requested.load(Ordering::Acquire) {
-            terminate_and_reap(&mut child, pid).await?;
+            terminate_raw_child(&mut child, pid).await?;
             return Err(MobileLinuxError::InvalidRequest(
                 "process startup cancelled".into(),
             ));
@@ -184,6 +213,10 @@ impl AndroidProotRuntime {
             worker: Mutex::new(None),
             buffers: buffers.clone(),
             snapshot_roots,
+            stop_gate: tokio::sync::Mutex::new(()),
+            stop_result: Mutex::new(None),
+            stop_completion: Mutex::new(None),
+            _owner_permit: owner_permit,
         });
         let stdout_task = tokio::spawn(read_raw_stream(stdout, {
             let buffers = buffers.clone();
@@ -192,7 +225,7 @@ impl AndroidProotRuntime {
                 async move {
                     let mut guard = buffers.lock().expect("raw stdio stdout mutex");
                     if !Self::append_raw_stdio_bytes(&mut guard.stdout, &chunk) {
-                        guard.overflowed = true;
+                        guard.stdout_overflowed = true;
                     }
                     Ok(())
                 }
@@ -205,7 +238,7 @@ impl AndroidProotRuntime {
                 async move {
                     let mut guard = buffers.lock().expect("raw stdio stderr mutex");
                     if !Self::append_raw_stdio_bytes(&mut guard.stderr, &chunk) {
-                        guard.overflowed = true;
+                        guard.stderr_overflowed = true;
                     }
                     Ok(())
                 }
@@ -223,20 +256,21 @@ impl AndroidProotRuntime {
             let outcome = tokio::select! {
                 result = wait_for_child(&mut child, pid, None, memory_limit_bytes) => result,
                 _ = wait_raw_stop(&mut stopped) => {
-                    terminate_and_reap(&mut child, pid).await.map(ChildWaitOutcome::Exited)
+                    terminate_raw_child(&mut child, pid).await.map(ChildWaitOutcome::Exited)
                 }
             };
-            if outcome.is_err() {
-                let _ = terminate_and_reap(&mut child, pid).await;
-            }
+            // wait_for_child can already have reaped the child on error. Do
+            // not signal its numeric PID again: it may now name another task.
             worker_control.stop.send_replace(true);
             let writer_result = writer
                 .await
                 .map_err(|error| MobileLinuxError::Io(format!("raw stdio writer failed: {error}")));
             let (stdout_result, stderr_result) = tokio::join!(
-                join_raw_reader(stdout_task, pid, "stdout"),
-                join_raw_reader(stderr_task, pid, "stderr"),
+                join_raw_reader(stdout_task, "stdout"),
+                join_raw_reader(stderr_task, "stderr"),
             );
+            let stdout_eof = stdout_result.is_ok();
+            let stderr_eof = stderr_result.is_ok();
             let cancelled = task.cancel_requested.load(Ordering::Acquire);
             let (status, exit_code, mut error, detail) = match outcome {
                 Ok(ChildWaitOutcome::Exited(status)) => (
@@ -288,6 +322,8 @@ impl AndroidProotRuntime {
             let mut guard = buffers.lock().expect("raw stdio buffers mutex");
             guard.exit_code = exit_code;
             guard.error = error.clone();
+            guard.stdout_eof = stdout_eof;
+            guard.stderr_eof = stderr_eof;
             guard.closed = true;
             error.map_or(Ok(()), Err)
         });
@@ -307,17 +343,190 @@ impl AndroidProotRuntime {
         &self,
         id: &str,
     ) -> Result<(), MobileLinuxError> {
+        self.close_raw_stdio_owned(id, true).await
+    }
+
+    pub(super) async fn close_raw_stdio_owned(
+        &self,
+        id: &str,
+        absent_ok: bool,
+    ) -> Result<(), MobileLinuxError> {
         let control = self
             .state
             .raw_stdio
             .lock()
             .expect("raw stdio mutex")
-            .remove(id);
-        if let Some(control) = control {
-            Self::dispose_raw_control(control).await?;
+            .get(id)
+            .cloned();
+        let Some(control) = control else {
+            return if absent_ok {
+                Ok(())
+            } else {
+                Err(MobileLinuxError::InvalidRequest(
+                    "unknown raw stdio session".into(),
+                ))
+            };
+        };
+        let _gate = control.stop_gate.lock().await;
+        if control
+            .stop_result
+            .lock()
+            .expect("raw stop result")
+            .is_some()
+        {
+            return Err(MobileLinuxError::Io(
+                "raw stdio cleanup remains unverified".into(),
+            ));
         }
+        {
+            let mut sessions = self.state.raw_stdio.lock().expect("raw stdio mutex");
+            if !sessions
+                .get(id)
+                .is_some_and(|entry| Arc::ptr_eq(entry, &control))
+            {
+                return Err(MobileLinuxError::InvalidRequest(
+                    "raw stdio owner changed".into(),
+                ));
+            }
+            sessions.remove(id);
+        }
+        Self::dispose_raw_control(control.clone()).await?;
         Ok(())
     }
+
+    pub(super) async fn stop_raw_stdio_owned(
+        &self,
+        handle: &RawStdioSessionHandle,
+        limit: usize,
+    ) -> Result<RawStdioStopResult, MobileLinuxError> {
+        let control = self
+            .state
+            .raw_stdio
+            .lock()
+            .expect("raw stdio mutex")
+            .get(&handle.id)
+            .cloned()
+            .ok_or_else(|| {
+                MobileLinuxError::InvalidRequest(
+                    "unknown raw stdio session; cleanup is unverified".into(),
+                )
+            })?;
+        let _gate = control.stop_gate.lock().await;
+        let same_owner = self
+            .state
+            .raw_stdio
+            .lock()
+            .expect("raw stdio mutex")
+            .get(&handle.id)
+            .is_some_and(|entry| Arc::ptr_eq(entry, &control));
+        if !same_owner {
+            return Err(MobileLinuxError::InvalidRequest(
+                "raw stdio owner changed; cleanup is unverified".into(),
+            ));
+        }
+        let cached = control.stop_result.lock().expect("raw stop result").clone();
+        let result = if let Some(result) = cached {
+            result
+        } else {
+            let worker = control
+                .worker
+                .lock()
+                .expect("raw stdio worker mutex")
+                .take();
+            let termination_requested = worker.as_ref().is_some_and(|task| !task.is_finished())
+                && !control.task.terminal_emitted.load(Ordering::Acquire);
+            control.task.cancel_requested.store(true, Ordering::Release);
+            // Ask the live owner to stop its child. A stored PID may have been
+            // reused after the owner reaped or failed and is not safe to signal.
+            control.stop.send_replace(true);
+            let failure = match worker {
+                Some(worker) => match worker.await {
+                    Ok(Ok(())) => None,
+                    Ok(Err(error)) => Some(error),
+                    Err(error) => Some(MobileLinuxError::Io(format!(
+                        "raw stdio owner failed: {error}"
+                    ))),
+                },
+                None => Some(MobileLinuxError::Io(
+                    "raw stdio owner handle is missing".into(),
+                )),
+            };
+            let mut buffers = control.buffers.lock().expect("raw stdio buffers mutex");
+            let result = RawStdioStopResult {
+                session_id: handle.id.clone(),
+                stdout: buffers.stdout.drain(..).collect(),
+                stderr: buffers.stderr.drain(..).collect(),
+                stdout_truncated: buffers.stdout_overflowed,
+                stderr_truncated: buffers.stderr_overflowed,
+                stdout_eof: buffers.stdout_eof,
+                stderr_eof: buffers.stderr_eof,
+                exit_code: buffers.exit_code.filter(|code| *code >= 0),
+                termination_requested: Some(termination_requested),
+                cleanup: RawStdioTreeStatus::Unverified(
+                    "Android raw stdio has no identity-bound process-tree exit receipt".into(),
+                ),
+                failure: failure.or_else(|| buffers.error.clone()),
+            };
+            drop(buffers);
+            *control.stop_result.lock().expect("raw stop result") = Some(result.clone());
+            result
+        };
+        Ok(bounded_stop_result(result, limit))
+    }
+}
+
+pub(super) fn bounded_stop_result(
+    mut result: RawStdioStopResult,
+    limit: usize,
+) -> RawStdioStopResult {
+    if result.stdout.len() > limit {
+        result.stdout.truncate(limit);
+        result.stdout_truncated = true;
+    }
+    if result.stderr.len() > limit {
+        result.stderr.truncate(limit);
+        result.stderr_truncated = true;
+    }
+    result
+}
+
+pub(super) fn raw_stdio_stop_executor() -> Result<&'static tokio::runtime::Handle, MobileLinuxError>
+{
+    static EXECUTOR: OnceLock<Result<tokio::runtime::Handle, String>> = OnceLock::new();
+    EXECUTOR
+        .get_or_init(|| {
+            let (reply, response) = std::sync::mpsc::sync_channel(1);
+            std::thread::Builder::new()
+                .name("android-raw-stop-owner".into())
+                .spawn(move || {
+                    match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(runtime) => {
+                            if reply.send(Ok(runtime.handle().clone())).is_ok() {
+                                runtime.block_on(std::future::pending::<()>());
+                            }
+                        }
+                        Err(error) => {
+                            let _ = reply.send(Err(error.to_string()));
+                        }
+                    }
+                })
+                .map_err(|error| format!("start raw stop owner: {error}"))?;
+            response
+                .recv()
+                .map_err(|error| format!("start raw stop runtime: {error}"))?
+        })
+        .as_ref()
+        .map_err(|error| MobileLinuxError::Io(error.clone()))
+}
+
+pub(super) fn raw_stdio_stop_capacity() -> Arc<tokio::sync::Semaphore> {
+    static CAPACITY: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    CAPACITY
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(32)))
+        .clone()
 }
 
 impl AndroidProotRuntime {
@@ -327,10 +536,6 @@ impl AndroidProotRuntime {
         // Never wait on a writer's pipe or mutex before signalling the child.
         // The owner task cancels stdin, reaps the process and joins both drains.
         control.task.cancel_requested.store(true, Ordering::Release);
-        if !control.task.terminal_emitted.load(Ordering::Acquire) {
-            let pid = control.task.pid.load(Ordering::Acquire) as u32;
-            terminate_group(pid, Signal::SIGTERM);
-        }
         control.stop.send_replace(true);
         let worker = control
             .worker
@@ -363,6 +568,36 @@ impl AndroidProotRuntime {
 impl AndroidProotRuntime {
     pub(super) fn drain_raw_stdio_bytes(queue: &mut VecDeque<u8>, max_bytes: usize) -> Vec<u8> {
         queue.drain(..queue.len().min(max_bytes)).collect()
+    }
+
+    pub(super) fn drain_raw_stdio_fair(
+        buffers: &mut RawStdioBuffers,
+        max_bytes: usize,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let both = !buffers.stdout.is_empty() && !buffers.stderr.is_empty();
+        let stderr_first = both && buffers.stderr_first;
+        if both {
+            buffers.stderr_first = !buffers.stderr_first;
+        }
+        let first_budget = if both {
+            max_bytes / 2 + max_bytes % 2
+        } else {
+            max_bytes
+        };
+        let (first, second) = if stderr_first {
+            (&mut buffers.stderr, &mut buffers.stdout)
+        } else {
+            (&mut buffers.stdout, &mut buffers.stderr)
+        };
+        let mut first_bytes = Self::drain_raw_stdio_bytes(first, first_budget);
+        let second_bytes = Self::drain_raw_stdio_bytes(second, max_bytes - first_bytes.len());
+        let remaining = max_bytes - first_bytes.len() - second_bytes.len();
+        first_bytes.extend(Self::drain_raw_stdio_bytes(first, remaining));
+        if stderr_first {
+            (second_bytes, first_bytes)
+        } else {
+            (first_bytes, second_bytes)
+        }
     }
 }
 
@@ -400,9 +635,27 @@ pub(super) async fn write_raw_stream(
     }
 }
 
+// Only the task that owns the unreaped child may signal its process group.
+// Once wait returns, its numeric PID can be reused, so do not send a further
+// signal even if a descendant might still hold a pipe open.
+async fn terminate_raw_child(
+    child: &mut Child,
+    pid: u32,
+) -> Result<std::process::ExitStatus, MobileLinuxError> {
+    terminate_group(pid, Signal::SIGTERM);
+    if let Ok(result) = tokio::time::timeout(REAP_BUDGET / 2, child.wait()).await {
+        return result
+            .map_err(|error| MobileLinuxError::Io(format!("reap raw stdio child: {error}")));
+    }
+    terminate_group(pid, Signal::SIGKILL);
+    tokio::time::timeout(REAP_BUDGET / 2, child.wait())
+        .await
+        .map_err(|_| MobileLinuxError::Io("raw stdio child did not exit after SIGKILL".into()))?
+        .map_err(|error| MobileLinuxError::Io(format!("reap raw stdio child: {error}")))
+}
+
 pub(super) async fn join_raw_reader(
     mut task: tokio::task::JoinHandle<Result<(), MobileLinuxError>>,
-    pid: u32,
     stream: &str,
 ) -> Result<(), MobileLinuxError> {
     match tokio::time::timeout(REAP_BUDGET, &mut task).await {
@@ -410,20 +663,14 @@ pub(super) async fn join_raw_reader(
             MobileLinuxError::Io(format!("raw {stream} reader failed: {error}"))
         })?,
         Err(_) => {
-            // A descendant can retain a pipe after the direct child exits.
-            terminate_group(pid, Signal::SIGKILL);
-            match tokio::time::timeout(REAP_BUDGET, &mut task).await {
-                Ok(result) => result.map_err(|error| {
-                    MobileLinuxError::Io(format!("raw {stream} reader failed: {error}"))
-                })?,
-                Err(_) => {
-                    task.abort();
-                    let _ = task.await;
-                    Err(MobileLinuxError::Io(format!(
-                        "raw {stream} did not reach EOF after process termination"
-                    )))
-                }
-            }
+            // A descendant can hold the pipe after the direct child was
+            // reaped. The old PID is no longer safe to signal; retain the
+            // incomplete-drain error instead of claiming EOF or tree exit.
+            task.abort();
+            let _ = task.await;
+            Err(MobileLinuxError::Io(format!(
+                "raw {stream} did not reach EOF after process termination"
+            )))
         }
     }
 }

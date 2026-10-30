@@ -34,11 +34,16 @@ uint32_t lx_ish_execution_policy_version(void) {
 }
 
 uint64_t lx_ish_execution_context_next(void) {
-    uint64_t value = atomic_fetch_add_explicit(&next_context, 1, memory_order_relaxed);
-    if (value == 0) {
-        value = atomic_fetch_add_explicit(&next_context, 1, memory_order_relaxed);
+    uint64_t value = atomic_load_explicit(&next_context, memory_order_relaxed);
+    for (;;) {
+        // Never recycle a context after wrap: a delayed signal or callback
+        // must not become valid for a later execution.
+        if (value == 0 || value == UINT64_MAX) return 0;
+        if (atomic_compare_exchange_weak_explicit(&next_context, &value, value + 1,
+                                                  memory_order_relaxed, memory_order_relaxed)) {
+            return value;
+        }
     }
-    return value;
 }
 
 int lx_ish_execution_policy_register(uint64_t context, int network_policy) {

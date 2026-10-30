@@ -1,0 +1,233 @@
+--- a/src/ios/iSH/ISHShellExecutor.h
++++ b/src/ios/iSH/ISHShellExecutor.h
+@@ -57,8 +57,10 @@
+                  fsContext:(uint64_t)fsContext
+               dataCallback:(ISHShellDataCallback)dataCallback
+                 completion:(nullable ISHShellCompletionCallback)completion;
+-+ (BOOL)writeRawStdin:(NSData *)data pid:(int)pid;
+-+ (BOOL)closeRawStdinForPid:(int)pid;
+++ (BOOL)writeRawStdin:(NSData *)data fsContext:(uint64_t)fsContext;
+++ (BOOL)closeRawStdinForContext:(uint64_t)fsContext;
+++ (BOOL)terminateRawContext:(uint64_t)fsContext;
+++ (BOOL)disposeRawContext:(uint64_t)fsContext;
+ 
+ 
+ /// Execute a shell command with line-by-line output callback
+--- a/src/ios/iSH/ISHShellExecutor.m
++++ b/src/ios/iSH/ISHShellExecutor.m
+@@ -46,6 +46,7 @@
+ @property (nonatomic) dispatch_semaphore_t waitSemaphore;
+ @property (nonatomic) ISHShellExecutionResult *result;
+ @property (atomic) BOOL isCompleted;
++@property (nonatomic) BOOL rootExitObserved;
+ @property (nonatomic, copy) ISHShellDataCallback dataCallback;
+ @property (nonatomic) int stdinWriteFd;
+ @property (nonatomic) NSLock *stdinWriter;
+@@ -110,12 +111,17 @@
+ @implementation ISHShellExecutor
+ 
+ static NSMutableDictionary<NSNumber *, ISHShellExecutionContext *> *_activeExecutions;
++// A context is minted once per execution and never reconstructed from a PID.
++static NSMutableDictionary<NSNumber *, ISHShellExecutionContext *> *_executionsByContext;
++static NSMutableSet<NSNumber *> *_reservedContexts;
+ static dispatch_queue_t _readerQueue;
+ static dispatch_once_t _onceToken;
+ 
+ + (void)initialize {
+     if (self == [ISHShellExecutor class]) {
+         _activeExecutions = [NSMutableDictionary dictionary];
++        _executionsByContext = [NSMutableDictionary dictionary];
++        _reservedContexts = [NSMutableSet set];
+         dispatch_once(&_onceToken, ^{
+             _readerQueue = dispatch_queue_create("com.ish.shellexecutor.reader",
+                                                  DISPATCH_QUEUE_CONCURRENT);
+@@ -195,17 +201,17 @@
+                environment:(NSDictionary<NSString *, NSString *> *)environment
+                  fsContext:(uint64_t)fsContext dataCallback:(ISHShellDataCallback)dataCallback
+                 completion:(ISHShellCompletionCallback)completion {
+-    if (!dataCallback) return ISHShellExecutorErrorProcessCreationFailed;
++    if (!dataCallback || fsContext == 0) return ISHShellExecutorErrorProcessCreationFailed;
+     return [self executeExecutable:executable arguments:arguments environment:environment
+                         stdinData:nil fsContext:fsContext dataCallback:dataCallback
+                      lineCallback:nil completion:completion];
+ }
+ 
+-+ (BOOL)writeRawStdin:(NSData *)data pid:(int)pid {
+++ (BOOL)writeRawStdin:(NSData *)data fsContext:(uint64_t)fsContext {
+     if (data.length > 1048576) return NO;
+     ISHShellExecutionContext *ctx;
+-    @synchronized(_activeExecutions) { ctx = _activeExecutions[@(pid)]; }
+-    if (!ctx || !ctx.dataCallback) return NO;
++    @synchronized(_activeExecutions) { ctx = _executionsByContext[@(fsContext)]; }
++    if (!ctx || !ctx.dataCallback || ctx.fsContext != fsContext) return NO;
+     [ctx.stdinWriter lock];
+     @try {
+         const uint8_t *bytes = data.bytes;
+@@ -235,13 +241,57 @@
+     }
+ }
+ 
+-+ (BOOL)closeRawStdinForPid:(int)pid {
+++ (BOOL)closeRawStdinForContext:(uint64_t)fsContext {
+     ISHShellExecutionContext *ctx;
+-    @synchronized(_activeExecutions) { ctx = _activeExecutions[@(pid)]; }
+-    if (!ctx || !ctx.dataCallback) return NO;
++    @synchronized(_activeExecutions) { ctx = _executionsByContext[@(fsContext)]; }
++    if (!ctx || !ctx.dataCallback || ctx.fsContext != fsContext) return NO;
+     @synchronized(ctx) {
+         if (ctx.stdinWriteFd >= 0) close(ctx.stdinWriteFd);
+         ctx.stdinWriteFd = -1;
++    }
++    return YES;
++}
++
++// Signal only tasks carrying the exact non-reusable context. The root may
++// already have exited; surviving descendants still carry this identity.
++static void ISHSignalRawContext(uint64_t fsContext, int signalNumber) {
++    struct siginfo_ info = SIGINFO_NIL;
++    lock(&pids_lock);
++    for (int index = 2; index <= MAX_PID; index++) {
++        struct task *candidate = pid_get_task(index);
++        if (candidate && candidate->group && candidate->group->fs_context == fsContext) {
++            send_signal(candidate, signalNumber, info);
++        }
++    }
++    unlock(&pids_lock);
++}
++
+++ (BOOL)terminateRawContext:(uint64_t)fsContext {
++    ISHShellExecutionContext *ctx;
++    @synchronized(_activeExecutions) { ctx = _executionsByContext[@(fsContext)]; }
++    if (!ctx || !ctx.dataCallback || fsContext == 0 || ctx.fsContext != fsContext) return NO;
++    if (![self closeRawStdinForContext:fsContext]) return NO;
++    ISHSignalRawContext(fsContext, SIGTERM_);
++    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
++                   dispatch_get_global_queue(0, 0), ^{ ISHSignalRawContext(fsContext, SIGKILL_); });
++    return YES;
++}
++
+++ (BOOL)disposeRawContext:(uint64_t)fsContext {
++    ISHShellExecutionContext *ctx;
++    @synchronized(_activeExecutions) { ctx = _executionsByContext[@(fsContext)]; }
++    if (!ctx || !ctx.dataCallback || fsContext == 0 || ctx.fsContext != fsContext || !ctx.isCompleted) return NO;
++    BOOL active = NO;
++    lock(&pids_lock);
++    for (int index = 2; index <= MAX_PID; index++) {
++        struct task *candidate = pid_get_task(index);
++        if (candidate && candidate->group && candidate->group->fs_context == fsContext) { active = YES; break; }
++    }
++    unlock(&pids_lock);
++    if (active) return NO;
++    @synchronized(_activeExecutions) {
++        if (_executionsByContext[@(fsContext)] != ctx) return NO;
++        [_executionsByContext removeObjectForKey:@(fsContext)];
+     }
+     return YES;
+ }
+@@ -262,6 +312,18 @@
+         NSLog(@"ISHShellExecutor: kernel not booted — refusing to execute %@", executable);
+         return ISHShellExecutorErrorProcessCreationFailed;
+     }
++
++    // Reserve before any child is created; two launches may never bind the
++    // same context even if both reach registration concurrently.
++    if (fsContext != 0) {
++        @synchronized(_activeExecutions) {
++            if (_executionsByContext[@(fsContext)] || [_reservedContexts containsObject:@(fsContext)])
++                return ISHShellExecutorErrorProcessCreationFailed;
++            [_reservedContexts addObject:@(fsContext)];
++        }
++    }
++    __block BOOL contextRegistered = NO;
++    @try {
+ 
+     ISHShellExecutionContext *ctx = [[ISHShellExecutionContext alloc] init];
+     ctx.lineCallback = lineCallback;
+@@ -536,6 +598,11 @@
+     // Register BEFORE starting: even an immediate guest exit must be observed.
+     // Register context
+     @synchronized(_activeExecutions) {
++        if (fsContext != 0) {
++            _executionsByContext[@(fsContext)] = ctx;
++            [_reservedContexts removeObject:@(fsContext)];
++            contextRegistered = YES;
++        }
+         _activeExecutions[@(ctx.guestPid)] = ctx;
+     }
+     task_start(task);
+@@ -576,6 +643,11 @@
+     [self startReaderForPipe:[ctx stderrPipe][0] context:ctx isStdErr:YES];
+ 
+     return ctx.guestPid;
++    } @finally {
++        if (fsContext != 0 && !contextRegistered) {
++            @synchronized(_activeExecutions) { [_reservedContexts removeObject:@(fsContext)]; }
++        }
++    }
+ }
+ 
+ + (ISHShellExecutionResult *)executeCommandSync:(NSString *)command
+@@ -752,22 +824,33 @@
+ + (void)processDidExit:(NSNotification *)notification {
+     int pid = [notification.userInfo[@"pid"] intValue];
+     int exitCode = [notification.userInfo[@"code"] intValue];
++    uint64_t executionContext = [notification.userInfo[@"execution_context"] unsignedLongLongValue];
+ 
+     ISHShellExecutionContext *ctx;
+     @synchronized(_activeExecutions) {
+-        ctx = _activeExecutions[@(pid)];
+-        if (!ctx) return;
+-        if (!ctx.dataCallback) [_activeExecutions removeObjectForKey:@(pid)];
+-    }
+-
+-    if (ctx.isCompleted) return;
++        // A missing or stale context must not fall back to a recycled PID.
++        ctx = executionContext != 0 ? _executionsByContext[@(executionContext)] : _activeExecutions[@(pid)];
++        if (!ctx || ctx.fsContext != executionContext || ctx.guestPid != pid) return;
++        if (!ctx.dataCallback) {
++            if (_activeExecutions[@(pid)] == ctx) [_activeExecutions removeObjectForKey:@(pid)];
++            if (executionContext != 0 && _executionsByContext[@(executionContext)] == ctx)
++                [_executionsByContext removeObjectForKey:@(executionContext)];
++        }
++    }
++
++    @synchronized(ctx) {
++        if (ctx.rootExitObserved || ctx.isCompleted) return;
++        ctx.rootExitObserved = YES;
++    }
+     if (ctx.dataCallback) {
+         ctx.result.exitCode = (exitCode & 0x7f) ? 128 + (exitCode & 0x7f) : ((exitCode >> 8) & 0xff);
+         ctx.result.duration = -[ctx.startTime timeIntervalSinceNow];
+-        [self closeRawStdinForPid:pid];
++        [self closeRawStdinForContext:executionContext];
+         dispatch_group_notify(ctx.readers, ctx.rawCallbacks, ^{
+             ctx.isCompleted = YES;
+-            @synchronized(_activeExecutions) { [_activeExecutions removeObjectForKey:@(pid)]; }
++            @synchronized(_activeExecutions) {
++                if (_activeExecutions[@(pid)] == ctx) [_activeExecutions removeObjectForKey:@(pid)];
++            }
+             [ctx cleanup];
+             if (ctx.completion) ctx.completion(ctx.result);
+         });
+--- a/src/ios/iSH/ISHKernel.m
++++ b/src/ios/iSH/ISHKernel.m
+@@ -288,6 +288,9 @@
+         return;
+ 
+     pid_t pid = task->pid;
++    // Capture the execution identity while the exiting task still exists;
++    // an asynchronous notification must never recover identity from its PID.
++    uint64_t executionContext = task->group ? task->group->fs_context : 0;
+     // Capture identity before dispatch: a mount helper may exit just before a
+     // new PTY opens, and its notification can arrive after that open.
+     uint64_t generation = atomic_load(&g_interactive_shell_pid) == pid
+@@ -296,7 +299,8 @@
+         [[NSNotificationCenter defaultCenter]
+             postNotificationName:ISHProcessExitedNotification
+             object:nil
+-            userInfo:@{@"pid": @(pid), @"code": @(code), @"interactive_generation": @(generation)}];
++            userInfo:@{@"pid": @(pid), @"code": @(code), @"interactive_generation": @(generation),
++                       @"execution_context": @(executionContext)}];
+     });
+ }
+ 
