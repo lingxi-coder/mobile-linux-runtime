@@ -314,19 +314,18 @@ enum LXISHPtyExitIdentity {
 struct LXISHGuestEnvironment {
     static func merged(
         requestEnvironment: [String: String],
-        cwd: String?,
+        cwd: String,
         config: LXISHNativeConfig
     ) -> [String: String] {
         var environment = requestEnvironment
         let workspaceGuestPath = config.guestWorkspace
         let defaultHome = config.guestHome
         let defaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        let resolvedCwd = cwd?.isEmpty == false ? cwd! : config.workspaceRoot
         let defaults: [String: String] = [
             "HOME": defaultHome,
             "USER": config.linuxUser,
             "LOGNAME": config.linuxUser,
-            "PWD": resolvedCwd,
+            "PWD": cwd,
             "PATH": defaultPath,
             "TMPDIR": "/tmp",
             "TMP": "/tmp",
@@ -1868,8 +1867,9 @@ private final class LXISHNativeCoordinator {
     func runSync(config: LXISHNativeConfig, request: LXISHRunRequest) -> String {
         execute(config: config) { runtime in
             try self.requireNoIsolatedProcess(runtime)
+            let cwd = try self.requiredCwd(request.cwd)
             let executionPolicy = try self.executionPolicy(for: request)
-            let environment = self.preparedEnvironment(from: request.env, cwd: request.cwd, config: config)
+            let environment = self.preparedEnvironment(from: request.env, cwd: cwd, config: config)
             _ = try self.rootfsManager.installIfNeeded(for: config)
             guard LXISHKernelRuntimeBridge.isDeviceBridgeAvailable(),
                   LXISHShellExecutorRuntimeBridge.isDeviceBridgeAvailable()
@@ -1904,7 +1904,7 @@ private final class LXISHNativeCoordinator {
                         arguments: request.args,
                         environment: environment,
                         stdin: request.stdin,
-                        cwd: request.cwd ?? environment["PWD"],
+                        cwd: cwd,
                         timeout: self.timeoutSeconds(from: request),
                         networkPolicy: executionPolicy.networkPolicy,
                         memoryLimitBytes: executionPolicy.memoryLimitBytes
@@ -1932,8 +1932,9 @@ private final class LXISHNativeCoordinator {
     func spawnBackground(config: LXISHNativeConfig, request: LXISHRunRequest) -> String {
         execute(config: config) { runtime in
             try self.requireNoIsolatedProcess(runtime)
+            let cwd = try self.requiredCwd(request.cwd)
             let executionPolicy = try self.executionPolicy(for: request)
-            let environment = self.preparedEnvironment(from: request.env, cwd: request.cwd, config: config)
+            let environment = self.preparedEnvironment(from: request.env, cwd: cwd, config: config)
             _ = try self.rootfsManager.installIfNeeded(for: config)
             let previousMounts = runtime.mounts
             let isolated = request.includeDefaultMounts == false
@@ -1971,7 +1972,7 @@ private final class LXISHNativeCoordinator {
                 arguments: request.args,
                 environment: environment,
                 stdin: request.stdin,
-                cwd: request.cwd ?? environment["PWD"],
+                cwd: cwd,
                 networkPolicy: executionPolicy.networkPolicy,
                 memoryLimitBytes: executionPolicy.memoryLimitBytes,
                 lineSink: { [weak self] line, isStdErr in
@@ -2043,6 +2044,7 @@ private final class LXISHNativeCoordinator {
     func openRawStdio(config: LXISHNativeConfig, request: LXISHRawStdioOpenRequest) -> String {
         execute(config: config) { runtime in
             try self.requireNoIsolatedProcess(runtime)
+            let cwd = try self.requiredCwd(request.cwd)
             let runRequest = LXISHRunRequest(
                 command: request.command,
                 args: request.args,
@@ -2056,7 +2058,7 @@ private final class LXISHNativeCoordinator {
                 includeDefaultMounts: true
             )
             let executionPolicy = try self.executionPolicy(for: runRequest)
-            let environment = self.preparedEnvironment(from: request.env, cwd: request.cwd, config: config)
+            let environment = self.preparedEnvironment(from: request.env, cwd: cwd, config: config)
             _ = try self.rootfsManager.installIfNeeded(for: config)
             runtime.mounts = request.mounts ?? runtime.mounts
             guard LXISHKernelRuntimeBridge.isDeviceBridgeAvailable(),
@@ -2075,7 +2077,7 @@ private final class LXISHNativeCoordinator {
                 request.command,
                 arguments: request.args,
                 environment: environment,
-                cwd: request.cwd ?? environment["PWD"],
+                cwd: cwd,
                 networkPolicy: executionPolicy.networkPolicy,
                 memoryLimitBytes: executionPolicy.memoryLimitBytes,
                 dataSink: { [weak self] data, isStdErr in
@@ -2283,7 +2285,8 @@ private final class LXISHNativeCoordinator {
     func openPty(config: LXISHNativeConfig, request: LXISHPtyOpenRequest) -> String {
         execute(config: config) { runtime in
             try self.requireNoIsolatedProcess(runtime)
-            let environment = self.preparedEnvironment(from: request.env, cwd: request.cwd, config: config)
+            let cwd = try self.requiredCwd(request.cwd)
+            let environment = self.preparedEnvironment(from: request.env, cwd: cwd, config: config)
             _ = try self.rootfsManager.installIfNeeded(for: config)
             runtime.mounts = request.mounts ?? runtime.mounts
             guard LXISHKernelRuntimeBridge.isDeviceBridgeAvailable() else {
@@ -2307,12 +2310,13 @@ private final class LXISHNativeCoordinator {
                 from: LXISHPtyOpenRequest(
                     command: request.command,
                     args: request.args,
-                    cwd: request.cwd ?? environment["PWD"],
+                    cwd: cwd,
                     env: environment,
                     cols: request.cols,
                     rows: request.rows,
                     mounts: request.mounts
-                )
+                ),
+                cwd: cwd
             )
             try runtime.kernel.openInteractiveShell(
                 withCommand: ptyCommand,
@@ -2694,7 +2698,7 @@ private final class LXISHNativeCoordinator {
 
     private func preparedEnvironment(
         from requestEnvironment: [String: String],
-        cwd: String?,
+        cwd: String,
         config: LXISHNativeConfig
     ) -> [String: String] {
         LXISHGuestEnvironment.merged(
@@ -2704,10 +2708,15 @@ private final class LXISHNativeCoordinator {
         )
     }
 
-    private func ptyCommand(from request: LXISHPtyOpenRequest) -> [String] {
-        guard request.cwd?.isEmpty == false || !request.env.isEmpty else {
-            return [request.command] + request.args
+    private func requiredCwd(_ value: String?) throws -> String {
+        guard let cwd = value, !cwd.isEmpty, cwd.hasPrefix("/"), !cwd.utf8.contains(0),
+              !cwd.split(separator: "/").contains(where: { $0 == "." || $0 == ".." }) else {
+            throw LXISHBridgeError.invalidRequest("an explicit absolute cwd is required")
         }
+        return cwd
+    }
+
+    private func ptyCommand(from request: LXISHPtyOpenRequest, cwd: String) -> [String] {
         let script = """
         if [ -n "$1" ]; then cd "$1" || exit $?; fi
         shift
@@ -2718,7 +2727,7 @@ private final class LXISHNativeCoordinator {
         let environment = request.env
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
-        return ["/bin/sh", "-c", script, "lingxi-pty", request.cwd ?? ""]
+        return ["/bin/sh", "-c", script, "lingxi-pty", cwd]
             + environment + ["--", request.command] + request.args
     }
 

@@ -1,13 +1,145 @@
 use mobile_linux_api::{
-    MobileLinuxError, MobileLinuxRuntimeMode, RootfsState, RootfsStatus, SandboxBackend,
+    BrandRuntimeProfile, MobileLinuxError, MobileLinuxRuntimeMode, RootfsState, RootfsStatus,
+    SandboxBackend,
 };
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use tokio::task::spawn_blocking;
 
-use super::{native, parse_native_ok, IosIshRuntime};
+use super::{native, parse_native_ok, IosIshRuntime, IosIshRuntimeConfig};
+
+#[derive(Deserialize)]
+struct BundleRootfsIdentity {
+    schema_version: u32,
+    platform: String,
+    guest_abi: String,
+    rootfs_version: String,
+    rootfs_zip_sha256: String,
+    brand_profile: BrandRuntimeProfile,
+}
+
+#[derive(Deserialize)]
+struct InstalledRootfsIdentity {
+    abi: String,
+    brand_id: String,
+    linux_user: String,
+    config_dir_name: String,
+    rootfs_version: String,
+    archive_sha256: String,
+    arch: String,
+}
+
+fn read_identity_file(path: &Path) -> Result<Vec<u8>, MobileLinuxError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        MobileLinuxError::Integrity(format!("rootfs identity {}: {error}", path.display()))
+    })?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 64 * 1024 {
+        return Err(MobileLinuxError::Integrity(format!(
+            "rootfs identity must be a bounded regular file: {}",
+            path.display()
+        )));
+    }
+    fs::read(path).map_err(|error| MobileLinuxError::Integrity(error.to_string()))
+}
+
+pub(super) fn validate_bundle_rootfs_identity(
+    config: &IosIshRuntimeConfig,
+) -> Result<(), MobileLinuxError> {
+    let archive = config
+        .rootfs_archive_path
+        .as_ref()
+        .ok_or_else(|| MobileLinuxError::Integrity("explicit rootfs archive is required".into()))?;
+    let metadata = fs::symlink_metadata(archive)
+        .map_err(|error| MobileLinuxError::Integrity(format!("rootfs archive: {error}")))?;
+    if !archive.is_absolute() || !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(MobileLinuxError::Integrity(
+            "rootfs archive must be an absolute regular file".into(),
+        ));
+    }
+    let sidecar = archive
+        .parent()
+        .ok_or_else(|| {
+            MobileLinuxError::Integrity("rootfs archive has no parent directory".into())
+        })?
+        .join("linux-runtime-manifest.json");
+    let identity: BundleRootfsIdentity = serde_json::from_slice(&read_identity_file(&sidecar)?)
+        .map_err(|error| {
+            MobileLinuxError::Integrity(format!("invalid rootfs manifest: {error}"))
+        })?;
+    let expected = config
+        .archive_sha256
+        .as_deref()
+        .ok_or_else(|| MobileLinuxError::Integrity("rootfs archive digest is required".into()))?;
+    if expected.len() != 64
+        || !expected
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || identity.schema_version != 1
+        || identity.platform != "ios"
+        || identity.guest_abi != "aarch64"
+        || identity.rootfs_version != config.rootfs_version
+        || identity.brand_profile != config.brand_profile
+        || identity.rootfs_zip_sha256 != expected
+    {
+        return Err(MobileLinuxError::Integrity(
+            "rootfs manifest does not match runtime identity".into(),
+        ));
+    }
+    let mut file = fs::File::open(archive)
+        .map_err(|error| MobileLinuxError::Integrity(format!("open rootfs archive: {error}")))?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|error| {
+            MobileLinuxError::Integrity(format!("read rootfs archive: {error}"))
+        })?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    if format!("{:x}", hash.finalize()) != expected {
+        return Err(MobileLinuxError::Integrity(
+            "rootfs archive digest mismatch".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_installed_rootfs_identity(
+    config: &IosIshRuntimeConfig,
+) -> Result<(), MobileLinuxError> {
+    let path = config.active_root().join("bridge-state.json");
+    let identity: InstalledRootfsIdentity = serde_json::from_slice(&read_identity_file(&path)?)
+        .map_err(|error| {
+            MobileLinuxError::Integrity(format!("invalid installed rootfs identity: {error}"))
+        })?;
+    if identity.abi != config.abi
+        || identity.arch != "aarch64"
+        || identity.brand_id != config.brand_profile.brand_id
+        || identity.linux_user != config.brand_profile.linux_user
+        || identity.config_dir_name != config.brand_profile.config_dir_name
+        || identity.rootfs_version != config.rootfs_version
+        || Some(identity.archive_sha256.as_str()) != config.archive_sha256.as_deref()
+    {
+        return Err(MobileLinuxError::Integrity(
+            "installed rootfs does not match runtime identity".into(),
+        ));
+    }
+    Ok(())
+}
 
 impl IosIshRuntime {
+    pub(super) async fn validate_bundle_rootfs_identity(&self) -> Result<(), MobileLinuxError> {
+        let config = self.state.config.clone();
+        spawn_blocking(move || validate_bundle_rootfs_identity(&config))
+            .await
+            .map_err(|error| MobileLinuxError::Io(format!("join rootfs identity check: {error}")))?
+    }
+
     pub(super) fn rootfs_snapshot_with_error(
         &self,
         override_state: Option<RootfsState>,
@@ -27,6 +159,16 @@ impl IosIshRuntime {
         } else {
             filesystem_rootfs_state(&active_root, &self.state.config.managed_root)
         };
+        let identity_error = if state == RootfsState::Ready {
+            validate_installed_rootfs_identity(&self.state.config).err()
+        } else {
+            None
+        };
+        let state = if identity_error.is_some() {
+            RootfsState::Corrupt
+        } else {
+            state
+        };
         RootfsStatus {
             state,
             backend: SandboxBackend::IosIsh,
@@ -42,7 +184,9 @@ impl IosIshRuntime {
             writable_guest_paths: mobile_linux_api::guest_paths::writable_roots_for_profile(
                 &self.state.config.brand_profile,
             ),
-            last_error: last_error.or(native_unavailable),
+            last_error: last_error
+                .or_else(|| identity_error.map(|error| error.to_string()))
+                .or(native_unavailable),
         }
     }
 }
@@ -82,6 +226,16 @@ impl IosIshRuntime {
 
 impl IosIshRuntime {
     pub(super) async fn install_rootfs(&self, reset: bool) -> Result<(), MobileLinuxError> {
+        if !reset {
+            self.validate_bundle_rootfs_identity().await?;
+        }
+        self.install_verified_rootfs(reset).await
+    }
+
+    pub(super) async fn install_verified_rootfs(
+        &self,
+        reset: bool,
+    ) -> Result<(), MobileLinuxError> {
         self.ensure_native_available()?;
         fs::create_dir_all(&self.state.config.managed_root).map_err(|error| {
             MobileLinuxError::Io(format!(
@@ -103,7 +257,11 @@ impl IosIshRuntime {
         .map_err(|error| MobileLinuxError::Io(format!("join install_rootfs: {error}")))?
         .map_err(MobileLinuxError::Io)?;
         parse_native_ok(&response)?;
-        Ok(())
+        if reset {
+            Ok(())
+        } else {
+            validate_installed_rootfs_identity(&self.state.config)
+        }
     }
 }
 

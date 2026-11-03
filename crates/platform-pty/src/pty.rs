@@ -46,6 +46,158 @@ use crate::process::TerminalSize;
 const IO_CHANNEL_CAPACITY: usize = 128;
 const READ_BUFFER_SIZE: usize = 8 * 1024;
 
+#[cfg(all(test, unix))]
+mod setup_cleanup_tests {
+    use super::*;
+    use std::sync::mpsc as std_mpsc;
+
+    fn assert_isolated_group(pid: u32) {
+        let pid = i32::try_from(pid).unwrap();
+        assert_eq!(unsafe { libc::getpgid(pid) }, pid);
+        assert_eq!(unsafe { libc::getsid(pid) }, pid);
+        assert_ne!(unsafe { libc::getpgrp() }, pid);
+    }
+
+    fn assert_reaped(pid: u32) {
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[tokio::test]
+    async fn portable_reader_and_writer_failures_kill_and_reap_the_owned_child() {
+        for fail_writer in [false, true] {
+            let pair = platform_native_pty_system()
+                .openpty(portable_pty::PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .unwrap();
+            let mut command = CommandBuilder::new("/bin/sh");
+            command.args(["-c", "trap '' HUP; sleep 60"]);
+            let child = pair.slave.spawn_command(command).unwrap();
+            let pid = child.process_id().unwrap();
+            assert_isolated_group(pid);
+            let io = (|| -> Result<()> {
+                if fail_writer {
+                    let _reader = pair.master.try_clone_reader()?;
+                }
+                anyhow::bail!(
+                    "injected {} failure",
+                    if fail_writer { "writer" } else { "reader" }
+                )
+            })();
+            let result = acquire_unpublished_pty_io(child, Some(pid), io).await;
+            assert!(result.is_err());
+            assert_reaped(pid);
+        }
+    }
+
+    fn spawn_isolated_std_child() -> std::process::Child {
+        let mut command = StdCommand::new("/bin/sh");
+        command
+            .args(["-c", "trap '' HUP; sleep 60"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        command.spawn().unwrap()
+    }
+
+    #[tokio::test]
+    async fn preserving_fd_reader_and_writer_failures_kill_and_reap_the_owned_child() {
+        for fail_writer in [false, true] {
+            let (master, _slave) = open_unix_pty(TerminalSize { cols: 80, rows: 24 }).unwrap();
+            let child = spawn_isolated_std_child();
+            let pid = child.id();
+            assert_isolated_group(pid);
+            let io = (|| -> Result<()> {
+                if fail_writer {
+                    let _reader = master.try_clone()?;
+                }
+                anyhow::bail!(
+                    "injected {} failure",
+                    if fail_writer { "writer" } else { "reader" }
+                )
+            })();
+            let result = acquire_unpublished_pty_io(child, Some(pid), io).await;
+            assert!(result.is_err());
+            assert_reaped(pid);
+        }
+    }
+
+    struct PausedCleanup {
+        child: std::process::Child,
+        entered: std_mpsc::Sender<()>,
+        release: std_mpsc::Receiver<()>,
+        reaped: std_mpsc::Sender<()>,
+    }
+
+    impl UnpublishedPtyChild for PausedCleanup {
+        fn terminate(&mut self) -> std::io::Result<()> {
+            let _ = self.entered.send(());
+            let _ = self.release.recv();
+            self.child.kill()
+        }
+
+        fn reap(&mut self) -> std::io::Result<()> {
+            let result = self.child.wait().map(|_| ());
+            let _ = self.reaped.send(());
+            result
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_setup_waiter_does_not_abandon_child_cleanup() {
+        let child = spawn_isolated_std_child();
+        let pid = child.id();
+        assert_isolated_group(pid);
+        let (entered_tx, entered_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let (reaped_tx, reaped_rx) = std_mpsc::channel();
+        let child = PausedCleanup {
+            child,
+            entered: entered_tx,
+            release: release_rx,
+            reaped: reaped_tx,
+        };
+        let caller = tokio::spawn(async move {
+            acquire_unpublished_pty_io(
+                child,
+                Some(pid),
+                Err::<(), _>(anyhow::anyhow!("injected reader failure")),
+            )
+            .await
+        });
+        tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .unwrap();
+        caller.abort();
+        release_tx.send(()).unwrap();
+        tokio::task::spawn_blocking(move || reaped_rx.recv_timeout(Duration::from_secs(5)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_reaped(pid);
+    }
+}
+
 /// Return whether the native platform PTY is available.
 ///
 /// Unix PTYs are always available at the API level. On Windows,
@@ -197,6 +349,82 @@ fn platform_native_pty_system() -> Box<dyn portable_pty::PtySystem + Send> {
     }
 }
 
+trait UnpublishedPtyChild: Send + 'static {
+    fn terminate(&mut self) -> std::io::Result<()>;
+    fn reap(&mut self) -> std::io::Result<()>;
+}
+
+impl UnpublishedPtyChild for Box<dyn portable_pty::Child + Send + Sync> {
+    fn terminate(&mut self) -> std::io::Result<()> {
+        self.kill()
+    }
+
+    fn reap(&mut self) -> std::io::Result<()> {
+        self.wait().map(|_| ())
+    }
+}
+
+#[cfg(unix)]
+impl UnpublishedPtyChild for std::process::Child {
+    fn terminate(&mut self) -> std::io::Result<()> {
+        self.kill()
+    }
+
+    fn reap(&mut self) -> std::io::Result<()> {
+        self.wait().map(|_| ())
+    }
+}
+
+async fn acquire_unpublished_pty_io<C, T>(
+    mut child: C,
+    process_id: Option<u32>,
+    io: Result<T>,
+) -> Result<(C, T)>
+where
+    C: UnpublishedPtyChild,
+{
+    match io {
+        Ok(io) => Ok((child, io)),
+        Err(error) => {
+            // Both Unix spawn paths call setsid before exec, so this child's
+            // still-unreaped PID is its own process-group ID. Move ownership
+            // into the blocking task before awaiting so caller cancellation
+            // cannot abandon termination or reaping.
+            let cleanup = tokio::task::spawn_blocking(move || {
+                #[cfg(unix)]
+                let group_result = process_id.map_or_else(
+                    || Err(std::io::Error::other("PTY process group is unavailable")),
+                    crate::process_group::kill_process_group,
+                );
+                #[cfg(not(unix))]
+                let group_result: std::io::Result<()> = Ok(());
+                #[cfg(not(unix))]
+                let _ = process_id;
+                let child_result = child.terminate();
+                let wait_result = child.reap();
+                group_result?;
+                match wait_result {
+                    Ok(()) => Ok(()),
+                    Err(wait_error) => Err(std::io::Error::other(format!(
+                        "PTY child reap failed: {wait_error}; termination: {child_result:?}"
+                    ))),
+                }
+            });
+            match cleanup.await {
+                Ok(Ok(())) => {
+                    Err(error.context("PTY setup failed; child was terminated and reaped"))
+                }
+                Ok(Err(cleanup_error)) => Err(error.context(format!(
+                    "PTY setup failed; cleanup unconfirmed: {cleanup_error}"
+                ))),
+                Err(join_error) => Err(error.context(format!(
+                    "PTY setup failed; cleanup task failed: {join_error}"
+                ))),
+            }
+        }
+    }
+}
+
 #[allow(clippy::similar_names, clippy::unused_async)]
 async fn spawn_process_portable(
     program: &str,
@@ -220,7 +448,7 @@ async fn spawn_process_portable(
         command.env(key, value);
     }
 
-    let mut child = pair
+    let child = pair
         .slave
         .spawn_command(command)
         .with_context(|| format!("failed to spawn PTY command {program:?}"))?;
@@ -229,8 +457,12 @@ async fn spawn_process_portable(
     let process_group_id = process_id;
     let killer = child.clone_killer();
 
-    let reader = pair.master.try_clone_reader()?;
-    let writer = pair.master.take_writer()?;
+    let io = (|| {
+        let reader = pair.master.try_clone_reader()?;
+        let writer = pair.master.take_writer()?;
+        Ok((reader, writer))
+    })();
+    let (mut child, (reader, writer)) = acquire_unpublished_pty_io(child, process_id, io).await?;
     let (writer_tx, writer_rx) = mpsc::channel(IO_CHANNEL_CAPACITY);
     let (stdout_tx, stdout_rx) = mpsc::channel(IO_CHANNEL_CAPACITY);
     let (_stderr_tx, stderr_rx) = mpsc::channel(1);
@@ -406,15 +638,19 @@ async fn spawn_process_preserving_fds(
             });
     }
 
-    let mut child = command
+    let child = command
         .spawn()
         .with_context(|| format!("failed to spawn PTY command {program:?}"))?;
     drop(slave);
     let process_id = Some(child.id());
     let process_group_id = child.id();
 
-    let reader = Box::new(master.try_clone()?) as Box<dyn std::io::Read + Send>;
-    let writer = Box::new(master.try_clone()?) as Box<dyn std::io::Write + Send>;
+    let io = (|| {
+        let reader = Box::new(master.try_clone()?) as Box<dyn std::io::Read + Send>;
+        let writer = Box::new(master.try_clone()?) as Box<dyn std::io::Write + Send>;
+        Ok((reader, writer))
+    })();
+    let (mut child, (reader, writer)) = acquire_unpublished_pty_io(child, process_id, io).await?;
     let (writer_tx, writer_rx) = mpsc::channel(IO_CHANNEL_CAPACITY);
     let (stdout_tx, stdout_rx) = mpsc::channel(IO_CHANNEL_CAPACITY);
     let (_stderr_tx, stderr_rx) = mpsc::channel(1);

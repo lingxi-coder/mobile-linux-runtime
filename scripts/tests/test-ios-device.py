@@ -36,6 +36,7 @@ shutil.copy2(a.ffi_artifact/'swift/MobileLinuxRuntimeBindings.swift', package/'B
 resources=example/'DeviceResources';resources.mkdir(exist_ok=True)
 shutil.copy2(archive,resources/archive.name)
 shutil.copy2(a.rootfs_artifact/'manifest.json',resources/'manifest.json')
+shutil.copy2(a.rootfs_artifact/'manifest.json',resources/'linux-runtime-manifest.json')
 shutil.copytree(a.rootfs_artifact/'resources/RootfsPatch.bundle',resources/'RootfsPatch.bundle',dirs_exist_ok=True)
 (resources/'default_mount').mkdir(exist_ok=True)
 subprocess.run(['xcodegen','generate'],cwd=example,check=True)

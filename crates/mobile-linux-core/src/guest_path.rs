@@ -51,22 +51,22 @@ mod tests {
     fn readonly_and_unmapped_guest_space_fail_closed() {
         let mounts = vec![MountSpec {
             host_path: PathBuf::from("/host/project"),
-            guest_path: "/home/lingxi/lingxi/project".into(),
+            guest_path: "/home/lingxi/.lingxi/project".into(),
             read_only: true,
             purpose: MountPurpose::Workspace,
         }];
-        let roots = ["/home/lingxi/lingxi", "/root"];
+        let roots = ["/home/lingxi/.lingxi", "/root"];
         assert_eq!(
-            resolve_guest_path("/home/lingxi/lingxi/project/a", &mounts, &roots, false),
+            resolve_guest_path("/home/lingxi/.lingxi/project/a", &mounts, &roots, false),
             Ok(Some(PathBuf::from("/host/project/a")))
         );
         assert!(matches!(
-            resolve_guest_path("/home/lingxi/lingxi/project/a", &mounts, &roots, true),
+            resolve_guest_path("/home/lingxi/.lingxi/project/a", &mounts, &roots, true),
             Err(GuestPathError::ReadOnly { .. })
         ));
         assert_eq!(
             resolve_guest_path(
-                "/home/lingxi/lingxi/project/../secret",
+                "/home/lingxi/.lingxi/project/../secret",
                 &mounts,
                 &roots,
                 false

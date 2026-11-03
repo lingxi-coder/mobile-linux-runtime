@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use super::{
     display_command, raw_stdin_closed, rootfs_store_error, terminate_group, validate_mount,
-    validate_pty_request, wait_raw_stop, AndroidProotRuntime, CallerCancellation,
+    validate_pty_request, validate_request, wait_raw_stop, AndroidProotRuntime, CallerCancellation,
     ForegroundMountMode, PtyControl, RawStdioWrite, ENFORCEMENT_RECEIPT_TIMEOUT, REAP_BUDGET,
 };
 
@@ -133,6 +133,7 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         &self,
         request: LinuxCommandRequest,
     ) -> Result<LinuxProcessHandle, MobileLinuxError> {
+        validate_request(&request, &self.state.config.brand_profile)?;
         self.prepare_execution()?;
         let (id, task) = self.create_task(
             "bg",
@@ -246,8 +247,8 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         &self,
         request: PtyOpenRequest,
     ) -> Result<PtySessionHandle, MobileLinuxError> {
-        self.prepare_execution()?;
         validate_pty_request(&request, &self.state.config.brand_profile)?;
+        self.prepare_execution()?;
         let mounts = self.execution_mounts(&request.mounts, ForegroundMountMode::Merged)?;
         let (program, args, env) = self.build_pty_invocation(
             &request.command,
@@ -363,6 +364,8 @@ impl MobileLinuxRuntime for AndroidProotRuntime {
         &self,
         request: RawStdioOpenRequest,
     ) -> Result<RawStdioSessionHandle, MobileLinuxError> {
+        let cwd = super::mounts::required_cwd(request.cwd.as_deref())?;
+        super::mounts::validate_guest_path(cwd)?;
         self.prepare_execution()?;
         let (id, task) = self.create_task(
             "stdio",

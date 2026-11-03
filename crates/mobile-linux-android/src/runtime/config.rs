@@ -25,10 +25,6 @@ impl AndroidProotRuntimeConfig {
         mobile_linux_api::guest_paths::home_for_profile(&self.brand_profile)
     }
 
-    pub(super) fn workspace_root(&self) -> String {
-        mobile_linux_api::guest_paths::workspace_root_for_profile(&self.brand_profile)
-    }
-
     pub(super) fn persistent_home(&self) -> PathBuf {
         self.brand_profile
             .persistent_home_host_path(&self.managed_root)

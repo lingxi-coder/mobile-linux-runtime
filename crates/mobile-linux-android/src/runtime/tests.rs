@@ -106,7 +106,7 @@ fn raw_request(script: &str) -> RawStdioOpenRequest {
     RawStdioOpenRequest {
         command: "/bin/sh".into(),
         args: vec!["-c".into(), script.into()],
-        cwd: None,
+        cwd: Some("/root".into()),
         env: BTreeMap::new(),
         network: NetworkPolicy::Allowed,
         resource_limits: Default::default(),
@@ -388,7 +388,7 @@ async fn cancel_pending_handle_startup(raw: bool, shutdown: bool) {
             request.network = NetworkPolicy::Disabled;
             request.mounts.push(MountSpec {
                 host_path: source,
-                guest_path: "/home/lingxi/lingxi/source".into(),
+                guest_path: "/home/lingxi/.lingxi/source".into(),
                 read_only: true,
                 purpose: MountPurpose::External,
             });
@@ -473,7 +473,7 @@ fn cancel_queued_raw_snapshot(shutdown: bool) {
         let mut request = raw_request("sleep 30");
         request.mounts.push(MountSpec {
             host_path: source,
-            guest_path: "/home/lingxi/lingxi/source".into(),
+            guest_path: "/home/lingxi/.lingxi/source".into(),
             read_only: true,
             purpose: MountPurpose::External,
         });
@@ -1023,7 +1023,7 @@ async fn mount_validation_rejects_managed_root_and_traversal() {
     let result = runtime
         .configure_mounts(vec![MountSpec {
             host_path: runtime.state.config.managed_root.clone(),
-            guest_path: "/home/lingxi/lingxi/../root".to_string(),
+            guest_path: "/home/lingxi/.lingxi/../root".to_string(),
             read_only: false,
             purpose: MountPurpose::Workspace,
         }])
@@ -1044,7 +1044,7 @@ fn merged_execution_mounts_keep_configured_binds() {
         .expect("mounts rwlock")
         .push(MountSpec {
             host_path: workspace_host,
-            guest_path: "/home/lingxi/lingxi/default".to_string(),
+            guest_path: "/home/lingxi/.lingxi/default".to_string(),
             read_only: false,
             purpose: MountPurpose::Workspace,
         });
@@ -1052,7 +1052,7 @@ fn merged_execution_mounts_keep_configured_binds() {
         .execution_mounts(
             &[MountSpec {
                 host_path: build_host,
-                guest_path: "/home/lingxi/lingxi/extra".to_string(),
+                guest_path: "/home/lingxi/.lingxi/extra".to_string(),
                 read_only: false,
                 purpose: MountPurpose::External,
             }],
@@ -1062,9 +1062,9 @@ fn merged_execution_mounts_keep_configured_binds() {
     assert_eq!(mounts.len(), 4);
     assert!(mounts
         .iter()
-        .any(|mount| mount.guest_path == "/home/lingxi/lingxi/default"));
+        .any(|mount| mount.guest_path == "/home/lingxi/.lingxi/default"));
     assert!(mounts.iter().any(|mount| {
-        mount.guest_path == "/home/lingxi/lingxi/extra"
+        mount.guest_path == "/home/lingxi/.lingxi/extra"
             && matches!(mount.purpose, MountPurpose::External)
     }));
 }
@@ -1085,7 +1085,7 @@ fn raw_stdio_read_only_mounts_use_isolated_snapshots() {
     let (mounts, roots) = snapshot_read_only_mounts(
         vec![MountSpec {
             host_path: source.clone(),
-            guest_path: "/home/lingxi/lingxi/lingxi-lsp-test".to_string(),
+            guest_path: "/home/lingxi/.lingxi/lingxi-lsp-test".to_string(),
             read_only: true,
             purpose: MountPurpose::External,
         }],
@@ -1099,7 +1099,7 @@ fn raw_stdio_read_only_mounts_use_isolated_snapshots() {
     assert_eq!(mounts[1].host_path, source.join("node_modules"));
     assert_eq!(
         mounts[1].guest_path,
-        "/home/lingxi/lingxi/lingxi-lsp-test/node_modules"
+        "/home/lingxi/.lingxi/lingxi-lsp-test/node_modules"
     );
     assert_eq!(roots, vec![snapshot.clone()]);
     fs::write(mounts[0].host_path.join("src/app.jsx"), b"changed in guest")
@@ -1216,12 +1216,50 @@ fn loopback_only_is_admitted_for_sockaddr_aware_proot_enforcement() {
     );
 }
 
+#[tokio::test]
+async fn execution_rejects_missing_or_empty_cwd_before_creating_a_task() {
+    let (_temp, runtime) = runtime();
+    for cwd in [None, Some(String::new())] {
+        let command = LinuxCommandRequest {
+            cwd: cwd.clone(),
+            ..request()
+        };
+        assert!(matches!(
+            runtime.run(command.clone()).await,
+            Err(MobileLinuxError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            runtime.spawn_background(command).await,
+            Err(MobileLinuxError::InvalidRequest(_))
+        ));
+        let pty = mobile_linux_api::PtyOpenRequest {
+            command: "/bin/sh".into(),
+            args: vec![],
+            cwd: cwd.clone(),
+            env: BTreeMap::new(),
+            size: mobile_linux_api::PtySize { cols: 80, rows: 24 },
+            mounts: vec![],
+        };
+        assert!(matches!(
+            runtime.open_pty(pty).await,
+            Err(MobileLinuxError::InvalidRequest(_))
+        ));
+        let mut raw = raw_request("true");
+        raw.cwd = cwd;
+        assert!(matches!(
+            runtime.open_raw_stdio(raw).await,
+            Err(MobileLinuxError::InvalidRequest(_))
+        ));
+    }
+    assert!(runtime.list_tasks().await.unwrap().is_empty());
+}
+
 #[test]
 fn ordinary_requests_reject_build_state_env_overrides() {
     let mut request = request();
     request
         .env
-        .insert("HOME".into(), "/home/lingxi/lingxi/extra/home".into());
+        .insert("HOME".into(), "/home/lingxi/.lingxi/extra/home".into());
     let error = validate_request(&request, &mobile_linux_api::BrandRuntimeProfile::default())
         .expect_err("ordinary requests must reject HOME");
     assert!(error
@@ -1293,11 +1331,20 @@ fn terminal_transition_is_emitted_once() {
 }
 
 #[test]
-fn normal_and_pty_launches_use_the_same_nonroot_identity_and_default_cwd() {
+fn normal_and_pty_launches_use_the_same_nonroot_identity_and_explicit_cwd() {
     let (_temp, runtime) = runtime();
-    let request = request();
+    let request = LinuxCommandRequest {
+        cwd: Some("/home/lingxi/.lingxi/code".into()),
+        ..request()
+    };
     let command = runtime
-        .build_command(&request, None, &BTreeMap::new(), &[], None)
+        .build_command(
+            &request,
+            request.cwd.as_deref(),
+            &BTreeMap::new(),
+            &[],
+            None,
+        )
         .unwrap();
     let args: Vec<_> = command
         .as_std()
@@ -1307,11 +1354,20 @@ fn normal_and_pty_launches_use_the_same_nonroot_identity_and_default_cwd() {
     assert_eq!(&args[..2], ["-i", "1000:1000"]);
     assert!(args
         .windows(2)
-        .any(|pair| pair == ["-w", mobile_linux_api::guest_paths::WORKSPACE_ROOT]));
+        .any(|pair| pair == ["-w", "/home/lingxi/.lingxi/code"]));
     let (_, pty_args, env) = runtime
-        .build_pty_invocation("/bin/sh", &[], None, &BTreeMap::new(), &[])
+        .build_pty_invocation(
+            "/bin/sh",
+            &[],
+            Some("/home/lingxi/.lingxi/chat"),
+            &BTreeMap::new(),
+            &[],
+        )
         .unwrap();
     assert_eq!(&pty_args[..2], ["-i", "1000:1000"]);
+    assert!(pty_args
+        .windows(2)
+        .any(|pair| pair == ["-w", "/home/lingxi/.lingxi/chat"]));
     assert_eq!(env.get("HOME").unwrap(), "/home/lingxi");
     assert_eq!(env.get("USER").unwrap(), "lingxi");
 }
@@ -1321,7 +1377,7 @@ fn second_brand_profile_controls_runtime_mounts_environment_and_guest_mapping() 
     let profile = mobile_linux_api::BrandRuntimeProfile::new("atlas", "atlas_guest", ".atlas");
     let (_temp, runtime) = runtime_for_profile(profile.clone());
     let home = profile.persistent_home_host_path(&runtime.state.config.managed_root);
-    let projects = home.join("atlas/projects");
+    let projects = home.join(".atlas/projects");
     fs::create_dir_all(projects.join("app/src")).unwrap();
     let workspace = MountSpec {
         host_path: projects.clone(),
@@ -1335,18 +1391,24 @@ fn second_brand_profile_controls_runtime_mounts_environment_and_guest_mapping() 
     mounts.push(workspace);
     assert_eq!(
         mobile_linux_api::map_guest_path_to_host(
-            "/home/atlas_guest/atlas/projects/app/src/main.rs",
+            "/home/atlas_guest/.atlas/projects/app/src/main.rs",
             &mounts,
         ),
         Some(projects.join("app/src/main.rs"))
     );
 
     let request = LinuxCommandRequest {
-        cwd: None,
+        cwd: Some("/home/atlas_guest/.atlas/code".into()),
         ..request()
     };
     let command = runtime
-        .build_command(&request, None, &BTreeMap::new(), &[], None)
+        .build_command(
+            &request,
+            request.cwd.as_deref(),
+            &BTreeMap::new(),
+            &[],
+            None,
+        )
         .unwrap();
     let args = command
         .as_std()
@@ -1355,13 +1417,19 @@ fn second_brand_profile_controls_runtime_mounts_environment_and_guest_mapping() 
         .collect::<Vec<_>>();
     assert!(args
         .windows(2)
-        .any(|pair| pair == ["-w", "/home/atlas_guest/atlas"]));
+        .any(|pair| pair == ["-w", "/home/atlas_guest/.atlas/code"]));
     let (_, pty_args, env) = runtime
-        .build_pty_invocation("/bin/sh", &[], None, &BTreeMap::new(), &[])
+        .build_pty_invocation(
+            "/bin/sh",
+            &[],
+            Some("/home/atlas_guest/.atlas/chat"),
+            &BTreeMap::new(),
+            &[],
+        )
         .unwrap();
     assert!(pty_args
         .windows(2)
-        .any(|pair| pair == ["-w", "/home/atlas_guest/atlas"]));
+        .any(|pair| pair == ["-w", "/home/atlas_guest/.atlas/chat"]));
     assert_eq!(
         env.get("HOME").map(String::as_str),
         Some("/home/atlas_guest")
@@ -1375,7 +1443,7 @@ fn command_and_pty_owner_identity_cannot_be_overridden_by_guest_env() {
     let env = BTreeMap::from([("LINGXI_RUNTIME_OWNER_PID".to_string(), "1".to_string())]);
     let request = request();
     let command = runtime
-        .build_command(&request, None, &env, &[], None)
+        .build_command(&request, request.cwd.as_deref(), &env, &[], None)
         .unwrap();
     let owner = command
         .as_std()
@@ -1386,7 +1454,7 @@ fn command_and_pty_owner_identity_cannot_be_overridden_by_guest_env() {
         .unwrap();
     assert_eq!(owner, std::process::id().to_string().as_str());
     let (_, _, child_env) = runtime
-        .build_pty_invocation("/bin/sh", &[], None, &env, &[])
+        .build_pty_invocation("/bin/sh", &[], Some("/root"), &env, &[])
         .unwrap();
     assert_eq!(
         child_env["LINGXI_RUNTIME_OWNER_PID"],

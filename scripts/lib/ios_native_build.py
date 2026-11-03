@@ -205,8 +205,15 @@ def rootfs(archive,output,cache,native_output,profile,expected_sha256):
     zip_path=resources/'alpine-rootfs.zip'
     if zip_path.exists():zip_path.unlink()
     run(['ditto','-c','-k','--sequesterRsrc','--keepParent',dest,zip_path])
-    # Keep app metadata out of the SDK artifact; caller may add a profile layer.
-    (output/'manifest.json').write_text(json.dumps({'schema_version':1,'platform':'ios','guest_abi':'aarch64','rootfs_version':json.loads((SDK/'docs/toolchains/runtime-pins.json').read_text())['rootfs_version'],'rootfs_zip_sha256':sha(zip_path),'source_archive_sha256':sha(archive),'guest_user_archive_sha256':sha(user_archive),'source_manifest_sha256':sha(PINS),'resources':{'rootfs_zip':str(zip_path),'rootfs_dir':str(dest),'default_mount':str(resources/'default_mount'),'vdso':str(resources/'libvdso.so.elf')}},indent=2)+'\n')
+    # The account layer above uses guest_user.py's default profile. Bind that
+    # exact identity to the ZIP and place the sidecar beside it for native FFI.
+    sys.path.insert(0, str(SDK/'scripts/rootfs'))
+    from guest_user import DEFAULT_PROFILE
+    selected = DEFAULT_PROFILE.validate()
+    manifest = {'schema_version':1,'platform':'ios','guest_abi':'aarch64','rootfs_version':json.loads((SDK/'docs/toolchains/runtime-pins.json').read_text())['rootfs_version'],'rootfs_zip_sha256':sha(zip_path),'source_archive_sha256':sha(archive),'guest_user_archive_sha256':sha(user_archive),'source_manifest_sha256':sha(PINS),'brand_profile':{'brand_id':selected.brand_id,'linux_user':selected.linux_user,'config_dir_name':selected.config_dir_name},'resources':{'rootfs_zip':str(zip_path),'rootfs_dir':str(dest),'default_mount':str(resources/'default_mount'),'vdso':str(resources/'libvdso.so.elf')}}
+    manifest_text = json.dumps(manifest, indent=2)+'\n'
+    (output/'manifest.json').write_text(manifest_text)
+    (resources/'linux-runtime-manifest.json').write_text(manifest_text)
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('action',choices=['native','framework','rootfs']);parser.add_argument('--output',type=P,required=True);parser.add_argument('--cache',type=P,required=True);parser.add_argument('--configuration',choices=['Debug','Release'],default='Release');parser.add_argument('--simulator-only',action='store_true');parser.add_argument('--kind',choices=['native-support'],default='native-support');parser.add_argument('--archive',type=P);parser.add_argument('--native-output',type=P);parser.add_argument('--profile',choices=['base','toolchain'],default='toolchain');parser.add_argument('--expected-archive-sha256');args=parser.parse_args();args.output=args.output.resolve();args.cache=args.cache.resolve();args.cache.mkdir(parents=True,exist_ok=True)

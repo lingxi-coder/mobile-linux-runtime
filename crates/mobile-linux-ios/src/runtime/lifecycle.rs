@@ -39,6 +39,15 @@ impl IosIshRuntime {
             normalize_host_path(&config.app_sandbox_root, "app_sandbox_root")?;
         config.workspace_host_path =
             normalize_host_path(&config.workspace_host_path, "workspace_host_path")?;
+        if let Some(archive) = &config.rootfs_archive_path {
+            if std::fs::symlink_metadata(archive)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                return Err(MobileLinuxError::Integrity(
+                    "rootfs archive may not be a symlink".into(),
+                ));
+            }
+        }
         for path in config
             .protected_host_roots
             .iter_mut()

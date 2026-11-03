@@ -6,7 +6,7 @@ object MobileLinuxGuestPaths {
     const val UID = 1000
     const val HOME = "/home/lingxi"
     const val ADMIN_HOME = "/root"
-    const val WORKSPACE_ROOT = "$HOME/lingxi"
+    const val WORKSPACE_ROOT = "$HOME/.lingxi"
     fun workspace(id: String): String = "$WORKSPACE_ROOT/$id"
     val writableRoots: Set<String> = linkedSetOf(HOME, ADMIN_HOME, "/tmp", "/var/tmp", WORKSPACE_ROOT)
 }

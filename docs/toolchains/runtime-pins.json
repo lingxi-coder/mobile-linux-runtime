@@ -1324,7 +1324,7 @@
     "version": "12.5.1"
   },
   "release_ready": true,
-  "rootfs_version": "3.24.2-user1",
+  "rootfs_version": "3.24.2-user2",
   "runtime_packages": {
     "ada-libs": "3.3.0-r0",
     "brotli-libs": "1.2.0-r1",

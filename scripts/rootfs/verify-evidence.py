@@ -38,6 +38,18 @@ def verify_archive_inventory(archive, expected):
 def verify(directory, archive=None, root=None):
     directory = Path(directory)
     manifest = json.loads((directory / "rootfs-manifest.json").read_text())
+    expected_brand = {
+        "brand_id": tool.GUEST_PROFILE.brand_id,
+        "linux_user": tool.GUEST_PROFILE.linux_user,
+        "config_dir_name": tool.GUEST_PROFILE.config_dir_name,
+    }
+    if manifest.get("brand_profile") != expected_brand:
+        raise ValueError("rootfs evidence brand profile does not match the selected runtime")
+    writable = manifest.get("writable_paths")
+    if (not isinstance(writable, list) or len(writable) != len(tool.WRITABLE_ROOTS)
+            or not all(isinstance(path, str) for path in writable)
+            or set(writable) != set(tool.WRITABLE_ROOTS)):
+        raise ValueError("rootfs evidence writable paths do not match the selected runtime")
     spdx = json.loads((directory / "rootfs.spdx.json").read_text())
     allowlist = json.loads((directory / "executable-allowlist.json").read_text())
     tool.validate_lock(argparse.Namespace(lock=directory / "rootfs-build.lock.json", manifest=directory / "rootfs-manifest.json"))

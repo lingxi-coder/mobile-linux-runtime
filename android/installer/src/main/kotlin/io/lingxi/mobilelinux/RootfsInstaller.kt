@@ -151,6 +151,7 @@ public object RootfsInstaller {
                 "platform",
                 "abi",
                 "rootfs_version",
+                "brand_profile",
                 "content_sha256",
                 "sbom_filename",
                 "source_pins_filename",
@@ -165,6 +166,13 @@ public object RootfsInstaller {
         check(manifest.requireLong("schema_version", "rootfs manifest") == 2L) {
             "Unsupported rootfs manifest schema version"
         }
+        val brand = manifest.requireObject("brand_profile", "rootfs manifest")
+        requireExactKeys(brand, setOf("brand_id", "linux_user", "config_dir_name"), "rootfs brand profile")
+        check(
+            brand.requireString("brand_id", "rootfs brand profile") == "lingxi" &&
+                brand.requireString("linux_user", "rootfs brand profile") == "lingxi" &&
+                brand.requireString("config_dir_name", "rootfs brand profile") == ".lingxi",
+        ) { "rootfs brand profile does not match this installer" }
         val runtime = manifest.requireString("runtime", "rootfs manifest")
         val platform = manifest.requireString("platform", "rootfs manifest")
         val abi = manifest.requireString("abi", "rootfs manifest")

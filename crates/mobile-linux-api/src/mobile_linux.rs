@@ -23,6 +23,7 @@ pub const MAX_MOBILE_LINUX_EVENT_BATCH: usize = 512;
 /// process environment. This identifies the product build, never its signed-in
 /// Firebase or provider account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BrandRuntimeProfile {
     /// Stable lowercase brand path component.
     pub brand_id: String,
@@ -111,10 +112,10 @@ impl BrandRuntimeProfile {
         Path::new("/home").join(&self.linux_user)
     }
 
-    /// Guest workspace root for this product brand.
+    /// Guest container for this brand's workspaces and configuration.
     #[must_use]
-    pub fn workspace_root_guest_path(&self) -> PathBuf {
-        self.guest_home().join(&self.brand_id)
+    pub fn workspace_container_guest_path(&self) -> PathBuf {
+        self.config_guest_path()
     }
 
     /// Guest config directory for this product brand.
@@ -126,7 +127,7 @@ impl BrandRuntimeProfile {
     /// Guest projects root for this product brand.
     #[must_use]
     pub fn projects_guest_path(&self) -> PathBuf {
-        self.workspace_root_guest_path().join("projects")
+        self.workspace_container_guest_path().join("projects")
     }
 
     /// Guest Local Apps source root for this product brand.
@@ -162,12 +163,12 @@ pub mod guest_paths {
     /// Default writable scratch directories.
     pub const SCRATCH: &[&str] = &["/tmp", "/var/tmp"];
     /// Default parent of workspace mounts.
-    pub const WORKSPACE_ROOT: &str = "/home/lingxi/lingxi";
+    pub const WORKSPACE_ROOT: &str = "/home/lingxi/.lingxi";
     /// Guest workspace root for a selected profile.
     #[must_use]
     pub fn workspace_root_for_profile(profile: &BrandRuntimeProfile) -> String {
         profile
-            .workspace_root_guest_path()
+            .workspace_container_guest_path()
             .to_string_lossy()
             .into_owned()
     }
@@ -222,20 +223,7 @@ pub mod guest_paths {
         managed_root: &std::path::Path,
         guest_path: &str,
     ) -> Option<std::path::PathBuf> {
-        let path = std::path::Path::new(guest_path);
-        if !path.is_absolute()
-            || path.components().any(|part| {
-                !matches!(
-                    part,
-                    std::path::Component::RootDir | std::path::Component::Normal(_)
-                )
-            })
-            || path == std::path::Path::new(WORKSPACE_ROOT)
-            || !path.starts_with(WORKSPACE_ROOT)
-        {
-            return None;
-        }
-        Some(home_host_path(managed_root).join(path.strip_prefix(HOME).ok()?))
+        workspace_host_path_for_profile(managed_root, &BrandRuntimeProfile::default(), guest_path)
     }
 
     /// Host twin of a normalized workspace path for the selected brand.
@@ -245,9 +233,13 @@ pub mod guest_paths {
         profile: &BrandRuntimeProfile,
         guest_path: &str,
     ) -> Option<PathBuf> {
+        profile.validate().ok()?;
         let path = Path::new(guest_path);
-        let root = profile.workspace_root_guest_path();
+        let root = profile.workspace_container_guest_path();
+        let normalized = path.components().collect::<PathBuf>();
         if !path.is_absolute()
+            || guest_path.contains('\0')
+            || normalized.as_os_str() != std::ffi::OsStr::new(guest_path)
             || path
                 .components()
                 .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
@@ -273,7 +265,7 @@ pub mod guest_paths {
     ) -> String {
         format!(
             "{}/{stable_workspace_id}",
-            profile.workspace_root_guest_path().display()
+            profile.workspace_container_guest_path().display()
         )
     }
     /// Default writable guest roots.
@@ -291,7 +283,7 @@ pub mod guest_paths {
             SCRATCH[0].to_string(),
             SCRATCH[1].to_string(),
             profile
-                .workspace_root_guest_path()
+                .workspace_container_guest_path()
                 .to_string_lossy()
                 .into_owned(),
         ]
@@ -450,6 +442,7 @@ pub enum MountPurpose {
 pub struct LinuxCommandRequest {
     pub command: String,
     pub args: Vec<String>,
+    /// Explicit absolute guest cwd; `None` or an empty string is invalid.
     pub cwd: Option<String>,
     pub env: BTreeMap<String, String>,
     pub stdin: Option<String>,
@@ -555,6 +548,7 @@ pub struct LinuxProcessHandle {
 pub struct RawStdioOpenRequest {
     pub command: String,
     pub args: Vec<String>,
+    /// Explicit absolute guest cwd; `None` or an empty string is invalid.
     pub cwd: Option<String>,
     pub env: BTreeMap<String, String>,
     pub network: NetworkPolicy,
@@ -587,6 +581,7 @@ pub struct RawStdioReadResult {
 pub struct PtyOpenRequest {
     pub command: String,
     pub args: Vec<String>,
+    /// Explicit absolute guest cwd; `None` or an empty string is invalid.
     pub cwd: Option<String>,
     pub env: BTreeMap<String, String>,
     pub size: PtySize,
@@ -660,13 +655,13 @@ mod map_guest_path_tests {
         vec![
             MountSpec {
                 host_path: host_path("ws"),
-                guest_path: "/home/lingxi/lingxi/abc".into(),
+                guest_path: "/home/lingxi/.lingxi/abc".into(),
                 read_only: false,
                 purpose: MountPurpose::Workspace,
             },
             MountSpec {
                 host_path: host_path("ext"),
-                guest_path: "/home/lingxi/lingxi/abc/ext".into(),
+                guest_path: "/home/lingxi/.lingxi/abc/ext".into(),
                 read_only: false,
                 purpose: MountPurpose::External,
             },
@@ -677,23 +672,23 @@ mod map_guest_path_tests {
     fn maps_longest_prefix_and_rejects_dirty_or_uncovered_paths() {
         let m = mounts();
         assert_eq!(
-            map_guest_path_to_host("/home/lingxi/lingxi/abc/src/a.rs", &m),
+            map_guest_path_to_host("/home/lingxi/.lingxi/abc/src/a.rs", &m),
             Some(host_path("ws/src/a.rs"))
         );
         assert_eq!(
-            map_guest_path_to_host("/home/lingxi/lingxi/abc", &m),
+            map_guest_path_to_host("/home/lingxi/.lingxi/abc", &m),
             Some(host_path("ws"))
         );
         assert_eq!(
-            map_guest_path_to_host("/home/lingxi/lingxi/abc/ext/d.txt", &m),
+            map_guest_path_to_host("/home/lingxi/.lingxi/abc/ext/d.txt", &m),
             Some(host_path("ext/d.txt"))
         );
         assert_eq!(
-            map_guest_path_to_host("/home/lingxi/lingxi/other/x", &m),
+            map_guest_path_to_host("/home/lingxi/.lingxi/other/x", &m),
             None
         );
         assert_eq!(
-            map_guest_path_to_host("/home/lingxi/lingxi/abc/../abc/x", &m),
+            map_guest_path_to_host("/home/lingxi/.lingxi/abc/../abc/x", &m),
             None
         );
         assert_eq!(map_guest_path_to_host("relative", &m), None);
@@ -705,11 +700,11 @@ mod map_guest_path_tests {
         let m = mounts();
         assert_eq!(
             map_host_path_to_guest(&host_path("ws/src/a.rs"), &m).as_deref(),
-            Some("/home/lingxi/lingxi/abc/src/a.rs")
+            Some("/home/lingxi/.lingxi/abc/src/a.rs")
         );
         assert_eq!(
             map_host_path_to_guest(&host_path("ext/d.txt"), &m).as_deref(),
-            Some("/home/lingxi/lingxi/abc/ext/d.txt")
+            Some("/home/lingxi/.lingxi/abc/ext/d.txt")
         );
         assert_eq!(map_host_path_to_guest(&host_path("other"), &m), None);
         assert_eq!(map_host_path_to_guest(&host_path("ws/../escape"), &m), None);
@@ -1244,6 +1239,50 @@ impl MobileLinuxRuntime for UnavailableMobileLinuxRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn branded_workspace_container_uses_config_identity_and_rejects_old_root() {
+        let profile = BrandRuntimeProfile::new("atlas", "guest", ".atlas-config");
+        let managed = Path::new("/managed");
+        assert_eq!(
+            profile.workspace_container_guest_path(),
+            Path::new("/home/guest/.atlas-config")
+        );
+        assert_eq!(
+            guest_paths::workspace_for_profile(&profile, "projects"),
+            "/home/guest/.atlas-config/projects"
+        );
+        for workspace in ["chat", "code", "projects", "scheduled/job"] {
+            let guest = format!("/home/guest/.atlas-config/{workspace}");
+            assert_eq!(
+                guest_paths::workspace_host_path_for_profile(managed, &profile, &guest),
+                Some(
+                    managed
+                        .join("persistent/guest/.atlas-config")
+                        .join(workspace)
+                )
+            );
+        }
+        for invalid in [
+            "/home/guest/.atlas-config",
+            "/home/guest/atlas/projects",
+            "/home/guest/.atlas-config-other/code",
+            "/home/guest/.atlas-config/projects/../settings",
+            "/home/guest/.atlas-config//projects",
+            "/home/guest/.atlas-config/./projects",
+            "/home/guest/.atlas-config/projects/",
+            "relative",
+        ] {
+            assert!(
+                guest_paths::workspace_host_path_for_profile(managed, &profile, invalid).is_none()
+            );
+        }
+        assert_eq!(guest_paths::WORKSPACE_ROOT, "/home/lingxi/.lingxi");
+        assert_eq!(
+            guest_paths::projects_root(),
+            "/home/lingxi/.lingxi/projects"
+        );
+    }
 
     #[tokio::test]
     async fn blocked_runtime_reports_license_error_and_status() {

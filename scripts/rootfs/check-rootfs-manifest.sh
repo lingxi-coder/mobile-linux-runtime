@@ -59,7 +59,7 @@ if not re.fullmatch(r"\.[a-z0-9][a-z0-9._-]{0,62}", config_dir_name):
     print("config directory name must be one hidden path component", file=sys.stderr)
     sys.exit(1)
 guest_home = f"/home/{linux_user}"
-workspace_root = f"{guest_home}/{brand_id}"
+workspace_root = f"{guest_home}/{config_dir_name}"
 
 required = {
     "schema_version",
@@ -67,6 +67,7 @@ required = {
     "platform",
     "abi",
     "rootfs_version",
+    "brand_profile",
     "content_sha256",
     "sbom_filename",
     "source_pins_filename",
@@ -86,11 +87,7 @@ if unknown:
     print(f"unknown manifest keys: {sorted(unknown)}", file=sys.stderr)
     sys.exit(1)
 
-brand_profile = data.get("brand_profile", {
-    "brand_id": "lingxi",
-    "linux_user": "lingxi",
-    "config_dir_name": ".lingxi",
-})
+brand_profile = data["brand_profile"]
 if (not isinstance(brand_profile, dict)
         or set(brand_profile) != {"brand_id", "linux_user", "config_dir_name"}):
     print("brand_profile must contain brand_id, linux_user, and config_dir_name", file=sys.stderr)

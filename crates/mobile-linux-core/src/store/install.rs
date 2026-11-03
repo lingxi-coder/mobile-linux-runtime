@@ -177,7 +177,7 @@ fn legacy_active_linux_user(active: &Path) -> Result<String, RootfsStoreError> {
                     manifest_path.display()
                 ))
             })?;
-            let profile = manifest.brand_profile.unwrap_or_default();
+            let profile = manifest.brand_profile;
             profile.validate().map_err(|error| {
                 RootfsStoreError::Integrity(format!(
                     "active rootfs has invalid brand profile: {error}"

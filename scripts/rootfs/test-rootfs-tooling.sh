@@ -12,7 +12,7 @@ trap 'rm -rf "${tmp_root}"' EXIT
 export SOURCE_DATE_EPOCH=0
 
 fixture_root="${tmp_root}/rootfs"
-mkdir -p "${fixture_root}/bin" "${fixture_root}/sbin" "${fixture_root}/usr/bin" "${fixture_root}/usr/lib" "${fixture_root}/lib/apk/db" "${fixture_root}/etc/apk" "${fixture_root}/tmp" "${fixture_root}/var/tmp" "${fixture_root}/home/lingxi/lingxi" "${fixture_root}/root"
+mkdir -p "${fixture_root}/bin" "${fixture_root}/sbin" "${fixture_root}/usr/bin" "${fixture_root}/usr/lib" "${fixture_root}/lib/apk/db" "${fixture_root}/etc/apk" "${fixture_root}/tmp" "${fixture_root}/var/tmp" "${fixture_root}/home/lingxi/.lingxi" "${fixture_root}/root"
 
 python3 - <<'PY' "${fixture_root}" "${repo_root}/docs/toolchains/runtime-pins.json"
 import hashlib
@@ -438,6 +438,35 @@ bash "${packager}" "${fixture_root}" android-proot android arm64 1.0.0 "${archiv
 bash "${packager}" "${fixture_root}" android-proot android arm64 1.0.0 "${archive2}" "${release2}"
 python3 "${tool}" verify-archive --archive "${archive1}"
 bash "${manifest_validator}" "${release1}/rootfs-manifest.json"
+python3 - "${release1}/rootfs-manifest.json" "${manifest_validator}" "${tmp_root}" <<'BRAND_CHECK'
+import copy
+import json
+import os
+import pathlib
+import subprocess
+import sys
+
+manifest, validator, output = pathlib.Path(sys.argv[1]), sys.argv[2], pathlib.Path(sys.argv[3])
+current = json.loads(manifest.read_text())
+assert current["brand_profile"] == {"brand_id": "lingxi", "linux_user": "lingxi", "config_dir_name": ".lingxi"}
+for field in (None, "brand_id", "linux_user", "config_dir_name"):
+    invalid = copy.deepcopy(current)
+    if field is None:
+        del invalid["brand_profile"]
+    else:
+        invalid["brand_profile"][field] = "wrong"
+    path = output / "invalid-brand-manifest.json"
+    path.write_text(json.dumps(invalid))
+    if subprocess.run(["bash", validator, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+        raise SystemExit(f"manifest unexpectedly accepted invalid brand field: {field}")
+custom = copy.deepcopy(current)
+custom["brand_profile"] = {"brand_id": "atlas", "linux_user": "atlas_guest", "config_dir_name": ".atlas-config"}
+custom["writable_paths"] = ["/home/atlas_guest", "/home/atlas_guest/.atlas-config", "/root", "/tmp", "/var/tmp"]
+path = output / "custom-brand-manifest.json"
+path.write_text(json.dumps(custom))
+environment = dict(os.environ, LINGXI_BRAND_ID="atlas", LINGXI_LINUX_USER="atlas_guest", LINGXI_CONFIG_DIR_NAME=".atlas-config")
+subprocess.run(["bash", validator, str(path)], check=True, env=environment, stdout=subprocess.DEVNULL)
+BRAND_CHECK
 
 python3 - <<'PY' "${archive1}" "${archive2}" "${release1}" "${release2}"
 import hashlib
@@ -480,5 +509,18 @@ except ValueError as error:
     assert "license" in str(error)
 else: raise AssertionError("tampered SBOM license passed")
 path.write_text(original)
+manifest = directory/"rootfs-manifest.json"
+original_manifest = manifest.read_text()
+for field in (None, "brand_id", "linux_user", "config_dir_name"):
+    data = json.loads(original_manifest)
+    if field is None:
+        del data["brand_profile"]
+    else:
+        data["brand_profile"][field] = "wrong"
+    manifest.write_text(json.dumps(data))
+    try: module.verify(directory)
+    except ValueError as error: assert "brand profile" in str(error)
+    else: raise AssertionError(f"invalid evidence brand passed: {field}")
+manifest.write_text(original_manifest)
 VERIFY
 echo "rootfs tooling tests passed"

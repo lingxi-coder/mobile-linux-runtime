@@ -128,6 +128,7 @@ impl AndroidProotRuntime {
         mounts: &[MountSpec],
         receipt_path: Option<&Path>,
     ) -> Result<Command, MobileLinuxError> {
+        let cwd = super::mounts::required_cwd(cwd)?;
         let (proot, rootfs) = self.readiness()?;
         let native_lib_dir = proot.parent().map(Path::to_path_buf);
         let mut proot_args = vec![
@@ -143,8 +144,7 @@ impl AndroidProotRuntime {
             "-b".to_string(),
             "/sys".to_string(),
             "-w".to_string(),
-            cwd.map(str::to_owned)
-                .unwrap_or_else(|| self.state.config.workspace_root()),
+            cwd.to_owned(),
         ];
         if matches!(request.network, NetworkPolicy::LoopbackOnly) {
             // This enables LingXi's sockaddr-aware extension in the pinned
@@ -225,6 +225,7 @@ impl AndroidProotRuntime {
         request: LinuxCommandRequest,
         sink: Option<Arc<dyn ProcessStreamSink>>,
     ) -> Result<LinuxCommandResult, MobileLinuxError> {
+        validate_request(&request, &self.state.config.brand_profile)?;
         self.prepare_execution()?;
         let mounts = self.execution_mounts(&request.mounts, ForegroundMountMode::Merged)?;
         let (id, task) = self.create_task(

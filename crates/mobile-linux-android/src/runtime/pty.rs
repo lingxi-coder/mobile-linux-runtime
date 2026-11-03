@@ -12,6 +12,7 @@ impl AndroidProotRuntime {
         env: &BTreeMap<String, String>,
         mounts: &[MountSpec],
     ) -> Result<(String, Vec<String>, HashMap<String, String>), MobileLinuxError> {
+        let cwd = super::mounts::required_cwd(cwd)?;
         let (proot, rootfs) = self.readiness()?;
         let mut args = vec![
             "-i".to_string(),
@@ -26,8 +27,7 @@ impl AndroidProotRuntime {
             "-b".to_string(),
             "/sys".to_string(),
             "-w".to_string(),
-            cwd.map(str::to_owned)
-                .unwrap_or_else(|| self.state.config.workspace_root()),
+            cwd.to_owned(),
         ];
         for mount in mounts {
             args.push("-b".to_string());

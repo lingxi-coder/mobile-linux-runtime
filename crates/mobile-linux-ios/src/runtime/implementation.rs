@@ -60,6 +60,7 @@ impl MobileLinuxRuntime for IosIshRuntime {
             return self.refresh_rootfs_snapshot().await;
         }
         self.ensure_native_available()?;
+        self.validate_bundle_rootfs_identity().await?;
         fs::create_dir_all(&self.state.config.managed_root).map_err(|error| {
             MobileLinuxError::Io(format!(
                 "create managed root {}: {error}",
@@ -69,11 +70,13 @@ impl MobileLinuxRuntime for IosIshRuntime {
         let active_root = self.state.config.active_root();
         let current_state = filesystem_rootfs_state(&active_root, &self.state.config.managed_root);
         if matches!(current_state, RootfsState::Missing) {
-            self.install_rootfs(false).await?;
+            self.install_verified_rootfs(false).await?;
         } else if matches!(current_state, RootfsState::Corrupt) {
             return Err(MobileLinuxError::Integrity(
                 "active iSH rootfs is corrupt; run repair_rootfs".to_string(),
             ));
+        } else {
+            super::rootfs::validate_installed_rootfs_identity(&self.state.config)?;
         }
         self.native_boot().await?;
         self.state.kernel_started.store(true, Ordering::Release);
@@ -525,6 +528,7 @@ impl MobileLinuxRuntime for IosIshRuntime {
     async fn repair_rootfs(&self) -> Result<RootfsStatus, MobileLinuxError> {
         let _lifecycle = self.state.lifecycle.lock().await;
         self.ensure_rootfs_mutable()?;
+        self.validate_bundle_rootfs_identity().await?;
         self.invalidate_rootfs_snapshot();
         self.ensure_native_available()?;
         let config_json = self.native_config_json()?;
@@ -537,6 +541,7 @@ impl MobileLinuxRuntime for IosIshRuntime {
         .map_err(|error| MobileLinuxError::Io(format!("join repair_rootfs: {error}")))?
         .map_err(MobileLinuxError::Io)?;
         let _ = parse_native_ok(&response)?;
+        super::rootfs::validate_installed_rootfs_identity(&self.state.config)?;
         self.refresh_rootfs_snapshot().await
     }
 

@@ -52,6 +52,34 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
     }
 
     @Test
+    fun stage_requires_the_exact_current_brand_profile() {
+        val managed = Files.createTempDirectory("rootfs-brand-profile").toFile()
+        try {
+            val binary = "#!/bin/sh\n".toByteArray()
+            val archive = tarGz(TarSpec.file("bin/busybox", binary, 493), TarSpec.hardlink("bin/sh", "bin/busybox"))
+            val inventory = listOf(immutableFile("/bin/busybox", binary), immutableFile("/bin/sh", binary))
+            val good = manifestJson("rootfs.tar.gz", archive, inventory,
+                listOf(RootfsAllowlistEntryData("/bin/busybox", sha256(binary), "interpreter", binary.size.toLong())))
+            val profile = "\"brand_profile\": {\"brand_id\":\"lingxi\",\"linux_user\":\"lingxi\",\"config_dir_name\":\".lingxi\"},"
+            val invalid = listOf(
+                good.replace(profile, ""),
+                good.replace("\"brand_id\":\"lingxi\"", "\"brand_id\":\"atlas\""),
+                good.replace("\"linux_user\":\"lingxi\"", "\"linux_user\":\"other\""),
+                good.replace("\"config_dir_name\":\".lingxi\"", "\"config_dir_name\":\".other\""),
+                good.replace("\"config_dir_name\":\".lingxi\"", "\"config_dir_name\":\".lingxi\",\"unexpected\":true"),
+            )
+            for (manifest in invalid) {
+                assertTrue(manifest != good)
+                assertThrows(IllegalStateException::class.java) {
+                    RootfsInstaller.stage(managed, "3.21.3", sha256(archive), "arm64", "rootfs.tar.gz", manifest,
+                        sbomJson("busybox"), { it.writeBytes(archive) })
+                }
+                assertFalse(File(managed, "staged").exists())
+            }
+        } finally { managed.deleteRecursively() }
+    }
+
+    @Test
     fun stage_materializesHardlinkAsIndependentVerifiedExecutableBytes() {
         val managed = Files.createTempDirectory("rootfs-hardlink").toFile()
         try {
@@ -371,6 +399,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
               "platform": "android",
               "abi": "arm64",
               "rootfs_version": "3.21.3",
+              "brand_profile": {"brand_id":"lingxi","linux_user":"lingxi","config_dir_name":".lingxi"},
               "content_sha256": "${canonicalInventorySha256(immutableFiles)}",
               "sbom_filename": "$sbomFileName",
               "source_pins_filename": "$sourcePinsFileName",
@@ -382,7 +411,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
               "packages": $packagesJson,
               "executable_allowlist": $allowlistJson,
               "immutable_files": $immutableJson,
-              "writable_paths": ["/home/lingxi", "/root", "/tmp", "/var/tmp", "/home/lingxi/lingxi"]
+              "writable_paths": ["/home/lingxi", "/root", "/tmp", "/var/tmp", "/home/lingxi/.lingxi"]
             }
         """.trimIndent()
     }

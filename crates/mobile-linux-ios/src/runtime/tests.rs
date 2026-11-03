@@ -20,6 +20,7 @@ use mobile_linux_api::{
     ProcessStreamSink, PtyOpenRequest, PtySize, RawStdioOpenRequest, RawStdioSessionHandle,
     RootfsState,
 };
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::Path;
@@ -474,6 +475,139 @@ fn test_config(root: &Path) -> IosIshRuntimeConfig {
     }
 }
 
+#[tokio::test]
+async fn direct_install_requires_matching_bounded_bundle_identity_before_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let bundle = temp.path().join("bundle");
+    fs::create_dir_all(&bundle).unwrap();
+    let archive = bundle.join("alpine-rootfs.zip");
+    let bytes = b"rootfs archive fixture";
+    fs::write(&archive, bytes).unwrap();
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    let mut config = test_config(&temp.path().join("app"));
+    config.rootfs_archive_path = Some(archive.clone());
+    config.archive_sha256 = Some(digest.clone());
+    let runtime = IosIshRuntime::new_state(config.clone());
+    let sidecar = bundle.join("linux-runtime-manifest.json");
+    let good = serde_json::json!({
+        "schema_version": 1, "platform": "ios", "guest_abi": "aarch64",
+        "rootfs_version": config.rootfs_version, "rootfs_zip_sha256": digest,
+        "brand_profile": {"brand_id": "lingxi", "linux_user": "lingxi", "config_dir_name": ".lingxi"}
+    });
+    assert!(matches!(
+        runtime.install_rootfs(false).await,
+        Err(MobileLinuxError::Integrity(_))
+    ));
+    for field in ["brand_id", "linux_user", "config_dir_name"] {
+        let mut wrong = good.clone();
+        wrong["brand_profile"][field] = "wrong".into();
+        fs::write(&sidecar, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(
+            matches!(
+                runtime.install_rootfs(false).await,
+                Err(MobileLinuxError::Integrity(_))
+            ),
+            "{field}"
+        );
+    }
+    let mut missing = good.clone();
+    missing.as_object_mut().unwrap().remove("brand_profile");
+    fs::write(&sidecar, serde_json::to_vec(&missing).unwrap()).unwrap();
+    assert!(matches!(
+        runtime.install_rootfs(false).await,
+        Err(MobileLinuxError::Integrity(_))
+    ));
+    let mut wrong_version = good.clone();
+    wrong_version["rootfs_version"] = "other".into();
+    fs::write(&sidecar, serde_json::to_vec(&wrong_version).unwrap()).unwrap();
+    assert!(matches!(
+        runtime.install_rootfs(false).await,
+        Err(MobileLinuxError::Integrity(_))
+    ));
+    fs::write(&sidecar, vec![b' '; 64 * 1024 + 1]).unwrap();
+    assert!(matches!(
+        runtime.install_rootfs(false).await,
+        Err(MobileLinuxError::Integrity(_))
+    ));
+    #[cfg(unix)]
+    {
+        fs::remove_file(&sidecar).unwrap();
+        std::os::unix::fs::symlink(&archive, &sidecar).unwrap();
+        assert!(matches!(
+            runtime.install_rootfs(false).await,
+            Err(MobileLinuxError::Integrity(_))
+        ));
+        fs::remove_file(&sidecar).unwrap();
+        let archive_alias = bundle.join("archive-alias.zip");
+        std::os::unix::fs::symlink(&archive, &archive_alias).unwrap();
+        let mut aliased = config.clone();
+        aliased.rootfs_archive_path = Some(archive_alias);
+        assert!(matches!(
+            IosIshRuntime::new(aliased),
+            Err(MobileLinuxError::Integrity(_))
+        ));
+    }
+    fs::write(&sidecar, serde_json::to_vec(&good).unwrap()).unwrap();
+    fs::write(&archive, b"changed archive").unwrap();
+    assert!(matches!(
+        runtime.install_rootfs(false).await,
+        Err(MobileLinuxError::Integrity(_))
+    ));
+    assert!(!config.managed_root.exists());
+    fs::write(&archive, bytes).unwrap();
+    assert!(super::rootfs::validate_bundle_rootfs_identity(&config).is_ok());
+    assert!(matches!(
+        runtime.install_rootfs(false).await,
+        Err(MobileLinuxError::Unavailable(_))
+    ));
+}
+
+#[test]
+fn installed_rootfs_identity_must_match_all_brand_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = test_config(&temp.path().join("app"));
+    config.archive_sha256 = Some("a".repeat(64));
+    let root = config.active_root();
+    fs::create_dir_all(&root).unwrap();
+    let state = root.join("bridge-state.json");
+    let good = serde_json::json!({
+        "abi": config.abi, "arch": "aarch64", "rootfs_version": config.rootfs_version,
+        "archive_sha256": config.archive_sha256, "brand_id": "lingxi",
+        "linux_user": "lingxi", "config_dir_name": ".lingxi"
+    });
+    fs::write(&state, serde_json::to_vec(&good).unwrap()).unwrap();
+    assert!(super::rootfs::validate_installed_rootfs_identity(&config).is_ok());
+    let runtime = IosIshRuntime::new_state(config.clone());
+    assert_eq!(
+        runtime
+            .rootfs_snapshot_with_error(Some(RootfsState::Ready), None)
+            .state,
+        RootfsState::Ready
+    );
+    for field in ["brand_id", "linux_user", "config_dir_name"] {
+        let mut wrong = good.clone();
+        wrong[field] = "other".into();
+        fs::write(&state, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(
+            super::rootfs::validate_installed_rootfs_identity(&config).is_err(),
+            "{field}"
+        );
+        assert_eq!(
+            runtime
+                .rootfs_snapshot_with_error(Some(RootfsState::Ready), None)
+                .state,
+            RootfsState::Corrupt
+        );
+        let mut missing = good.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        fs::write(&state, serde_json::to_vec(&missing).unwrap()).unwrap();
+        assert!(
+            super::rootfs::validate_installed_rootfs_identity(&config).is_err(),
+            "{field}"
+        );
+    }
+}
+
 fn project_mount(config: &IosIshRuntimeConfig, relative: &str) -> MountSpec {
     let managed_root =
         normalize_host_path(&config.managed_root, "managed_root").expect("canonical managed root");
@@ -524,7 +658,7 @@ fn command_request() -> LinuxCommandRequest {
     LinuxCommandRequest {
         command: "/bin/sh".to_string(),
         args: vec!["-lc".to_string(), "echo hi".to_string()],
-        cwd: Some("/home/lingxi/lingxi/default".to_string()),
+        cwd: Some("/home/lingxi/.lingxi/default".to_string()),
         env: BTreeMap::from([(String::from("TERM"), String::from("xterm-256color"))]),
         stdin: None,
         timeout_ms: Some(1000),
@@ -574,7 +708,98 @@ fn workspace_mount_accepts_the_managed_workspace_path() {
         normalize_host_path(&config.workspace_host_path, "workspace_host_path")
             .expect("normalized workspace path")
     );
-    assert_eq!(mount.guest_path, "/home/lingxi/lingxi/default");
+    assert_eq!(mount.guest_path, "/home/lingxi/.lingxi/default");
+}
+
+#[test]
+fn branded_projects_mount_is_exact_without_exposing_other_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = test_config(&temp.path().join("app"));
+    config.stable_workspace_id = "projects".into();
+    config.workspace_host_path = config
+        .brand_profile
+        .persistent_home_host_path(&config.managed_root)
+        .join(".lingxi/projects");
+    fs::create_dir_all(&config.workspace_host_path).unwrap();
+    let projects = validate_mount(&config.default_workspace_mount(), &config).unwrap();
+    assert_eq!(projects.guest_path, "/home/lingxi/.lingxi/projects");
+    assert_eq!(
+        projects.host_path,
+        fs::canonicalize(&config.workspace_host_path).unwrap()
+    );
+
+    let grant = project_mount(&config, ".lingxi/projects/project/source");
+    let config = config_with_project_mounts(config, vec![grant.clone()]).unwrap();
+    assert!(validate_mount(&grant, &config).is_ok());
+    let mut sensitive = config.clone();
+    sensitive.stable_workspace_id = "settings".into();
+    sensitive.workspace_host_path = sensitive
+        .brand_profile
+        .persistent_home_host_path(&sensitive.managed_root)
+        .join(".lingxi/settings");
+    fs::create_dir_all(&sensitive.workspace_host_path).unwrap();
+    assert!(validate_mount(&sensitive.default_workspace_mount(), &sensitive).is_err());
+    let invalid_grant = project_mount(&config, ".lingxi/settings/secrets");
+    assert!(config_with_project_mounts(config, vec![invalid_grant]).is_err());
+}
+
+#[test]
+fn managed_workspace_mounts_require_the_exact_profile_mapping() {
+    let temp = tempfile::tempdir().unwrap();
+    for name in ["chat", "code", "projects", "scheduled"] {
+        let mut config = test_config(&temp.path().join("app"));
+        config.stable_workspace_id = name.into();
+        config.workspace_host_path = config
+            .brand_profile
+            .persistent_home_host_path(&config.managed_root)
+            .join(".lingxi")
+            .join(name);
+        fs::create_dir_all(&config.workspace_host_path).unwrap();
+        assert!(
+            validate_mount(&config.default_workspace_mount(), &config).is_ok(),
+            "{name}"
+        );
+        let mut wrong_host = config.default_workspace_mount();
+        wrong_host.host_path = config
+            .workspace_host_path
+            .parent()
+            .unwrap()
+            .join("settings");
+        fs::create_dir_all(&wrong_host.host_path).unwrap();
+        assert!(validate_mount(&wrong_host, &config).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn explicit_project_grants_cover_managed_roots_without_granting_siblings() {
+    let temp = tempfile::tempdir().unwrap();
+    for name in ["chat", "code", "projects"] {
+        for suffix in ["", "/selected/source"] {
+            let config = test_config(&temp.path().join("app"));
+            let grant = project_mount(&config, &format!(".lingxi/{name}{suffix}"));
+            let config = config_with_project_mounts(config, vec![grant.clone()]).unwrap();
+            assert!(validate_mount(&grant, &config).is_ok(), "{name}{suffix}");
+            let sibling = project_mount(&config, &format!(".lingxi/{name}/unselected"));
+            assert!(validate_mount(&sibling, &config).is_err(), "{name}{suffix}");
+        }
+    }
+    let config = test_config(&temp.path().join("app"));
+    let allowed = project_mount(&config, ".lingxi/scheduled/selected/source");
+    let granted = config_with_project_mounts(config.clone(), vec![allowed.clone()]).unwrap();
+    assert!(validate_mount(&allowed, &granted).is_ok());
+    for denied in [
+        ".lingxi/scheduled",
+        ".lingxi/scheduled/.lingxi/private",
+        ".lingxi/scheduled/provider",
+        ".lingxi/scheduled/selected/PROVIDERS",
+        ".lingxi/scheduled/selected/Library/Preferences",
+    ] {
+        let grant = project_mount(&config, denied);
+        assert!(
+            config_with_project_mounts(config.clone(), vec![grant]).is_err(),
+            "{denied}"
+        );
+    }
 }
 
 #[test]
@@ -880,7 +1105,7 @@ fn merged_mounts_keep_default_workspace_and_home_binds() {
     assert_eq!(mounts.len(), 4);
     assert!(mounts
         .iter()
-        .any(|mount| mount.guest_path == "/home/lingxi/lingxi/default"));
+        .any(|mount| mount.guest_path == "/home/lingxi/.lingxi/default"));
     assert!(mounts
         .iter()
         .any(|mount| mount.guest_path == "/home/lingxi"));
@@ -901,7 +1126,7 @@ fn workspace_mount_rejects_guest_path_escape() {
     let error = validate_mount(
         &MountSpec {
             host_path: config.workspace_host_path.clone(),
-            guest_path: "/home/lingxi/lingxi/../etc".to_string(),
+            guest_path: "/home/lingxi/.lingxi/../etc".to_string(),
             read_only: false,
             purpose: MountPurpose::Workspace,
         },
@@ -1048,6 +1273,49 @@ fn validate_request_accepts_enforceable_network_policies() {
     validate_request(&request).expect("LoopbackOnly is supported");
 }
 
+#[tokio::test]
+async fn execution_rejects_missing_or_empty_cwd_before_boot() {
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = IosIshRuntime::new_state(test_config(&temp.path().join("app")));
+    for cwd in [None, Some(String::new())] {
+        let mut command = command_request();
+        command.cwd = cwd.clone();
+        assert!(matches!(
+            runtime.run(command.clone()).await,
+            Err(MobileLinuxError::InvalidRequest(_))
+        ));
+        assert!(matches!(
+            runtime.spawn_background(command).await,
+            Err(MobileLinuxError::InvalidRequest(_))
+        ));
+        let pty = PtyOpenRequest {
+            command: "/bin/sh".into(),
+            args: vec![],
+            cwd: cwd.clone(),
+            env: BTreeMap::new(),
+            size: PtySize { cols: 80, rows: 24 },
+            mounts: vec![],
+        };
+        assert!(matches!(
+            runtime.open_pty(pty).await,
+            Err(MobileLinuxError::InvalidRequest(_))
+        ));
+        let raw = RawStdioOpenRequest {
+            command: "/bin/cat".into(),
+            args: vec![],
+            cwd,
+            env: BTreeMap::new(),
+            network: NetworkPolicy::Allowed,
+            resource_limits: Default::default(),
+            mounts: vec![],
+        };
+        assert!(matches!(
+            runtime.open_raw_stdio(raw).await,
+            Err(MobileLinuxError::InvalidRequest(_))
+        ));
+    }
+}
+
 #[test]
 fn validate_request_rejects_zero_timeout_and_invalid_env_keys() {
     let mut request = command_request();
@@ -1093,7 +1361,7 @@ fn validate_pty_request_rejects_invalid_env_and_nul() {
     let mut request = PtyOpenRequest {
         command: "/bin/sh".to_string(),
         args: vec!["-i".to_string()],
-        cwd: Some("/home/lingxi/lingxi/default".to_string()),
+        cwd: Some("/home/lingxi/.lingxi/default".to_string()),
         env: BTreeMap::from([(String::from("TERM"), String::from("xterm"))]),
         size: PtySize { cols: 80, rows: 24 },
         mounts: Vec::new(),
@@ -1105,7 +1373,7 @@ fn validate_pty_request_rejects_invalid_env_and_nul() {
     request = PtyOpenRequest {
         command: "/bin/\0sh".to_string(),
         args: vec!["-i".to_string()],
-        cwd: Some("/home/lingxi/lingxi/default".to_string()),
+        cwd: Some("/home/lingxi/.lingxi/default".to_string()),
         env: BTreeMap::new(),
         size: PtySize { cols: 80, rows: 24 },
         mounts: Vec::new(),
@@ -1258,7 +1526,7 @@ fn simulator_raw_stdio_fails_closed_without_using_pty() {
         .block_on(runtime.open_raw_stdio(RawStdioOpenRequest {
             command: "/opt/lingxi/toolchains/typescript/7.0.2/tsc".to_string(),
             args: vec!["--lsp".to_string(), "--stdio".to_string()],
-            cwd: None,
+            cwd: Some("/home/lingxi/.lingxi/code".into()),
             env: BTreeMap::new(),
             network: NetworkPolicy::Disabled,
             resource_limits: mobile_linux_api::ResourceLimits {

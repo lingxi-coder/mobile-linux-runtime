@@ -4,6 +4,11 @@
   "platform": "android",
   "abi": "arm64",
   "rootfs_version": "3.24.2",
+  "brand_profile": {
+    "brand_id": "lingxi",
+    "linux_user": "lingxi",
+    "config_dir_name": ".lingxi"
+  },
   "content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
   "sbom_filename": "rootfs.spdx.json",
   "source_pins_filename": "mobile-linux-pins.json",
@@ -196,6 +201,6 @@
     "/root",
     "/tmp",
     "/var/tmp",
-    "/home/lingxi/lingxi"
+    "/home/lingxi/.lingxi"
   ]
 }

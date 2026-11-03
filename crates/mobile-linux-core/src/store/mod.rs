@@ -143,8 +143,8 @@ impl RootfsStore {
         self.brand_profile
             .validate()
             .map_err(|error| crate::RootfsManifestError::InvalidBrandProfile(error.to_string()))?;
-        let manifest_profile = manifest.brand_profile.clone().unwrap_or_default();
-        if manifest_profile != self.brand_profile {
+        let manifest_profile = &manifest.brand_profile;
+        if manifest_profile != &self.brand_profile {
             return Err(RootfsStoreError::TargetMismatch {
                 store: format!("brand={:?}", self.brand_profile),
                 manifest: format!("brand={manifest_profile:?}"),

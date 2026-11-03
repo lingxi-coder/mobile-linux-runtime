@@ -45,7 +45,7 @@ fn manifest() -> RootfsManifest {
         platform: "android".to_string(),
         abi: "arm64".to_string(),
         rootfs_version: "1.0.0".to_string(),
-        brand_profile: None,
+        brand_profile: mobile_linux_api::BrandRuntimeProfile::default(),
         content_sha256: None,
         sbom_filename: None,
         source_pins_filename: None,
@@ -193,13 +193,13 @@ fn manifest_requires_the_complete_fixed_writable_path_set() {
     let mut manifest = manifest();
     manifest
         .writable_paths
-        .retain(|path| path != "/home/lingxi/lingxi");
+        .retain(|path| path != "/home/lingxi/.lingxi");
     let err = manifest
         .validate()
         .expect_err("missing fixed writable path must be rejected");
     assert!(matches!(
         err,
-        RootfsManifestError::MissingWritablePath(path) if path == "/home/lingxi/lingxi"
+        RootfsManifestError::MissingWritablePath(path) if path == "/home/lingxi/.lingxi"
     ));
 }
 
@@ -217,34 +217,34 @@ fn manifest_rejects_non_lowercase_hashes() {
 #[test]
 fn guest_containment_uses_linux_separators_on_every_host() {
     assert_eq!(
-        normalized_guest_path("/home/lingxi/lingxi/bin/python3").unwrap(),
-        "/home/lingxi/lingxi/bin/python3"
+        normalized_guest_path("/home/lingxi/.lingxi/bin/python3").unwrap(),
+        "/home/lingxi/.lingxi/bin/python3"
     );
     assert!(path_is_within_guest_path(
-        "/home/lingxi/lingxi/bin/python3",
-        "/home/lingxi/lingxi"
+        "/home/lingxi/.lingxi/bin/python3",
+        "/home/lingxi/.lingxi"
     ));
     assert!(!path_is_within_guest_path(
-        "/home/lingxi/lingxi-other/bin/python3",
-        "/home/lingxi/lingxi"
+        "/home/lingxi/.lingxi-other/bin/python3",
+        "/home/lingxi/.lingxi"
     ));
     assert!(!path_is_within_guest_path(
-        "/home/lingxi/lingxi/../usr/bin/python3",
-        "/home/lingxi/lingxi"
+        "/home/lingxi/.lingxi/../usr/bin/python3",
+        "/home/lingxi/.lingxi"
     ));
 }
 
 #[test]
 fn manifest_rejects_executables_in_writable_paths() {
     let mut manifest = manifest();
-    manifest.executable_allowlist[0].path = "/home/lingxi/lingxi/bin/python3".to_string();
+    manifest.executable_allowlist[0].path = "/home/lingxi/.lingxi/bin/python3".to_string();
     let err = manifest
         .validate()
         .expect_err("writable executable must be rejected");
     assert!(matches!(
         err,
         RootfsManifestError::ExecutableInWritablePath(path)
-            if path == "/home/lingxi/lingxi/bin/python3"
+            if path == "/home/lingxi/.lingxi/bin/python3"
     ));
 }
 

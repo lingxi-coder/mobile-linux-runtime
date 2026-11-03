@@ -21,7 +21,7 @@ pub(crate) fn allowed_writable_guest_paths(profile: &BrandRuntimeProfile) -> [St
         mobile_linux_api::guest_paths::SCRATCH[0].to_string(),
         mobile_linux_api::guest_paths::SCRATCH[1].to_string(),
         profile
-            .workspace_root_guest_path()
+            .workspace_container_guest_path()
             .to_string_lossy()
             .into_owned(),
     ]
@@ -43,10 +43,8 @@ pub struct RootfsManifest {
     pub platform: String,
     pub abi: String,
     pub rootfs_version: String,
-    /// Brand account and path identity embedded in the rootfs. Missing only
-    /// for legacy LingXi manifests; non-LingXi runtimes fail closed on them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brand_profile: Option<BrandRuntimeProfile>,
+    /// Required brand account and path identity embedded in the rootfs.
+    pub brand_profile: BrandRuntimeProfile,
     /// Digest of the producer's canonical, ordered immutable inventory.
     /// Absent only for legacy manifests emitted before producer attestation.
     #[serde(
@@ -84,7 +82,7 @@ fn present_string<'de, D: serde::Deserializer<'de>>(
 
 impl RootfsManifest {
     pub fn validate(&self) -> Result<(), RootfsManifestError> {
-        let profile = self.brand_profile.clone().unwrap_or_default();
+        let profile = &self.brand_profile;
         profile
             .validate()
             .map_err(|error| RootfsManifestError::InvalidBrandProfile(error.to_string()))?;
@@ -171,14 +169,14 @@ impl RootfsManifest {
             if !writable_paths.insert(path.as_str()) {
                 return Err(RootfsManifestError::DuplicatePath(path.clone()));
             }
-            if !allowed_writable_guest_paths(&profile)
+            if !allowed_writable_guest_paths(profile)
                 .iter()
                 .any(|allowed| allowed == path)
             {
                 return Err(RootfsManifestError::WritablePathNotAllowed(path.clone()));
             }
         }
-        for required in allowed_writable_guest_paths(&profile) {
+        for required in allowed_writable_guest_paths(profile) {
             if !writable_paths.contains(required.as_str()) {
                 return Err(RootfsManifestError::MissingWritablePath(required));
             }

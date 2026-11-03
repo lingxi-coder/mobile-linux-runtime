@@ -43,7 +43,7 @@ class GuestUserProfile:
 
     @property
     def workspace_root(self):
-        return self.guest_home / self.brand_id
+        return self.guest_home / self.config_dir_name
 
     @property
     def projects_root(self):

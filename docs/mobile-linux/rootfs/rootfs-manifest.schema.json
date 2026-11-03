@@ -10,6 +10,7 @@
     "platform",
     "abi",
     "rootfs_version",
+    "brand_profile",
     "content_sha256",
     "sbom_filename",
     "source_pins_filename",

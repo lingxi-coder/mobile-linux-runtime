@@ -14,7 +14,7 @@ struct SDKDeviceSmoke {
         return digest
     }
     private func command(_ script: String, network: NetworkPolicyFfi = .disabled, memory: UInt32? = nil, timeout: UInt64? = 10_000) -> MobileLinuxCommandRequestFfi {
-        MobileLinuxCommandRequestFfi(command: "/bin/sh", args: ["-c", script], cwd: nil, env: [], stdin: nil,
+        MobileLinuxCommandRequestFfi(command: "/bin/sh", args: ["-c", script], cwd: "/home/lingxi", env: [], stdin: nil,
             timeoutMs: timeout, network: network,
             resourceLimits: ResourceLimitsFfi(maxCpuSeconds: nil, maxMemoryMb: memory, maxProcesses: nil, maxOpenFiles: nil), mounts: [])
     }
@@ -25,12 +25,15 @@ struct SDKDeviceSmoke {
         #else
         let manifest = try JSONSerialization.jsonObject(with: Data(contentsOf: resources.appendingPathComponent("manifest.json"))) as! [String: Any]
         let archiveHash = try archiveDigest(in: manifest)
+        guard let rootfsVersion = manifest["rootfs_version"] as? String, !rootfsVersion.isEmpty else {
+            throw Failure(message: "missing rootfs version")
+        }
         let files = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("sdk-device-validation-" + String(archiveHash.prefix(16)))
         let workspace = files.appendingPathComponent("workspace-one")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         var config = RuntimeConfig(platform: .ios, managedRoot: files.appendingPathComponent("runtime").path,
-            appSandboxRoot: files.path, abi: "aarch64", rootfsVersion: "alpine-3.24.2-sdk",
+            appSandboxRoot: files.path, abi: "aarch64", rootfsVersion: rootfsVersion,
             archiveSha256: manifest["rootfs_zip_sha256"] as? String, nativeLibraryDir: nil,
             workspaceHostPath: workspace.path, stableWorkspaceId: "one", authorizationFile: nil,
             rootfsArchivePath: resources.appendingPathComponent("alpine-rootfs.zip").path,
@@ -44,11 +47,11 @@ struct SDKDeviceSmoke {
         _ = try await runtime.boot()
         print("SDK_SMOKE_PHASE default-user")
         let identity = try await runtime.handle.runCommand(request: command(#"id -un; id -u; id -g; printf '%s\n' "$HOME" "$USER"; pwd; sudo -n id -u; sudo -i /bin/sh -c 'printf %s "$HOME"'"#))
-        try require(identity.exitCode == 0 && identity.stdout == "lingxi\n1000\n1000\n/home/lingxi\nlingxi\n/home/lingxi/lingxi\n0\n/root", "default guest identity/cwd/elevation: \(identity.stdout) \(identity.stderr)")
-        let homeWrite = try await runtime.handle.runCommand(request: command("printf retained > ~/default-user-check; test -d ~/lingxi; test -w ~/lingxi"))
+        try require(identity.exitCode == 0 && identity.stdout == "lingxi\n1000\n1000\n/home/lingxi\nlingxi\n/home/lingxi\n0\n/root", "default guest identity/explicit cwd/elevation: \(identity.stdout) \(identity.stderr)")
+        let homeWrite = try await runtime.handle.runCommand(request: command("printf retained > ~/default-user-check; test -d ~/.lingxi; test -w ~/.lingxi"))
         try require(homeWrite.exitCode == 0, "user home is not writable: \(homeWrite.stderr)")
         var workspaceWrite = command("printf workspace > proof.txt")
-        workspaceWrite.cwd = "/home/lingxi/lingxi/one"
+        workspaceWrite.cwd = "/home/lingxi/.lingxi/one"
         let written = try await runtime.handle.runCommand(request: workspaceWrite)
         try require(written.exitCode == 0 && FileManager.default.fileExists(atPath: workspace.appendingPathComponent("proof.txt").path), "nested workspace is not writable: \(written.stderr)")
         print("SDK_SMOKE_PHASE user-raw-background-pty")
@@ -72,7 +75,7 @@ struct SDKDeviceSmoke {
         let backgroundIdentity = try await runtime.handle.runCommand(request: command("cat ~/background-user-check"))
         try require(backgroundIdentity.stdout == "1000\n", "background task user identity")
         let userPty = try await runtime.handle.openPty(request: MobileLinuxPtyOpenRequestFfi(
-            command: "/bin/sh", args: ["-l", "-c", "printf 'SDK_USER_%s_%s' \"$(id -u)\" \"$HOME\"; sleep 1"], cwd: nil,
+            command: "/bin/sh", args: ["-l", "-c", "printf 'SDK_USER_%s_%s' \"$(id -u)\" \"$HOME\"; sleep 1"], cwd: "/home/lingxi",
             env: [], size: MobileLinuxPtySizeFfi(cols: 80, rows: 24), mounts: []))
         var ptyIdentity = Data(), lastSequence: UInt64? = nil
         for _ in 0..<500 {

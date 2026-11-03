@@ -226,7 +226,7 @@ impl AndroidProotRuntime {
 
 pub(super) fn validate_request(
     request: &LinuxCommandRequest,
-    profile: &mobile_linux_api::BrandRuntimeProfile,
+    _profile: &mobile_linux_api::BrandRuntimeProfile,
 ) -> Result<(), MobileLinuxError> {
     if request.command.trim().is_empty() || request.command.as_bytes().contains(&0) {
         return Err(MobileLinuxError::InvalidRequest(
@@ -239,11 +239,7 @@ pub(super) fn validate_request(
         ));
     }
     let _ = requested_memory_limit_bytes(request)?;
-    let default_cwd = profile.workspace_root_guest_path();
-    let cwd = request
-        .cwd
-        .as_deref()
-        .unwrap_or_else(|| default_cwd.to_str().expect("profile paths are valid UTF-8"));
+    let cwd = required_cwd(request.cwd.as_deref())?;
     validate_guest_path(cwd)?;
     for value in &request.args {
         if value.as_bytes().contains(&0) {
@@ -257,7 +253,7 @@ pub(super) fn validate_request(
 
 pub(super) fn validate_pty_request(
     request: &PtyOpenRequest,
-    profile: &mobile_linux_api::BrandRuntimeProfile,
+    _profile: &mobile_linux_api::BrandRuntimeProfile,
 ) -> Result<(), MobileLinuxError> {
     if request.command.trim().is_empty()
         || request.command.as_bytes().contains(&0)
@@ -275,13 +271,14 @@ pub(super) fn validate_pty_request(
             ));
         }
     }
-    let default_cwd = profile.workspace_root_guest_path();
-    let cwd = request
-        .cwd
-        .as_deref()
-        .unwrap_or_else(|| default_cwd.to_str().expect("profile paths are valid UTF-8"));
+    let cwd = required_cwd(request.cwd.as_deref())?;
     validate_guest_path(cwd)?;
     validate_env_map(&request.env)
+}
+
+pub(super) fn required_cwd(cwd: Option<&str>) -> Result<&str, MobileLinuxError> {
+    cwd.filter(|cwd| !cwd.is_empty() && !cwd.as_bytes().contains(&0))
+        .ok_or_else(|| MobileLinuxError::InvalidRequest("explicit cwd is required".into()))
 }
 
 pub(super) fn validate_mount(
@@ -319,7 +316,7 @@ pub(super) fn validate_mount(
         .canonicalize()
         .unwrap_or_else(|_| managed_root.to_path_buf());
     if (host.starts_with(&managed) || managed.starts_with(&host))
-        && !mobile_linux_core::is_persistent_user_workspace(&managed, profile, mount)
+        && !mobile_linux_core::is_persistent_user_workspace(managed_root, profile, mount)
     {
         return Err(MobileLinuxError::InvalidRequest(
             "mount must not expose the managed rootfs".to_string(),

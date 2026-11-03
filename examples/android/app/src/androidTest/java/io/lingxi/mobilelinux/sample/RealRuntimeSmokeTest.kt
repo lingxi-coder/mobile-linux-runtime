@@ -39,7 +39,7 @@ class RealRuntimeSmokeTest {
                         python: Boolean = false, raw: Boolean = false) = MobileLinuxCommandRequestFfi(
         command = if (python) "/usr/bin/python3" else "/bin/sh",
         args = if (python) listOf("-u", "-c", script) else listOf("-c", script),
-        cwd = null, env = emptyList(), stdin = null,
+        cwd = "/home/lingxi", env = emptyList(), stdin = null,
         timeoutMs = if (raw) null else 15_000uL, network = network,
         resourceLimits = ResourceLimitsFfi(null, null, null, null), mounts = emptyList(),
     )
@@ -123,9 +123,9 @@ class RealRuntimeSmokeTest {
                 sudo -i /bin/sh -c 'printf %s "${'$'}HOME"'
             """.trimIndent()))
             assertEquals(user.stderr, 0, user.exitCode)
-            assertEquals("lingxi\n1000\n1000\n/home/lingxi\nlingxi\n/home/lingxi/lingxi\n0\n/root", user.stdout)
-            assertEquals(0, runtime.execute(command("printf retained > ~/default-user-check; test -w ~/lingxi")).exitCode)
-            passed("default-user-home-cwd-and-elevation")
+            assertEquals("lingxi\n1000\n1000\n/home/lingxi\nlingxi\n/home/lingxi\n0\n/root", user.stdout)
+            assertEquals(0, runtime.execute(command("printf retained > ~/default-user-check; test -w ~/.lingxi")).exitCode)
+            passed("default-user-home-explicit-cwd-and-elevation")
             val hello = runtime.execute(command("printf SDK_REAL_GUEST; uname -m"))
             assertEquals(hello.stderr, 0, hello.exitCode)
             assertTrue(hello.stdout.contains("SDK_REAL_GUEST"))
@@ -236,7 +236,7 @@ class RealRuntimeSmokeTest {
 
             val pty = runtime.handle.openPty(MobileLinuxPtyOpenRequestFfi(
                 command = "/bin/sh", args = listOf("-c", "printf 'SDK_PTY_READY\\n'; sleep 60"),
-                cwd = null, env = emptyList(), size = MobileLinuxPtySizeFfi(80u, 24u), mounts = emptyList(),
+                cwd = "/home/lingxi", env = emptyList(), size = MobileLinuxPtySizeFfi(80u, 24u), mounts = emptyList(),
             ))
             eventsUntil(runtime.handle) { it.sessionId == pty.id && it.kind == MobileLinuxEventKindFfi.PTY_OUTPUT &&
                 it.data?.toString(Charsets.UTF_8)?.contains("SDK_PTY_READY") == true }

@@ -74,17 +74,17 @@ public enum LXISHGuestPaths {
     /// Scratch areas writable inside the guest.
     public static let scratch = ["/tmp", "/var/tmp"]
     /// Parent of every workspace mount for the default LingXi profile.
-    public static let workspaceRoot = "/home/lingxi/lingxi"
+    public static let workspaceRoot = "/home/lingxi/.lingxi"
     /// The default LingXi workspace format.
     public static func workspace(_ stableWorkspaceId: String) -> String {
         "\(workspaceRoot)/\(stableWorkspaceId)"
     }
     public static func home(linuxUser: String) -> String { "/home/\(linuxUser)" }
-    public static func workspaceRoot(linuxUser: String, brandId: String) -> String {
-        "\(home(linuxUser: linuxUser))/\(brandId)"
+    public static func workspaceRoot(linuxUser: String, configDirName: String) -> String {
+        "\(home(linuxUser: linuxUser))/\(configDirName)"
     }
-    public static func workspace(linuxUser: String, brandId: String, stableWorkspaceId: String) -> String {
-        "\(workspaceRoot(linuxUser: linuxUser, brandId: brandId))/\(stableWorkspaceId)"
+    public static func workspace(linuxUser: String, configDirName: String, stableWorkspaceId: String) -> String {
+        "\(workspaceRoot(linuxUser: linuxUser, configDirName: configDirName))/\(stableWorkspaceId)"
     }
 
 
@@ -141,9 +141,9 @@ struct LXISHNativeConfig: Codable, Hashable {
     }
 
     var guestHome: String { LXISHGuestPaths.home(linuxUser: linuxUser) }
-    var workspaceRoot: String { LXISHGuestPaths.workspaceRoot(linuxUser: linuxUser, brandId: brandId) }
+    var workspaceRoot: String { LXISHGuestPaths.workspaceRoot(linuxUser: linuxUser, configDirName: configDirName) }
     var guestWorkspace: String {
-        LXISHGuestPaths.workspace(linuxUser: linuxUser, brandId: brandId, stableWorkspaceId: stableWorkspaceId)
+        LXISHGuestPaths.workspace(linuxUser: linuxUser, configDirName: configDirName, stableWorkspaceId: stableWorkspaceId)
     }
     var guestConfigHome: String { "\(guestHome)/\(configDirName)" }
 
@@ -268,19 +268,21 @@ final class LXISHNativeRootfsManager {
     @discardableResult
     func installIfNeeded(for config: LXISHNativeConfig) throws -> LXISHRootfsStatus {
         try config.validateBrandProfile()
+        guard let zipURL = resolveBundledArchive(for: config) else {
+            throw LXISHRootfsError.archiveMissing
+        }
+        try verifyBundledManifest(for: config, zipURL: zipURL)
+        let existing = status(for: config)
+        if existing.state != "ready" {
+            try verifyArchiveHashIfNeeded(for: config, zipURL: zipURL)
+        }
         try fileManager.createDirectory(at: config.normalizedManagedRoot, withIntermediateDirectories: true)
         try migrateLegacyHomeIfNeeded(for: config)
         try ensurePersistentHome(for: config)
-        let existing = status(for: config)
         if existing.state == "ready" {
             try ensureGuestDirectories(for: config)
             return status(for: config)
         }
-        guard let zipURL = resolveBundledArchive(for: config) else {
-            throw LXISHRootfsError.archiveMissing
-        }
-        try verifyArchiveHashIfNeeded(for: config, zipURL: zipURL)
-
         let stagingURL = config.normalizedManagedRoot
             .appendingPathComponent("alpine-rootfs.staging-\(UUID().uuidString.lowercased())", isDirectory: true)
 
@@ -307,12 +309,6 @@ final class LXISHNativeRootfsManager {
     }
 
     func repair(for config: LXISHNativeConfig) throws -> LXISHRootfsStatus {
-        try config.validateBrandProfile()
-        let current = status(for: config)
-        if current.state == "ready" {
-            try ensureGuestDirectories(for: config)
-            return status(for: config)
-        }
         return try installIfNeeded(for: config)
     }
 
@@ -622,6 +618,32 @@ final class LXISHNativeRootfsManager {
             return false
         }
         return metadata.archiveSha256 == config.archiveSha256
+    }
+
+    private func verifyBundledManifest(for config: LXISHNativeConfig, zipURL: URL) throws {
+        let path = zipURL.deletingLastPathComponent().appendingPathComponent("linux-runtime-manifest.json")
+        guard let archiveAttributes = try? fileManager.attributesOfItem(atPath: zipURL.path),
+              archiveAttributes[.type] as? FileAttributeType == .typeRegular,
+              let attributes = try? fileManager.attributesOfItem(atPath: path.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber, size.uint64Value <= 64 * 1024,
+              let bytes = try? Data(contentsOf: path),
+              let manifest = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              let profile = manifest["brand_profile"] as? [String: String],
+              Set(profile.keys) == Set(["brand_id", "linux_user", "config_dir_name"]),
+              manifest["schema_version"] as? Int == 1,
+              manifest["platform"] as? String == "ios",
+              manifest["guest_abi"] as? String == "aarch64",
+              manifest["rootfs_version"] as? String == config.rootfsVersion,
+              let expected = normalizedExpectedArchiveHash(config.archiveSha256),
+              expected == config.archiveSha256,
+              manifest["rootfs_zip_sha256"] as? String == expected,
+              profile["brand_id"] == config.brandId,
+              profile["linux_user"] == config.linuxUser,
+              profile["config_dir_name"] == config.configDirName
+        else {
+            throw LXISHRootfsError.corrupt("rootfs manifest does not match runtime identity")
+        }
     }
 
     private func verifyArchiveHashIfNeeded(for config: LXISHNativeConfig, zipURL: URL) throws {

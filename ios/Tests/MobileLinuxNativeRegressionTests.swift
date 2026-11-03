@@ -116,14 +116,14 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let config = guestEnvironmentConfig(stableWorkspaceId: "one")
         let environment = LXISHGuestEnvironment.merged(
             requestEnvironment: ["HOME": "/tmp/sdk-home", "BROWSER": "/tmp/caller-browser"],
-            cwd: nil,
+            cwd: "/home/lingxi/.lingxi/chat",
             config: config
         )
         XCTAssertEqual(environment["HOME"], "/tmp/sdk-home")
         XCTAssertEqual(environment["BROWSER"], "/tmp/caller-browser")
         XCTAssertNil(LXISHGuestEnvironment.merged(
             requestEnvironment: [:],
-            cwd: nil,
+            cwd: "/home/lingxi/.lingxi/chat",
             config: config
         )["BROWSER"])
     }
@@ -257,7 +257,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
           "brand_id": "lingxi",
           "linux_user": "lingxi",
           "config_dir_name": ".lingxi",
-          "workspace_host_path": "/home/lingxi/lingxi-host",
+          "workspace_host_path": "/home/lingxi/.lingxi-host",
           "stable_workspace_id": "12345678-1234-4abc-8def-1234567890ab",
           "abi": "arm64",
           "rootfs_version": "3.24.1",
@@ -269,7 +269,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let config = try LXISHBridgeJSON.decoder().decode(LXISHNativeConfig.self, from: wire)
 
         XCTAssertEqual(config.managedRoot, "/managed")
-        XCTAssertEqual(config.workspaceHostPath, "/home/lingxi/lingxi-host")
+        XCTAssertEqual(config.workspaceHostPath, "/home/lingxi/.lingxi-host")
         XCTAssertEqual(config.stableWorkspaceId, "12345678-1234-4abc-8def-1234567890ab")
         XCTAssertEqual(config.abi, "arm64")
         XCTAssertEqual(config.rootfsVersion, "3.24.1")
@@ -284,7 +284,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let wire = Data("""
         {
           "managedRoot": "/managed",
-          "workspaceHostPath": "/home/lingxi/lingxi-host",
+          "workspaceHostPath": "/home/lingxi/.lingxi-host",
           "stableWorkspaceId": "12345678-1234-4abc-8def-1234567890ab",
           "abi": "arm64",
           "rootfsVersion": "3.24.1"
@@ -294,6 +294,18 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertThrowsError(
             try LXISHBridgeJSON.decoder().decode(LXISHNativeConfig.self, from: wire)
         )
+    }
+
+    func testNativeConfigRequiresEveryBrandField() throws {
+        let config = guestEnvironmentConfig(stableWorkspaceId: "projects")
+        let encoded = try LXISHBridgeJSON.encoder().encode(config)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        for field in ["brand_id", "linux_user", "config_dir_name"] {
+            var missing = object
+            missing.removeValue(forKey: field)
+            let wire = try JSONSerialization.data(withJSONObject: missing)
+            XCTAssertThrowsError(try LXISHBridgeJSON.decoder().decode(LXISHNativeConfig.self, from: wire), field)
+        }
     }
 
     /// WHY the bridge coders carry NO key strategy, pinned as a test: a
@@ -378,12 +390,12 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let stableWorkspaceId = "12345678-1234-4abc-8def-1234567890ab"
         let environment = LXISHGuestEnvironment.merged(
             requestEnvironment: [:],
-            cwd: nil,
+            cwd: "/home/lingxi/.lingxi/code",
             config: guestEnvironmentConfig(stableWorkspaceId: stableWorkspaceId)
         )
 
         XCTAssertEqual(environment["HOME"], "/home/lingxi")
-        XCTAssertEqual(environment["PWD"], "/home/lingxi/lingxi")
+        XCTAssertEqual(environment["PWD"], "/home/lingxi/.lingxi/code")
         XCTAssertEqual(environment["TMPDIR"], "/tmp")
         XCTAssertEqual(environment["PATH"], "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         XCTAssertEqual(environment["XDG_CACHE_HOME"], "/home/lingxi/.cache")
@@ -392,7 +404,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertEqual(environment["SSL_CERT_FILE"], "/etc/ssl/cert.pem")
         XCTAssertEqual(environment["GIT_CONFIG_COUNT"], "1")
         XCTAssertEqual(environment["GIT_CONFIG_KEY_0"], "safe.directory")
-        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab")
+        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab")
         XCTAssertNil(environment["GIT_CONFIG_KEY_1"])
     }
 
@@ -404,13 +416,13 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
                 "GIT_CONFIG_KEY_0": "safe.directory",
                 "GIT_CONFIG_VALUE_0": "*"
             ],
-            cwd: nil,
+            cwd: "/home/lingxi/.lingxi/chat",
             config: guestEnvironmentConfig(stableWorkspaceId: stableWorkspaceId)
         )
 
         XCTAssertEqual(environment["GIT_CONFIG_COUNT"], "1")
         XCTAssertEqual(environment["GIT_CONFIG_KEY_0"], "safe.directory")
-        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab")
+        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab")
     }
 
     func testSecondBrandProfileControlsNativeGuestPathsEnvironmentAndMounts() throws {
@@ -431,19 +443,23 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         try config.validateBrandProfile()
         XCTAssertEqual(config.guestHome, "/home/atlas_guest")
         XCTAssertEqual(config.guestConfigHome, "/home/atlas_guest/.atlas")
-        XCTAssertEqual(config.workspaceRoot, "/home/atlas_guest/atlas")
-        XCTAssertEqual(config.guestWorkspace, "/home/atlas_guest/atlas/projects")
+        XCTAssertEqual(config.workspaceRoot, "/home/atlas_guest/.atlas")
+        XCTAssertEqual(config.guestWorkspace, "/home/atlas_guest/.atlas/projects")
         XCTAssertEqual(config.persistentHomeURL.path, config.managedRoot + "/persistent/atlas_guest")
+        var alternateConfig = config
+        alternateConfig.configDirName = ".custom"
+        XCTAssertEqual(alternateConfig.workspaceRoot, "/home/atlas_guest/.custom")
+        XCTAssertEqual(alternateConfig.guestWorkspace, "/home/atlas_guest/.custom/projects")
 
         let environment = LXISHGuestEnvironment.merged(
             requestEnvironment: [:],
-            cwd: nil,
+            cwd: "/home/atlas_guest/.atlas/chat",
             config: config
         )
         XCTAssertEqual(environment["HOME"], "/home/atlas_guest")
         XCTAssertEqual(environment["USER"], "atlas_guest")
-        XCTAssertEqual(environment["PWD"], "/home/atlas_guest/atlas")
-        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/atlas_guest/atlas/projects")
+        XCTAssertEqual(environment["PWD"], "/home/atlas_guest/.atlas/chat")
+        XCTAssertEqual(environment["GIT_CONFIG_VALUE_0"], "/home/atlas_guest/.atlas/projects")
 
         let mounts = LXISHRuntimeMountPlanner.effectiveMounts(
             requestedMounts: [],
@@ -452,7 +468,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertEqual(mounts.map(\.guestPath), [
             "/home/atlas_guest",
             "/root",
-            "/home/atlas_guest/atlas/projects"
+            "/home/atlas_guest/.atlas/projects"
         ])
         XCTAssertEqual(mounts[0].hostPath, config.persistentHomeURL.path)
     }
@@ -532,7 +548,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
                 ),
                 LXISHMountSpec(
                     hostPath: temporaryRoot.appendingPathComponent("workspace-subdir", isDirectory: true).path,
-                    guestPath: "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab/src",
+                    guestPath: "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab/src",
                     readOnly: false,
                     purpose: "external"
                 ),
@@ -543,8 +559,8 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertEqual(mounts.map(\.guestPath), [
             "/home/lingxi",
             "/root",
-            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
-            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab/src",
+            "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab/src",
         ])
         XCTAssertEqual(mounts[0].hostPath, config.persistentHomeURL.path)
         XCTAssertEqual(
@@ -702,12 +718,12 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             stableWorkspaceId: "projects", abi: "arm64", rootfsVersion: "3.24.1",
             archiveSha256: nil, authorizationFile: nil, rootfsArchivePath: nil, defaultMountPath: nil)
         let external = LXISHMountSpec(hostPath: temporaryRoot.appendingPathComponent("external").path,
-            guestPath: "/home/lingxi/lingxi/projects/external", readOnly: false, purpose: "external")
+            guestPath: "/home/lingxi/.lingxi/projects/external", readOnly: false, purpose: "external")
         let readOnly = LXISHMountSpec(hostPath: workspace.appendingPathComponent("readonly").path,
-            guestPath: "/home/lingxi/lingxi/projects/readonly", readOnly: true, purpose: "external")
+            guestPath: "/home/lingxi/.lingxi/projects/readonly", readOnly: true, purpose: "external")
         for _ in 0..<3 {
             let mounts = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: [external, readOnly], config: config)
-            XCTAssertFalse(mounts.contains { $0.guestPath == "/home/lingxi/lingxi/projects" })
+            XCTAssertFalse(mounts.contains { $0.guestPath == "/home/lingxi/.lingxi/projects" })
             XCTAssertTrue(mounts.contains { $0.guestPath == external.guestPath && $0.hostPath == external.hostPath })
             XCTAssertTrue(mounts.contains { $0.guestPath == readOnly.guestPath && $0.readOnly })
             XCTAssertEqual(try Data(contentsOf: sentinel), Data("keep-workspace-source".utf8))
@@ -738,11 +754,11 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
     func testNaturalWorkspaceReadOnlyRequestIsNotOverriddenByHomeDefault() {
         let managed = temporaryRoot.appendingPathComponent("managed", isDirectory: true)
-        let workspace = managed.appendingPathComponent("persistent/lingxi/lingxi/projects", isDirectory: true)
+        let workspace = managed.appendingPathComponent("persistent/lingxi/.lingxi/projects", isDirectory: true)
         let config = LXISHNativeConfig(managedRoot: managed.path, brandId: "lingxi", linuxUser: "lingxi", configDirName: ".lingxi", workspaceHostPath: workspace.path,
             stableWorkspaceId: "projects", abi: "arm64", rootfsVersion: "3.24.1",
             archiveSha256: nil, authorizationFile: nil, rootfsArchivePath: nil, defaultMountPath: nil)
-        let readOnly = LXISHMountSpec(hostPath: workspace.path, guestPath: "/home/lingxi/lingxi/projects",
+        let readOnly = LXISHMountSpec(hostPath: workspace.path, guestPath: "/home/lingxi/.lingxi/projects",
             readOnly: true, purpose: "workspace")
         let mounts = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: [readOnly], config: config)
         XCTAssertTrue(mounts.contains { $0.guestPath == readOnly.guestPath && $0.hostPath == workspace.path && $0.readOnly })
@@ -754,7 +770,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             LXISHMountSpec(hostPath: "/host/home", guestPath: "/root", readOnly: false, purpose: "home"),
             LXISHMountSpec(
                 hostPath: "/host/workspace",
-                guestPath: "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
+                guestPath: "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab",
                 readOnly: false,
                 purpose: "workspace"
             ),
@@ -782,14 +798,14 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertEqual(result, "ok")
         XCTAssertEqual(runtimeMounts.map(\.guestPath), [
             "/root",
-            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertEqual(applied.count, 2)
         XCTAssertEqual(applied[0].0, ["/var/lingxi/project-mounts/abcd1234/store/project"])
         XCTAssertFalse(applied[0].1)
         XCTAssertEqual(applied[1].0, [
             "/root",
-            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertTrue(applied[1].1)
     }
@@ -799,7 +815,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             LXISHMountSpec(hostPath: "/host/home", guestPath: "/root", readOnly: false, purpose: "home"),
             LXISHMountSpec(
                 hostPath: "/host/workspace",
-                guestPath: "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
+                guestPath: "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab",
                 readOnly: false,
                 purpose: "workspace"
             ),
@@ -830,14 +846,14 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
         XCTAssertEqual(runtimeMounts.map(\.guestPath), [
             "/root",
-            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertEqual(applied.count, 2)
         XCTAssertEqual(applied[0].0, ["/var/lingxi/project-mounts/abcd1234/store/project"])
         XCTAssertFalse(applied[0].1)
         XCTAssertEqual(applied[1].0, [
             "/root",
-            "/home/lingxi/lingxi/12345678-1234-4abc-8def-1234567890ab",
+            "/home/lingxi/.lingxi/12345678-1234-4abc-8def-1234567890ab",
         ])
         XCTAssertTrue(applied[1].1)
     }
@@ -971,6 +987,28 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         XCTAssertThrowsError(try LXISHNativeRootfsManager().installIfNeeded(for: config))
     }
 
+    func testInstallRejectsMissingOrWrongBrandSidecarBeforeMutation() throws {
+        let archive = try makeRootfsArchive(version: "3.24.1")
+        let sidecar = archive.url.deletingLastPathComponent().appendingPathComponent("linux-runtime-manifest.json")
+        let valid = try Data(contentsOf: sidecar)
+        var config = guestEnvironmentConfig(stableWorkspaceId: "projects")
+        config.managedRoot = temporaryRoot.appendingPathComponent("brand-identity-root").path
+        config.archiveSha256 = archive.sha256
+        config.rootfsArchivePath = archive.url.path
+        try FileManager.default.removeItem(at: sidecar)
+        XCTAssertThrowsError(try LXISHNativeRootfsManager().installIfNeeded(for: config))
+        let original = try XCTUnwrap(JSONSerialization.jsonObject(with: valid) as? [String: Any])
+        for field in ["brand_id", "linux_user", "config_dir_name"] {
+            var wrong = original
+            var profile = try XCTUnwrap(wrong["brand_profile"] as? [String: String])
+            profile[field] = "wrong"
+            wrong["brand_profile"] = profile
+            try JSONSerialization.data(withJSONObject: wrong).write(to: sidecar)
+            XCTAssertThrowsError(try LXISHNativeRootfsManager().installIfNeeded(for: config), field)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: config.managedRoot))
+    }
+
     func testInstallRejectsMissingArchiveHash() throws {
         let archive = try makeRootfsArchive(version: "3.24.1")
         let managedRoot = temporaryRoot.appendingPathComponent("managed-root-missing-hash", isDirectory: true)
@@ -1044,6 +1082,14 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let data = try TestZipArchive.make(entries: entries)
         try data.write(to: archiveURL, options: .atomic)
         let sha256 = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let manifest: [String: Any] = [
+            "schema_version": 1, "platform": "ios", "guest_abi": "aarch64",
+            "rootfs_version": version, "rootfs_zip_sha256": sha256,
+            "brand_profile": ["brand_id": "lingxi", "linux_user": "lingxi", "config_dir_name": ".lingxi"]
+        ]
+        try JSONSerialization.data(withJSONObject: manifest).write(
+            to: archiveURL.deletingLastPathComponent().appendingPathComponent("linux-runtime-manifest.json")
+        )
         return (archiveURL, sha256)
     }
 

@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10"
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 mobile-linux-api = { path = "../mobile-linux-api" }
 mobile-linux-core = { path = "../mobile-linux-core" }
