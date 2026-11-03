@@ -500,7 +500,8 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             accountFiles: [
                 "etc/passwd": Data("root:x:0:0:root:/root:/bin/sh\nlingxi:x:1000:1000:LingXi:/home/lingxi:/bin/sh\n".utf8),
                 "etc/group": Data("root:x:0:\nlingxi:x:1000:\n".utf8),
-            ]
+            ],
+            brandProfile: ["brand_id": "atlas", "linux_user": "atlas_guest", "config_dir_name": ".atlas"]
         )
         let managedRoot = temporaryRoot.appendingPathComponent("atlas-managed", isDirectory: true)
         let config = LXISHNativeConfig(
@@ -518,7 +519,9 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             defaultMountPath: nil
         )
 
-        XCTAssertThrowsError(try LXISHNativeRootfsManager().installIfNeeded(for: config))
+        XCTAssertThrowsError(try LXISHNativeRootfsManager().installIfNeeded(for: config)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("UID/GID 1000"), "\(error)")
+        }
         XCTAssertFalse(FileManager.default.fileExists(atPath: config.rootfsURL.path))
     }
 
@@ -1070,7 +1073,8 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
     private func makeRootfsArchive(
         version: String,
-        accountFiles: [String: Data] = [:]
+        accountFiles: [String: Data] = [:],
+        brandProfile: [String: String] = ["brand_id": "lingxi", "linux_user": "lingxi", "config_dir_name": ".lingxi"]
     ) throws -> (url: URL, sha256: String) {
         let archiveURL = temporaryRoot.appendingPathComponent("alpine-rootfs-\(version).zip")
         var entries = [
@@ -1085,7 +1089,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let manifest: [String: Any] = [
             "schema_version": 1, "platform": "ios", "guest_abi": "aarch64",
             "rootfs_version": version, "rootfs_zip_sha256": sha256,
-            "brand_profile": ["brand_id": "lingxi", "linux_user": "lingxi", "config_dir_name": ".lingxi"]
+            "brand_profile": brandProfile
         ]
         try JSONSerialization.data(withJSONObject: manifest).write(
             to: archiveURL.deletingLastPathComponent().appendingPathComponent("linux-runtime-manifest.json")
