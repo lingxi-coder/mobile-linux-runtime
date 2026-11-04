@@ -1,7 +1,7 @@
 //! Pure guest-to-host path translation, independent of a host filesystem trait.
 use crate::filesystem::ensure_real_directory;
 use crate::{RootfsManifestError, RootfsStoreError};
-use mobile_linux_api::{find_guest_mount, MountSpec};
+use mobile_linux_api::{find_guest_mount, parse_guest_path_components, MountSpec};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -32,12 +32,16 @@ pub fn resolve_guest_path(
     }
     // Test the raw spelling: rejected traversal must never fall through to a
     // native filesystem as an apparently unrelated host path.
-    if guest_roots.iter().any(|root| {
-        path == *root
-            || path
-                .strip_prefix(root)
-                .is_some_and(|rest| rest.starts_with('/'))
-    }) {
+    let windows_spelling = path.contains('\\').then(|| path.replace('\\', "/"));
+    let is_guest_owned = |candidate: &str| {
+        guest_roots.iter().any(|root| {
+            candidate == *root
+                || candidate
+                    .strip_prefix(root)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+    };
+    if is_guest_owned(path) || windows_spelling.as_deref().is_some_and(is_guest_owned) {
         return Err(GuestPathError::NotHostBacked);
     }
     Ok(None)
@@ -78,29 +82,32 @@ mod tests {
             Err(GuestPathError::NotHostBacked)
         );
         assert_eq!(
+            resolve_guest_path(r"/home/lingxi/.lingxi\..\secret", &mounts, &roots, false),
+            Err(GuestPathError::NotHostBacked)
+        );
+        assert_eq!(
+            resolve_guest_path(r"/home\lingxi\.lingxi\..\secret", &mounts, &roots, false),
+            Err(GuestPathError::NotHostBacked)
+        );
+        assert_eq!(
             resolve_guest_path("/host/ordinary", &mounts, &roots, false),
             Ok(None)
         );
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn guest_component_cannot_escape_a_windows_root_or_open_a_stream() {
+        let root = Path::new(r"C:\managed\rootfs");
+        assert!(secure_guest_host_path(root, "/usr/C:/escape").is_err());
+        assert!(secure_guest_host_path(root, "/usr/bin/name:stream").is_err());
+    }
 }
 
 pub fn validate_guest_path(path: &str) -> Result<(), RootfsManifestError> {
-    if !path.starts_with('/')
-        || path == "/"
-        || path.ends_with('/')
-        || path.contains("//")
-        || path.as_bytes().contains(&0)
-    {
-        return Err(RootfsManifestError::InvalidGuestPath(path.to_string()));
-    }
-    let parsed = Path::new(path);
-    if parsed
-        .components()
-        .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
-    {
-        return Err(RootfsManifestError::InvalidGuestPath(path.to_string()));
-    }
-    Ok(())
+    parse_guest_path_components(path)
+        .map(|_| ())
+        .ok_or_else(|| RootfsManifestError::InvalidGuestPath(path.to_string()))
 }
 
 pub fn path_is_within_guest_path(path: &str, candidate_parent: &str) -> bool {
@@ -115,32 +122,23 @@ pub fn path_is_within_guest_path(path: &str, candidate_parent: &str) -> bool {
 
 pub fn normalized_guest_path(path: &str) -> Result<String, RootfsManifestError> {
     validate_guest_path(path)?;
-    // Manifest paths name the Linux guest, never the host filesystem. Native
-    // PathBuf::push inserts Windows separators and breaks containment checks.
-    let mut normalized = String::new();
-    for component in Path::new(path).components() {
-        match component {
-            Component::RootDir => {}
-            Component::Normal(segment) => {
-                normalized.push('/');
-                normalized.push_str(&segment.to_string_lossy());
-            }
-            Component::CurDir => {}
-            Component::ParentDir | Component::Prefix(_) => {
-                return Err(RootfsManifestError::InvalidGuestPath(path.to_string()));
-            }
-        }
-    }
-    Ok(normalized)
+    // Validation already requires the canonical Linux guest spelling.
+    Ok(path.to_string())
 }
 
 fn secure_guest_host_path(active_root: &Path, guest_path: &str) -> Result<PathBuf, PathBuf> {
-    let normalized = normalized_guest_path(guest_path).map_err(|_| active_root.to_path_buf())?;
+    let components =
+        parse_guest_path_components(guest_path).ok_or_else(|| active_root.to_path_buf())?;
     let mut host_path = active_root.to_path_buf();
-    for component in Path::new(&normalized).components() {
-        if let Component::Normal(segment) = component {
-            host_path.push(segment);
+    for component in components {
+        let mut parts = Path::new(component).components();
+        if !matches!(parts.next(), Some(Component::Normal(_)))
+            || parts.next().is_some()
+            || (cfg!(windows) && component.contains(':'))
+        {
+            return Err(active_root.to_path_buf());
         }
+        host_path.push(component);
     }
     Ok(host_path)
 }

@@ -109,7 +109,7 @@ impl BrandRuntimeProfile {
     /// Guest home for the Linux account.
     #[must_use]
     pub fn guest_home(&self) -> PathBuf {
-        Path::new("/home").join(&self.linux_user)
+        PathBuf::from(format!("/home/{}", self.linux_user))
     }
 
     /// Guest container for this brand's workspaces and configuration.
@@ -121,19 +121,28 @@ impl BrandRuntimeProfile {
     /// Guest config directory for this product brand.
     #[must_use]
     pub fn config_guest_path(&self) -> PathBuf {
-        self.guest_home().join(&self.config_dir_name)
+        PathBuf::from(format!(
+            "/home/{}/{}",
+            self.linux_user, self.config_dir_name
+        ))
     }
 
     /// Guest projects root for this product brand.
     #[must_use]
     pub fn projects_guest_path(&self) -> PathBuf {
-        self.workspace_container_guest_path().join("projects")
+        PathBuf::from(format!(
+            "/home/{}/{}/projects",
+            self.linux_user, self.config_dir_name
+        ))
     }
 
     /// Guest Local Apps source root for this product brand.
     #[must_use]
     pub fn apps_guest_path(&self) -> PathBuf {
-        self.config_guest_path().join(".apps")
+        PathBuf::from(format!(
+            "/home/{}/{}/.apps",
+            self.linux_user, self.config_dir_name
+        ))
     }
 
     /// Persistent native home below the runtime managed root.
@@ -143,10 +152,42 @@ impl BrandRuntimeProfile {
     }
 }
 
+/// Parse a strictly normalized, absolute Linux guest path on any host OS.
+/// Backslashes are rejected so a guest component cannot become a separator
+/// when the path is mapped to a Windows host.
+#[must_use]
+pub fn parse_guest_path_components(path: &str) -> Option<Vec<&str>> {
+    let relative = path.strip_prefix('/')?;
+    if relative.is_empty() || relative.contains('\\') || relative.contains('\0') {
+        return None;
+    }
+    let components: Vec<_> = relative.split('/').collect();
+    if components
+        .iter()
+        .any(|component| component.is_empty() || matches!(*component, "." | ".."))
+    {
+        return None;
+    }
+    Some(components)
+}
+
+fn push_guest_component_to_host(host: &mut PathBuf, component: &str) -> Option<()> {
+    use std::path::Component;
+    let mut parts = Path::new(component).components();
+    if !matches!(parts.next(), Some(Component::Normal(_)))
+        || parts.next().is_some()
+        || (cfg!(windows) && component.contains(':'))
+    {
+        return None;
+    }
+    host.push(component);
+    Some(())
+}
+
 /// Default guest path conventions shared by portable backends.
 pub mod guest_paths {
     use super::BrandRuntimeProfile;
-    use std::path::{Component, Path, PathBuf};
+    use std::path::{Path, PathBuf};
     /// Default brand path component for the LingXi runtime profile.
     pub const BRAND_ID: &str = "lingxi";
     /// Default config directory component for the LingXi runtime profile.
@@ -234,22 +275,19 @@ pub mod guest_paths {
         guest_path: &str,
     ) -> Option<PathBuf> {
         profile.validate().ok()?;
-        let path = Path::new(guest_path);
-        let root = profile.workspace_container_guest_path();
-        let normalized = path.components().collect::<PathBuf>();
-        if !path.is_absolute()
-            || guest_path.contains('\0')
-            || normalized.as_os_str() != std::ffi::OsStr::new(guest_path)
-            || path
-                .components()
-                .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
-            || path == root
-            || !path.starts_with(&root)
+        let components = super::parse_guest_path_components(guest_path)?;
+        if components.len() < 4
+            || components[0] != "home"
+            || components[1] != profile.linux_user
+            || components[2] != profile.config_dir_name
         {
             return None;
         }
-        let suffix = path.strip_prefix(profile.guest_home()).ok()?;
-        Some(profile.persistent_home_host_path(managed_root).join(suffix))
+        let mut host = profile.persistent_home_host_path(managed_root);
+        for component in &components[2..] {
+            super::push_guest_component_to_host(&mut host, component)?;
+        }
+        Some(host)
     }
     /// Guest path for a stable workspace identifier.
     #[must_use]
@@ -691,8 +729,30 @@ mod map_guest_path_tests {
             map_guest_path_to_host("/home/lingxi/.lingxi/abc/../abc/x", &m),
             None
         );
+        assert_eq!(
+            map_guest_path_to_host("/home/lingxi/.lingxi/abc/./x", &m),
+            None
+        );
+        assert_eq!(
+            map_guest_path_to_host(r"/home/lingxi/.lingxi/abc\..\x", &m),
+            None
+        );
         assert_eq!(map_guest_path_to_host("relative", &m), None);
         assert_eq!(map_guest_path_to_host("/tmp/x", &m), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn guest_component_cannot_replace_the_windows_host_drive() {
+        let m = mounts();
+        assert_eq!(
+            map_guest_path_to_host("/home/lingxi/.lingxi/abc/C:/escape", &m),
+            None
+        );
+        assert_eq!(
+            map_guest_path_to_host("/home/lingxi/.lingxi/abc/name:stream", &m),
+            None
+        );
     }
 
     #[test]
@@ -776,33 +836,11 @@ pub fn find_guest_mount<'a>(
     path: &str,
     mounts: &'a [MountSpec],
 ) -> Option<(&'a MountSpec, std::path::PathBuf)> {
-    use std::path::Component;
-    if !path.starts_with('/') || path.contains("//") || path.as_bytes().contains(&0) {
-        return None;
-    }
-    let components: Vec<&std::ffi::OsStr> = {
-        let mut out = Vec::new();
-        for component in std::path::Path::new(path).components() {
-            match component {
-                Component::RootDir => {}
-                Component::Normal(segment) => out.push(segment),
-                _ => return None,
-            }
-        }
-        out
-    };
+    let components = parse_guest_path_components(path)?;
     let mut best: Option<(&MountSpec, usize)> = None;
     for mount in mounts {
-        let guest: Vec<&std::ffi::OsStr> = {
-            let mut out = Vec::new();
-            for component in std::path::Path::new(&mount.guest_path).components() {
-                match component {
-                    Component::RootDir => {}
-                    Component::Normal(segment) => out.push(segment),
-                    _ => out.clear(),
-                }
-            }
-            out
+        let Some(guest) = parse_guest_path_components(&mount.guest_path) else {
+            continue;
         };
         if !guest.is_empty()
             && components.len() >= guest.len()
@@ -815,7 +853,7 @@ pub fn find_guest_mount<'a>(
     let (mount, prefix_len) = best?;
     let mut host = mount.host_path.clone();
     for segment in &components[prefix_len..] {
-        host.push(segment);
+        push_guest_component_to_host(&mut host, segment)?;
     }
     Some((mount, host))
 }
@@ -1243,7 +1281,17 @@ mod tests {
     #[test]
     fn branded_workspace_container_uses_config_identity_and_rejects_old_root() {
         let profile = BrandRuntimeProfile::new("atlas", "guest", ".atlas-config");
-        let managed = Path::new("/managed");
+        let managed = std::env::temp_dir().join("mobile-linux-managed-root");
+        let managed = managed.as_path();
+        assert_eq!(guest_paths::home_for_profile(&profile), "/home/guest");
+        assert_eq!(
+            guest_paths::config_home_for_profile(&profile),
+            "/home/guest/.atlas-config"
+        );
+        assert_eq!(
+            guest_paths::projects_root_for_profile(&profile),
+            "/home/guest/.atlas-config/projects"
+        );
         assert_eq!(
             profile.workspace_container_guest_path(),
             Path::new("/home/guest/.atlas-config")
@@ -1271,6 +1319,7 @@ mod tests {
             "/home/guest/.atlas-config//projects",
             "/home/guest/.atlas-config/./projects",
             "/home/guest/.atlas-config/projects/",
+            r"/home/guest/.atlas-config/projects\..\settings",
             "relative",
         ] {
             assert!(

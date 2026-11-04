@@ -204,6 +204,31 @@ fn manifest_requires_the_complete_fixed_writable_path_set() {
 }
 
 #[test]
+fn manifest_writable_guest_paths_follow_the_selected_brand() {
+    let mut manifest = manifest();
+    manifest.brand_profile =
+        mobile_linux_api::BrandRuntimeProfile::new("atlas", "guest", ".atlas-config");
+    manifest.writable_paths = [
+        "/home/guest",
+        "/root",
+        "/tmp",
+        "/var/tmp",
+        "/home/guest/.atlas-config",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    manifest.validate().expect("selected brand paths");
+
+    manifest.writable_paths[4] = "/home/lingxi/.lingxi".into();
+    assert!(matches!(
+        manifest.validate(),
+        Err(RootfsManifestError::WritablePathNotAllowed(path))
+            if path == "/home/lingxi/.lingxi"
+    ));
+}
+
+#[test]
 fn manifest_rejects_non_lowercase_hashes() {
     let mut manifest = manifest();
     manifest.archive.sha256 =
@@ -232,6 +257,14 @@ fn guest_containment_uses_linux_separators_on_every_host() {
         "/home/lingxi/.lingxi/../usr/bin/python3",
         "/home/lingxi/.lingxi"
     ));
+    for invalid in [
+        "/home/lingxi/.lingxi/./bin/python3",
+        "/home/lingxi/.lingxi//bin/python3",
+        r"/home/lingxi/.lingxi\..\usr\bin\python3",
+        "/home/lingxi/.lingxi/bin/python3/",
+    ] {
+        assert!(normalized_guest_path(invalid).is_err(), "{invalid:?}");
+    }
 }
 
 #[test]

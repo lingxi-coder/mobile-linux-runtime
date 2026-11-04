@@ -13,11 +13,17 @@ pub fn is_persistent_user_workspace(
     if !matches!(mount.purpose, MountPurpose::Workspace) {
         return false;
     }
-    let guest = Path::new(&mount.guest_path);
-    let container = profile.workspace_container_guest_path();
+    let container = guest_paths::workspace_root_for_profile(profile);
     if !["chat", "code", "projects", "scheduled"]
         .iter()
-        .any(|name| guest.starts_with(container.join(name)))
+        .any(|name| {
+            let prefix = format!("{container}/{name}");
+            mount.guest_path == prefix
+                || mount
+                    .guest_path
+                    .strip_prefix(&prefix)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
     {
         return false;
     }
