@@ -1070,6 +1070,78 @@ public func FfiConverterTypeRuntimeHandle_lower(_ value: RuntimeHandle) -> Unsaf
     return FfiConverterTypeRuntimeHandle.lower(value)
 }
 
+/**
+ * Product identity used for guest account, workspace, and configuration paths.
+ */
+public struct BrandRuntimeProfileFfi {
+    public var brandId: String
+    public var linuxUser: String
+    public var configDirName: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(brandId: String, linuxUser: String, configDirName: String) {
+        self.brandId = brandId
+        self.linuxUser = linuxUser
+        self.configDirName = configDirName
+    }
+}
+
+extension BrandRuntimeProfileFfi: Equatable, Hashable {
+    public static func == (lhs: BrandRuntimeProfileFfi, rhs: BrandRuntimeProfileFfi) -> Bool {
+        if lhs.brandId != rhs.brandId {
+            return false
+        }
+        if lhs.linuxUser != rhs.linuxUser {
+            return false
+        }
+        if lhs.configDirName != rhs.configDirName {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(brandId)
+        hasher.combine(linuxUser)
+        hasher.combine(configDirName)
+    }
+}
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBrandRuntimeProfileFfi: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BrandRuntimeProfileFfi {
+        return
+            try BrandRuntimeProfileFfi(
+                brandId: FfiConverterString.read(from: &buf),
+                linuxUser: FfiConverterString.read(from: &buf),
+                configDirName: FfiConverterString.read(from: &buf)
+            )
+    }
+
+    public static func write(_ value: BrandRuntimeProfileFfi, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.brandId, into: &buf)
+        FfiConverterString.write(value.linuxUser, into: &buf)
+        FfiConverterString.write(value.configDirName, into: &buf)
+    }
+}
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBrandRuntimeProfileFfi_lift(_ buf: RustBuffer) throws -> BrandRuntimeProfileFfi {
+    return try FfiConverterTypeBrandRuntimeProfileFfi.lift(buf)
+}
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBrandRuntimeProfileFfi_lower(_ value: BrandRuntimeProfileFfi) -> RustBuffer {
+    return FfiConverterTypeBrandRuntimeProfileFfi.lower(value)
+}
+
 public struct EnforcementReceiptFfi {
     public var networkPolicyEnforced: Bool
     public var memoryLimitEnforced: Bool
@@ -2497,6 +2569,7 @@ public func FfiConverterTypeResourceLimitsFfi_lower(_ value: ResourceLimitsFfi) 
 
 public struct RuntimeConfig {
     public var platform: RuntimePlatform
+    public var brandProfile: BrandRuntimeProfileFfi
     public var managedRoot: String
     public var appSandboxRoot: String
     public var abi: String
@@ -2515,8 +2588,9 @@ public struct RuntimeConfig {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(platform: RuntimePlatform, managedRoot: String, appSandboxRoot: String, abi: String, rootfsVersion: String, archiveSha256: String?, nativeLibraryDir: String?, workspaceHostPath: String?, stableWorkspaceId: String?, authorizationFile: String?, rootfsArchivePath: String?, rootfsPatchPath: String? = nil, defaultMountPath: String?, protectedHostRoots: [String], allowedMountRoots: [String], allowedGuestRoots: [String]) {
+    public init(platform: RuntimePlatform, brandProfile: BrandRuntimeProfileFfi, managedRoot: String, appSandboxRoot: String, abi: String, rootfsVersion: String, archiveSha256: String?, nativeLibraryDir: String?, workspaceHostPath: String?, stableWorkspaceId: String?, authorizationFile: String?, rootfsArchivePath: String?, rootfsPatchPath: String? = nil, defaultMountPath: String?, protectedHostRoots: [String], allowedMountRoots: [String], allowedGuestRoots: [String]) {
         self.platform = platform
+        self.brandProfile = brandProfile
         self.managedRoot = managedRoot
         self.appSandboxRoot = appSandboxRoot
         self.abi = abi
@@ -2538,6 +2612,9 @@ public struct RuntimeConfig {
 extension RuntimeConfig: Equatable, Hashable {
     public static func == (lhs: RuntimeConfig, rhs: RuntimeConfig) -> Bool {
         if lhs.platform != rhs.platform {
+            return false
+        }
+        if lhs.brandProfile != rhs.brandProfile {
             return false
         }
         if lhs.managedRoot != rhs.managedRoot {
@@ -2590,6 +2667,7 @@ extension RuntimeConfig: Equatable, Hashable {
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(platform)
+        hasher.combine(brandProfile)
         hasher.combine(managedRoot)
         hasher.combine(appSandboxRoot)
         hasher.combine(abi)
@@ -2616,6 +2694,7 @@ public struct FfiConverterTypeRuntimeConfig: FfiConverterRustBuffer {
         return
             try RuntimeConfig(
                 platform: FfiConverterTypeRuntimePlatform.read(from: &buf),
+                brandProfile: FfiConverterTypeBrandRuntimeProfileFfi.read(from: &buf),
                 managedRoot: FfiConverterString.read(from: &buf),
                 appSandboxRoot: FfiConverterString.read(from: &buf),
                 abi: FfiConverterString.read(from: &buf),
@@ -2636,6 +2715,7 @@ public struct FfiConverterTypeRuntimeConfig: FfiConverterRustBuffer {
 
     public static func write(_ value: RuntimeConfig, into buf: inout [UInt8]) {
         FfiConverterTypeRuntimePlatform.write(value.platform, into: &buf)
+        FfiConverterTypeBrandRuntimeProfileFfi.write(value.brandProfile, into: &buf)
         FfiConverterString.write(value.managedRoot, into: &buf)
         FfiConverterString.write(value.appSandboxRoot, into: &buf)
         FfiConverterString.write(value.abi, into: &buf)
