@@ -339,6 +339,7 @@ impl RuntimeHandle {
 
 #[uniffi::export]
 pub fn create_runtime(config: RuntimeConfig) -> Result<Arc<RuntimeHandle>, MobileLinuxApiErrorFfi> {
+    let brand_profile = config.brand_profile.validated()?;
     for value in [&config.managed_root, &config.app_sandbox_root] {
         if !std::path::Path::new(value).is_absolute() {
             return Err(MobileLinuxApiErrorFfi::InvalidRequest {
@@ -356,6 +357,7 @@ pub fn create_runtime(config: RuntimeConfig) -> Result<Arc<RuntimeHandle>, Mobil
         let runtime = mobile_linux_android::AndroidProotRuntime::new(
             mobile_linux_android::AndroidProotRuntimeConfig {
                 managed_root: PathBuf::from(&config.managed_root),
+                brand_profile,
                 app_sandbox_root: PathBuf::from(&config.app_sandbox_root),
                 abi: config.abi.clone(),
                 rootfs_version: config.rootfs_version.clone(),
@@ -367,11 +369,12 @@ pub fn create_runtime(config: RuntimeConfig) -> Result<Arc<RuntimeHandle>, Mobil
             runtime: Arc::new(runtime),
         }));
     }
-    create_ios_or_unavailable(config)
+    create_ios_or_unavailable(config, brand_profile)
 }
 
 pub(crate) fn create_ios_or_unavailable(
     config: RuntimeConfig,
+    brand_profile: platform_api::BrandRuntimeProfile,
 ) -> Result<Arc<RuntimeHandle>, MobileLinuxApiErrorFfi> {
     #[cfg(target_os = "ios")]
     if matches!(config.platform, RuntimePlatform::Ios) {
@@ -391,6 +394,7 @@ pub(crate) fn create_ios_or_unavailable(
             })?;
         let runtime = mobile_linux_ios::linked_runtime(mobile_linux_ios::IosIshRuntimeConfig {
             managed_root: PathBuf::from(&config.managed_root),
+            brand_profile,
             app_sandbox_root: PathBuf::from(&config.app_sandbox_root),
             workspace_host_path: PathBuf::from(workspace),
             stable_workspace_id: stable_id.clone(),
@@ -419,6 +423,8 @@ pub(crate) fn create_ios_or_unavailable(
         .map_err(mobile_linux_error_to_ffi)?;
         return Ok(Arc::new(RuntimeHandle { runtime }));
     }
+    #[cfg(not(target_os = "ios"))]
+    let _ = brand_profile;
     let (backend, name) = match config.platform {
         RuntimePlatform::Android => (platform_api::SandboxBackend::AndroidProot, "android"),
         RuntimePlatform::Ios => (platform_api::SandboxBackend::IosIsh, "ios"),

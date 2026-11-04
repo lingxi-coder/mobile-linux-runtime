@@ -4,14 +4,14 @@ uniffi::setup_scaffolding!("mobile_linux_runtime");
 
 mod types;
 pub use types::{
-    EnforcementReceiptFfi, MobileLinuxApiErrorFfi, MobileLinuxCapabilityFfi,
-    MobileLinuxCommandRequestFfi, MobileLinuxCommandResultFfi, MobileLinuxEnvEntryFfi,
-    MobileLinuxEventFfi, MobileLinuxEventKindFfi, MobileLinuxMountPurposeFfi,
-    MobileLinuxMountSpecFfi, MobileLinuxProcessHandleFfi, MobileLinuxPtyOpenRequestFfi,
-    MobileLinuxPtySessionHandleFfi, MobileLinuxPtySizeFfi, MobileLinuxRootfsStateFfi,
-    MobileLinuxRuntimeModeFfi, MobileLinuxStatusFfi, MobileLinuxTaskKindFfi,
-    MobileLinuxTaskSnapshotFfi, MobileLinuxTaskStateFfi, NetworkPolicyFfi, RawStdioHandle,
-    RawStdioOutput, ResourceLimitsFfi, RuntimeConfig, RuntimePlatform,
+    BrandRuntimeProfileFfi, EnforcementReceiptFfi, MobileLinuxApiErrorFfi,
+    MobileLinuxCapabilityFfi, MobileLinuxCommandRequestFfi, MobileLinuxCommandResultFfi,
+    MobileLinuxEnvEntryFfi, MobileLinuxEventFfi, MobileLinuxEventKindFfi,
+    MobileLinuxMountPurposeFfi, MobileLinuxMountSpecFfi, MobileLinuxProcessHandleFfi,
+    MobileLinuxPtyOpenRequestFfi, MobileLinuxPtySessionHandleFfi, MobileLinuxPtySizeFfi,
+    MobileLinuxRootfsStateFfi, MobileLinuxRuntimeModeFfi, MobileLinuxStatusFfi,
+    MobileLinuxTaskKindFfi, MobileLinuxTaskSnapshotFfi, MobileLinuxTaskStateFfi, NetworkPolicyFfi,
+    RawStdioHandle, RawStdioOutput, ResourceLimitsFfi, RuntimeConfig, RuntimePlatform,
 };
 mod conversion;
 mod events;

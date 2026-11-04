@@ -103,8 +103,12 @@ class RealRuntimeSmokeTest {
         )
         assertTrue(result.verifiedFiles > 10)
         passed("verified-real-rootfs-staging")
+        val brand = manifest.getJSONObject("brand_profile")
         val config = RuntimeConfig(
             platform = RuntimePlatform.ANDROID, managedRoot = managed.absolutePath,
+            brandProfile = BrandRuntimeProfileFfi(
+                brand.getString("brand_id"), brand.getString("linux_user"), brand.getString("config_dir_name"),
+            ),
             appSandboxRoot = context.filesDir.absolutePath, abi = deviceAbi,
             rootfsVersion = version, archiveSha256 = archiveSha,
             nativeLibraryDir = context.applicationInfo.nativeLibraryDir,

@@ -3,6 +3,7 @@ import android.app.Activity
 import android.os.Bundle
 import android.widget.TextView
 import io.lingxi.mobilelinux.MobileLinuxRuntime
+import io.lingxi.mobilelinux.bindings.BrandRuntimeProfileFfi
 import io.lingxi.mobilelinux.bindings.RuntimeConfig
 import io.lingxi.mobilelinux.bindings.RuntimePlatform
 import java.io.File
@@ -12,6 +13,8 @@ class MainActivity: Activity() {
         super.onCreate(state)
         val config=RuntimeConfig(
             platform=RuntimePlatform.ANDROID,
+            // Replace this example identity with the selected rootfs profile.
+            brandProfile=BrandRuntimeProfileFfi("example", "example", ".example"),
             managedRoot=File(filesDir,"linux").absolutePath,
             appSandboxRoot=filesDir.absolutePath,
             abi=android.os.Build.SUPPORTED_ABIS.first(),

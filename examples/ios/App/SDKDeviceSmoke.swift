@@ -28,11 +28,18 @@ struct SDKDeviceSmoke {
         guard let rootfsVersion = manifest["rootfs_version"] as? String, !rootfsVersion.isEmpty else {
             throw Failure(message: "missing rootfs version")
         }
+        guard let brand = manifest["brand_profile"] as? [String: String],
+              let brandId = brand["brand_id"], let linuxUser = brand["linux_user"],
+              let configDirName = brand["config_dir_name"] else {
+            throw Failure(message: "missing rootfs brand profile")
+        }
         let files = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("sdk-device-validation-" + String(archiveHash.prefix(16)))
         let workspace = files.appendingPathComponent("workspace-one")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        var config = RuntimeConfig(platform: .ios, managedRoot: files.appendingPathComponent("runtime").path,
+        var config = RuntimeConfig(platform: .ios,
+            brandProfile: BrandRuntimeProfileFfi(brandId: brandId, linuxUser: linuxUser, configDirName: configDirName),
+            managedRoot: files.appendingPathComponent("runtime").path,
             appSandboxRoot: files.path, abi: "aarch64", rootfsVersion: rootfsVersion,
             archiveSha256: manifest["rootfs_zip_sha256"] as? String, nativeLibraryDir: nil,
             workspaceHostPath: workspace.path, stableWorkspaceId: "one", authorizationFile: nil,

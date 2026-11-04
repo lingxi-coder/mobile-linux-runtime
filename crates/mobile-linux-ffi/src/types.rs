@@ -225,9 +225,36 @@ pub enum RuntimePlatform {
     Ios,
 }
 
+/// Product identity used for guest account, workspace, and configuration paths.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BrandRuntimeProfileFfi {
+    pub brand_id: String,
+    pub linux_user: String,
+    pub config_dir_name: String,
+}
+
+impl BrandRuntimeProfileFfi {
+    pub(crate) fn validated(
+        &self,
+    ) -> Result<platform_api::BrandRuntimeProfile, MobileLinuxApiErrorFfi> {
+        let profile = platform_api::BrandRuntimeProfile::new(
+            &self.brand_id,
+            &self.linux_user,
+            &self.config_dir_name,
+        );
+        profile
+            .validate()
+            .map_err(|detail| MobileLinuxApiErrorFfi::InvalidRequest {
+                detail: detail.into(),
+            })?;
+        Ok(profile)
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct RuntimeConfig {
     pub platform: RuntimePlatform,
+    pub brand_profile: BrandRuntimeProfileFfi,
     pub managed_root: String,
     pub app_sandbox_root: String,
     pub abi: String,

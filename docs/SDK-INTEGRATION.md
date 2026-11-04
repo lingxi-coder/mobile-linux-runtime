@@ -139,7 +139,8 @@ Before booting:
    archive filename, the unchanged manifest/SBOM JSON, and a `copyArchive`
    callback. It verifies the archive, immutable inventory, symlinks and SBOM,
    then publishes the staged directory and complete manifest atomically.
-3. Create `MobileLinuxRuntime` with `RuntimeConfig`: platform `ANDROID`, the
+3. Create `MobileLinuxRuntime` with `RuntimeConfig`: platform `ANDROID`, an
+   explicit `brandProfile` matching the verified rootfs manifest, the
    same managed root, absolute app sandbox root, Android ABI (`arm64-v8a` or
    `x86_64`), expected version/hash, and
    `applicationInfo.nativeLibraryDir`. Product preferences are not inferred.
@@ -203,7 +204,8 @@ tarball's SHA-256.
 
 Import `MobileLinuxRuntime` and `MobileLinuxRuntimeBindings`, construct
 `RuntimeConfig`, then call `MobileLinuxRuntime(configuration:)`. Supply platform
-`ios`, app-private absolute `managedRoot` / `appSandboxRoot`, ABI `arm64`, rootfs
+`ios`, an explicit `brandProfile` matching the verified rootfs manifest,
+app-private absolute `managedRoot` / `appSandboxRoot`, ABI `arm64`, rootfs
 version/hash, `workspaceHostPath`, a persistent `stableWorkspaceId`,
 `rootfsArchivePath`, `rootfsPatchPath`, and `defaultMountPath`. The caller also
 chooses `protectedHostRoots`, `allowedMountRoots`, `allowedGuestRoots`, and any

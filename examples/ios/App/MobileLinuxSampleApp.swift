@@ -26,7 +26,10 @@ struct RuntimeView: View {
             do {
                 let files = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 let configuration = RuntimeConfig(
-                    platform: .ios, managedRoot: files.appendingPathComponent("linux").path,
+                    platform: .ios,
+                    // Replace this example identity with the selected rootfs profile.
+                    brandProfile: BrandRuntimeProfileFfi(brandId: "example", linuxUser: "example", configDirName: ".example"),
+                    managedRoot: files.appendingPathComponent("linux").path,
                     appSandboxRoot: files.path, abi: "aarch64", rootfsVersion: "caller-provided-rootfs",
                     archiveSha256: nil, nativeLibraryDir: nil,
                     workspaceHostPath: files.appendingPathComponent("workspace").path,
