@@ -1,6 +1,36 @@
 use mobile_linux_api::{guest_paths, BrandRuntimeProfile, MountPurpose, MountSpec};
 use std::path::Path;
 
+#[cfg(any(windows, test))]
+fn windows_host_spelling_eq(
+    left: impl Iterator<Item = u16>,
+    right: impl Iterator<Item = u16>,
+) -> bool {
+    fn separator(value: u16) -> u16 {
+        if value == u16::from(b'/') {
+            u16::from(b'\\')
+        } else {
+            value
+        }
+    }
+    left.map(separator).eq(right.map(separator))
+}
+
+fn host_path_spelling_eq(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        windows_host_spelling_eq(
+            left.as_os_str().encode_wide(),
+            right.as_os_str().encode_wide(),
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        left.as_os_str() == right.as_os_str()
+    }
+}
+
 /// Whether a workspace is the exact host twin of a directory in the runtime
 /// user's home. Canonical containment prevents symlinks from extending this
 /// exception into rootfs, administrator, or host-owned storage.
@@ -40,8 +70,10 @@ pub fn is_persistent_user_workspace(
     else {
         return false;
     };
-    if mount.host_path.as_os_str() != expected.as_os_str()
-        && mount.host_path.as_os_str() != expected_lexical.as_os_str()
+    // Windows accepts either slash as a native separator. Only normalize that
+    // distinction here; canonicalization below still rejects aliases/symlinks.
+    if !host_path_spelling_eq(&mount.host_path, &expected)
+        && !host_path_spelling_eq(&mount.host_path, &expected_lexical)
     {
         return false;
     }
@@ -63,6 +95,26 @@ pub fn is_persistent_user_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_host_spelling_normalizes_only_separator_direction() {
+        let expected = r"C:\managed\persistent\guest\.atlas-config\code\nested";
+        assert!(windows_host_spelling_eq(
+            r"C:\managed/persistent\guest\.atlas-config/code/nested".encode_utf16(),
+            expected.encode_utf16(),
+        ));
+        for alias in [
+            r"C:\managed\persistent\guest\.atlas-config\code\.\nested",
+            r"C:\managed\persistent\guest\.atlas-config\code\..\nested",
+            r"C:\managed\persistent\guest\.atlas-config\code\\nested",
+            r"C:\managed\persistent\guest\.atlas-config\CODE\nested",
+        ] {
+            assert!(!windows_host_spelling_eq(
+                alias.encode_utf16(),
+                expected.encode_utf16()
+            ));
+        }
+    }
 
     #[test]
     fn accepts_only_corresponding_user_workspaces() {
