@@ -635,7 +635,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
     func testRepeatedNativeMountPlanningPreservesNestedPersistentWorkspaceMarker() throws {
         let managedRoot = temporaryRoot.appendingPathComponent("nested-workspace-managed", isDirectory: true)
         let persistentHome = managedRoot.appendingPathComponent("persistent/lingxi", isDirectory: true)
-        let workspaceHost = persistentHome.appendingPathComponent("lingxi/projects", isDirectory: true)
+        let workspaceHost = persistentHome.appendingPathComponent(".lingxi/projects", isDirectory: true)
         let marker = workspaceHost.appendingPathComponent("marker.txt")
         try FileManager.default.createDirectory(at: workspaceHost, withIntermediateDirectories: true)
         try Data("workspace marker survives repeated mount planning".utf8).write(to: marker)
@@ -713,7 +713,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
     func testPersistentWorkspaceIsCoveredByHomeWithoutDroppingExternalOrReadOnlyOverlays() throws {
         let managed = temporaryRoot.appendingPathComponent("managed", isDirectory: true)
         let home = managed.appendingPathComponent("persistent/lingxi", isDirectory: true)
-        let workspace = home.appendingPathComponent("lingxi/projects", isDirectory: true)
+        let workspace = home.appendingPathComponent(".lingxi/projects", isDirectory: true)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         let sentinel = workspace.appendingPathComponent("source.txt")
         try Data("keep-workspace-source".utf8).write(to: sentinel)
