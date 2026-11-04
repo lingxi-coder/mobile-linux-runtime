@@ -137,7 +137,8 @@ Before booting:
 2. Call `RootfsInstaller.stage` on an I/O worker with an app-private
    `managedRoot`, expected version/hash, manifest ABI (`arm64` or `x86_64`),
    archive filename, the unchanged manifest/SBOM JSON, and a `copyArchive`
-   callback. It verifies the archive, immutable inventory, symlinks and SBOM,
+   callback and the caller-selected `expectedBrandProfile`. It verifies the
+   archive, profile, immutable inventory, symlinks and SBOM,
    then publishes the staged directory and complete manifest atomically.
 3. Create `MobileLinuxRuntime` with `RuntimeConfig`: platform `ANDROID`, an
    explicit `brandProfile` matching the verified rootfs manifest, the

@@ -16,6 +16,8 @@ import java.nio.file.Files
 import java.security.MessageDigest
 
 class LinuxRuntimeBridgeRootfsInstallerTest {
+    private val testBrand = BrandRuntimeProfile("lingxi", "lingxi", ".lingxi")
+
     @Test
     fun stage_rejectsArchiveTraversalBeforeCallingWriter() {
         val managedRoot = Files.createTempDirectory("rootfs-traversal").toFile()
@@ -23,7 +25,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
             for (name in listOf("../escape", "/tmp/escape", "..\\escape", ".", "")) {
                 var writerCalled = false
                 assertThrows(IllegalArgumentException::class.java) {
-                    RootfsInstaller.stage(managedRoot, "version", "sha", "arm64", name, "{}", "{}", { writerCalled = true })
+                    RootfsInstaller.stage(managedRoot, "version", "sha", "arm64", name, "{}", "{}", testBrand, { writerCalled = true })
                 }
                 assertFalse(writerCalled)
             }
@@ -41,7 +43,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
             for (version in listOf("", ".", "..", "nested/..", "a/b", "a\\b", "a\u0000b", "/tmp/outside")) {
                 var copied = false
                 assertThrows(IllegalArgumentException::class.java) {
-                    RootfsInstaller.stage(managed, version, "sha", "arm64", "archive.tar.gz", "{}", "{}", { copied = true })
+                    RootfsInstaller.stage(managed, version, "sha", "arm64", "archive.tar.gz", "{}", "{}", testBrand, { copied = true })
                 }
                 assertFalse(copied)
                 assertEquals("keep", marker.readText())
@@ -72,11 +74,60 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
                 assertTrue(manifest != good)
                 assertThrows(IllegalStateException::class.java) {
                     RootfsInstaller.stage(managed, "3.21.3", sha256(archive), "arm64", "rootfs.tar.gz", manifest,
-                        sbomJson("busybox"), { it.writeBytes(archive) })
+                        sbomJson("busybox"), testBrand, { it.writeBytes(archive) })
                 }
                 assertFalse(File(managed, "staged").exists())
             }
         } finally { managed.deleteRecursively() }
+    }
+
+    @Test
+    fun stage_uses_the_selected_brand_for_identity_and_writable_inventory() {
+        val parent = Files.createTempDirectory("rootfs-second-brand").toFile()
+        try {
+            val selected = BrandRuntimeProfile("atlas", "atlas_guest", ".atlas")
+            val binary = "#!/bin/sh\n".toByteArray()
+            val mutable = "guest state".toByteArray()
+            val archive = tarGz(
+                TarSpec.file("bin/busybox", binary, 493),
+                TarSpec.hardlink("bin/sh", "bin/busybox"),
+                TarSpec.file("home/atlas_guest/.atlas/state", mutable, 420),
+            )
+            val inventory = listOf(immutableFile("/bin/busybox", binary), immutableFile("/bin/sh", binary))
+            val manifest = manifestJson("rootfs.tar.gz", archive, inventory,
+                listOf(RootfsAllowlistEntryData("/bin/busybox", sha256(binary), "interpreter", binary.size.toLong())),
+                brandProfile = selected)
+            val staged = RootfsInstaller.stage(File(parent, "good"), "3.21.3", sha256(archive), "arm64",
+                "rootfs.tar.gz", manifest, sbomJson("busybox"), selected, { it.writeBytes(archive) })
+            assertEquals("guest state", File(staged.stagedRoot, "home/atlas_guest/.atlas/state").readText())
+            assertEquals(2, staged.verifiedFiles)
+
+            val other = BrandRuntimeProfile("other", "atlas_guest", ".atlas")
+            assertThrows(IllegalStateException::class.java) {
+                RootfsInstaller.stage(File(parent, "wrong-brand"), "3.21.3", sha256(archive), "arm64",
+                    "rootfs.tar.gz", manifest, sbomJson("busybox"), other, { it.writeBytes(archive) })
+            }
+            val wrongWritable = manifest.replace("/home/atlas_guest/.atlas", "/home/other/.other")
+            assertTrue(wrongWritable != manifest)
+            assertThrows(IllegalStateException::class.java) {
+                RootfsInstaller.stage(File(parent, "wrong-path"), "3.21.3", sha256(archive), "arm64",
+                    "rootfs.tar.gz", wrongWritable, sbomJson("busybox"), selected, { it.writeBytes(archive) })
+            }
+            assertFalse(File(parent, "wrong-brand/staged").exists())
+            assertFalse(File(parent, "wrong-path/staged").exists())
+        } finally { parent.deleteRecursively() }
+    }
+
+    @Test
+    fun brand_profile_rejects_unsafe_guest_components() {
+        for ((brand, user, config) in listOf(
+            Triple("../atlas", "atlas", ".atlas"),
+            Triple("atlas", "root", ".atlas"),
+            Triple("atlas", "atlas", "../escape"),
+            Triple("atlas", "atlas", "."),
+        )) {
+            assertThrows(IllegalArgumentException::class.java) { BrandRuntimeProfile(brand, user, config) }
+        }
     }
 
     @Test
@@ -87,7 +138,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
             val archiveName = "rootfs.tar.gz"
             val archive = tarGz(TarSpec.file("bin/busybox",bytes,493),TarSpec.hardlink("bin/sh","bin/busybox"))
             val manifest = manifestJson(archiveName,archive,listOf(immutableFile("/bin/busybox",bytes),immutableFile("/bin/sh",bytes)),listOf(RootfsAllowlistEntryData("/bin/busybox",sha256(bytes),"interpreter",bytes.size.toLong())))
-            val result = RootfsInstaller.stage(managed,"3.21.3",sha256(archive),"arm64",archiveName,manifest,sbomJson("busybox"),{it.writeBytes(archive)})
+            val result = RootfsInstaller.stage(managed,"3.21.3",sha256(archive),"arm64",archiveName,manifest,sbomJson("busybox"),testBrand,{it.writeBytes(archive)})
             val source=File(result.stagedRoot,"bin/busybox").toPath()
             val alias=File(result.stagedRoot,"bin/sh").toPath()
             assertEquals(sha256(bytes),sha256(Files.readAllBytes(alias)))
@@ -112,7 +163,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
             val manifest = manifestJson("rootfs.tar.gz", archive, inventory,
                 listOf(RootfsAllowlistEntryData("/bin/busybox", sha256(binary), "interpreter", binary.size.toLong())))
             val result = RootfsInstaller.stage(managed, "3.21.3", sha256(archive), "arm64", "rootfs.tar.gz", manifest,
-                sbomJson("busybox"), { it.writeBytes(archive) })
+                sbomJson("busybox"), testBrand, { it.writeBytes(archive) })
             assertEquals(2541, (Files.getAttribute(File(result.stagedRoot, "usr/bin/doas").toPath(), "unix:mode") as Int) and 4095)
             assertEquals(384, (Files.getAttribute(File(result.stagedRoot, "etc/doas.conf").toPath(), "unix:mode") as Int) and 4095)
         } finally { managed.deleteRecursively() }
@@ -160,6 +211,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
                 archiveName = archiveName,
                 manifestJson = manifestJson,
                 sbomJson = sbomJson("busybox"),
+                expectedBrandProfile = testBrand,
                 copyArchive = { target -> target.writeBytes(archiveBytes) },
             )
 
@@ -213,6 +265,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
                         ),
                     ),
                     sbomJson = sbomJson("busybox"),
+                    expectedBrandProfile = testBrand,
                     copyArchive = { target -> target.writeBytes(archiveBytes) },
                 )
             }
@@ -262,6 +315,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
                     archiveName = archiveName,
                     manifestJson = manifestJson,
                     sbomJson = sbomJson("busybox"),
+                    expectedBrandProfile = testBrand,
                     copyArchive = { target -> target.writeBytes(archiveBytes) },
                 )
             }
@@ -310,6 +364,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
                     archiveName = archiveName,
                     manifestJson = manifestJson,
                     sbomJson = sbomJson("busybox"),
+                    expectedBrandProfile = testBrand,
                     copyArchive = { target -> target.writeBytes(archiveBytes) },
                 )
             }
@@ -357,6 +412,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
                         ),
                     ),
                     sbomJson = sbomJson("busybox"),
+                    expectedBrandProfile = testBrand,
                     copyArchive = { target -> target.writeBytes(archiveBytes) },
                     persistManifest = { throw IOException("disk full") },
                 )
@@ -375,6 +431,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
         immutableFiles: List<RootfsImmutableEntryData>,
         executableAllowlist: List<RootfsAllowlistEntryData>,
         archiveSha256: String = sha256(archiveBytes),
+        brandProfile: BrandRuntimeProfile = testBrand,
     ): String {
         val packagesJson = """
             [{"name":"busybox","version":"1.0","license":"GPL-2.0-only","architecture":"aarch64","origin":"busybox"}]
@@ -399,7 +456,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
               "platform": "android",
               "abi": "arm64",
               "rootfs_version": "3.21.3",
-              "brand_profile": {"brand_id":"lingxi","linux_user":"lingxi","config_dir_name":".lingxi"},
+              "brand_profile": {"brand_id":${jsonQuote(brandProfile.brandId)},"linux_user":${jsonQuote(brandProfile.linuxUser)},"config_dir_name":${jsonQuote(brandProfile.configDirName)}},
               "content_sha256": "${canonicalInventorySha256(immutableFiles)}",
               "sbom_filename": "$sbomFileName",
               "source_pins_filename": "$sourcePinsFileName",
@@ -411,7 +468,7 @@ class LinuxRuntimeBridgeRootfsInstallerTest {
               "packages": $packagesJson,
               "executable_allowlist": $allowlistJson,
               "immutable_files": $immutableJson,
-              "writable_paths": ["/home/lingxi", "/root", "/tmp", "/var/tmp", "/home/lingxi/.lingxi"]
+              "writable_paths": ${MobileLinuxGuestPaths.writableRoots(brandProfile).joinToString(prefix = "[", postfix = "]") { jsonQuote(it) }}
             }
         """.trimIndent()
     }

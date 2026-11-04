@@ -28,17 +28,21 @@ struct SDKDeviceSmoke {
         guard let rootfsVersion = manifest["rootfs_version"] as? String, !rootfsVersion.isEmpty else {
             throw Failure(message: "missing rootfs version")
         }
+        // This acceptance fixture targets the LingXi release rootfs. Keep its
+        // expected identity independent of the resource manifest being tested.
+        let expectedBrand = BrandRuntimeProfileFfi(brandId: "lingxi", linuxUser: "lingxi", configDirName: ".lingxi")
         guard let brand = manifest["brand_profile"] as? [String: String],
-              let brandId = brand["brand_id"], let linuxUser = brand["linux_user"],
-              let configDirName = brand["config_dir_name"] else {
-            throw Failure(message: "missing rootfs brand profile")
+              brand["brand_id"] == expectedBrand.brandId,
+              brand["linux_user"] == expectedBrand.linuxUser,
+              brand["config_dir_name"] == expectedBrand.configDirName else {
+            throw Failure(message: "rootfs brand does not match the smoke fixture")
         }
         let files = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("sdk-device-validation-" + String(archiveHash.prefix(16)))
         let workspace = files.appendingPathComponent("workspace-one")
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         var config = RuntimeConfig(platform: .ios,
-            brandProfile: BrandRuntimeProfileFfi(brandId: brandId, linuxUser: linuxUser, configDirName: configDirName),
+            brandProfile: expectedBrand,
             managedRoot: files.appendingPathComponent("runtime").path,
             appSandboxRoot: files.path, abi: "aarch64", rootfsVersion: rootfsVersion,
             archiveSha256: manifest["rootfs_zip_sha256"] as? String, nativeLibraryDir: nil,

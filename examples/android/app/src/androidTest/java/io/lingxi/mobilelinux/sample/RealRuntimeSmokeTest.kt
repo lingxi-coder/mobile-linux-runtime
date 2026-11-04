@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.lingxi.mobilelinux.MobileLinuxRuntime
 import io.lingxi.mobilelinux.RootfsInstaller
+import io.lingxi.mobilelinux.BrandRuntimeProfile
 import io.lingxi.mobilelinux.bindings.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -94,20 +95,23 @@ class RealRuntimeSmokeTest {
         val version = manifest.getString("rootfs_version")
         val managed = File(context.filesDir, "sdk-real-runtime")
         check(!managed.exists() || managed.deleteRecursively())
+        // This smoke fixture exercises the LingXi release rootfs and checks its
+        // identity against a test expectation independent of the manifest.
+        val selectedBrand = BrandRuntimeProfile("lingxi", "lingxi", ".lingxi")
         val result = RootfsInstaller.stage(
             managedRoot = managed, expectedRootfsVersion = version,
             expectedArchiveSha = archiveSha, expectedManifestAbi = manifest.getString("abi"),
             archiveName = archiveRecord.getString("filename"), manifestJson = manifestText,
             sbomJson = File(inputs, "rootfs.spdx.json").readText(),
+            expectedBrandProfile = selectedBrand,
             copyArchive = { destination -> archive.copyTo(destination, overwrite = true) },
         )
         assertTrue(result.verifiedFiles > 10)
         passed("verified-real-rootfs-staging")
-        val brand = manifest.getJSONObject("brand_profile")
         val config = RuntimeConfig(
             platform = RuntimePlatform.ANDROID, managedRoot = managed.absolutePath,
             brandProfile = BrandRuntimeProfileFfi(
-                brand.getString("brand_id"), brand.getString("linux_user"), brand.getString("config_dir_name"),
+                selectedBrand.brandId, selectedBrand.linuxUser, selectedBrand.configDirName,
             ),
             appSandboxRoot = context.filesDir.absolutePath, abi = deviceAbi,
             rootfsVersion = version, archiveSha256 = archiveSha,

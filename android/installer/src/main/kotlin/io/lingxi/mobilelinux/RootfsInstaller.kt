@@ -20,7 +20,6 @@ import java.util.UUID
 private const val ROOTFS_MANIFEST_FILE = "rootfs-manifest.json"
 private const val ROOTFS_SBOM_FILE = "rootfs.spdx.json"
 private const val ROOTFS_SOURCE_PINS_FILE = "mobile-linux-pins.json"
-private val ROOTFS_ALLOWED_WRITABLE_PATHS = MobileLinuxGuestPaths.writableRoots
 private const val MAX_ROOTFS_SYMLINK_EXPANSIONS = 40
 
 private fun manifestAbiFor(abi: String): String =
@@ -46,6 +45,7 @@ public object RootfsInstaller {
         archiveName: String,
         manifestJson: String,
         sbomJson: String,
+        expectedBrandProfile: BrandRuntimeProfile,
         copyArchive: (File) -> Unit,
         persistManifest: ((String) -> Unit)? = null,
     ): StageResult {
@@ -78,6 +78,7 @@ public object RootfsInstaller {
                 expectedArchiveName = archiveName,
                 actualArchiveSha = actualArchiveSha,
                 actualArchiveSize = archive.length(),
+                expectedBrandProfile = expectedBrandProfile,
             )
             validateSbom(manifest, sbomJson)
 
@@ -95,6 +96,7 @@ public object RootfsInstaller {
                 val inventory = collectImmutableInventory(
                     root = temporary.toPath(),
                     guestSymlinkPayloads = extracted.guestSymlinkPayloads,
+                    writableRoots = MobileLinuxGuestPaths.writableRoots(expectedBrandProfile),
                 )
                 val actualContentSha = canonicalInventorySha256(inventory.entries)
                 check(inventory.entries == manifest.immutableFiles) {
@@ -141,6 +143,7 @@ public object RootfsInstaller {
         expectedArchiveName: String,
         actualArchiveSha: String,
         actualArchiveSize: Long,
+        expectedBrandProfile: BrandRuntimeProfile,
     ): RootfsManifestData {
         val manifest = parseJsonObject(raw, "rootfs manifest")
         requireExactKeys(
@@ -169,9 +172,9 @@ public object RootfsInstaller {
         val brand = manifest.requireObject("brand_profile", "rootfs manifest")
         requireExactKeys(brand, setOf("brand_id", "linux_user", "config_dir_name"), "rootfs brand profile")
         check(
-            brand.requireString("brand_id", "rootfs brand profile") == "lingxi" &&
-                brand.requireString("linux_user", "rootfs brand profile") == "lingxi" &&
-                brand.requireString("config_dir_name", "rootfs brand profile") == ".lingxi",
+            brand.requireString("brand_id", "rootfs brand profile") == expectedBrandProfile.brandId &&
+                brand.requireString("linux_user", "rootfs brand profile") == expectedBrandProfile.linuxUser &&
+                brand.requireString("config_dir_name", "rootfs brand profile") == expectedBrandProfile.configDirName,
         ) { "rootfs brand profile does not match this installer" }
         val runtime = manifest.requireString("runtime", "rootfs manifest")
         val platform = manifest.requireString("platform", "rootfs manifest")
@@ -303,8 +306,9 @@ public object RootfsInstaller {
         }
 
         val writablePaths = manifest.requireArray("writable_paths", "rootfs manifest").mapStrings("rootfs writable paths").also {
-            check(it.toSet() == ROOTFS_ALLOWED_WRITABLE_PATHS && it.size == ROOTFS_ALLOWED_WRITABLE_PATHS.size) {
-                "rootfs writable paths must be exactly ${ROOTFS_ALLOWED_WRITABLE_PATHS.joinToString()}"
+            val expectedWritable = MobileLinuxGuestPaths.writableRoots(expectedBrandProfile)
+            check(it.toSet() == expectedWritable && it.size == expectedWritable.size) {
+                "rootfs writable paths must be exactly ${expectedWritable.joinToString()}"
             }
         }
 
@@ -436,6 +440,7 @@ public object RootfsInstaller {
     private fun collectImmutableInventory(
         root: Path,
         guestSymlinkPayloads: Map<String, String>,
+        writableRoots: Set<String>,
     ): InventorySummary {
         val entries = mutableListOf<RootfsImmutableEntryData>()
         var totalBytes = 0L
@@ -445,7 +450,7 @@ public object RootfsInstaller {
             }
             for (child in children) {
                 val guestPath = hostPathToGuestPath(root, child)
-                if (isWritableInventoryPath(guestPath)) continue
+                if (isWritableInventoryPath(guestPath, writableRoots)) continue
                 val attributes = Files.readAttributes(
                     child,
                     BasicFileAttributes::class.java,
@@ -890,8 +895,8 @@ private fun hostPathToGuestPath(root: Path, path: Path): String {
     return "/$relative"
 }
 
-private fun isWritableInventoryPath(path: String): Boolean =
-    ROOTFS_ALLOWED_WRITABLE_PATHS.any { path == it || path.startsWith("$it/") }
+private fun isWritableInventoryPath(path: String, writableRoots: Set<String>): Boolean =
+    writableRoots.any { path == it || path.startsWith("$it/") }
 
 private fun prepareFileTarget(target: Path) {
     check(!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
