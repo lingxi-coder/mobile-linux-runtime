@@ -112,10 +112,13 @@ impl BrandRuntimeProfile {
         PathBuf::from(format!("/home/{}", self.linux_user))
     }
 
-    /// Guest container for this brand's workspaces and configuration.
+    /// Guest workspace container, separate from private configuration.
     #[must_use]
     pub fn workspace_container_guest_path(&self) -> PathBuf {
-        self.config_guest_path()
+        PathBuf::from(format!(
+            "/home/{}/{}-workspaces",
+            self.linux_user, self.config_dir_name
+        ))
     }
 
     /// Guest config directory for this product brand.
@@ -131,7 +134,7 @@ impl BrandRuntimeProfile {
     #[must_use]
     pub fn projects_guest_path(&self) -> PathBuf {
         PathBuf::from(format!(
-            "/home/{}/{}/projects",
+            "/home/{}/{}-workspaces/projects",
             self.linux_user, self.config_dir_name
         ))
     }
@@ -140,7 +143,7 @@ impl BrandRuntimeProfile {
     #[must_use]
     pub fn apps_guest_path(&self) -> PathBuf {
         PathBuf::from(format!(
-            "/home/{}/{}/.apps",
+            "/home/{}/{}-workspaces/apps",
             self.linux_user, self.config_dir_name
         ))
     }
@@ -204,7 +207,7 @@ pub mod guest_paths {
     /// Default writable scratch directories.
     pub const SCRATCH: &[&str] = &["/tmp", "/var/tmp"];
     /// Default parent of workspace mounts.
-    pub const WORKSPACE_ROOT: &str = "/home/lingxi/.lingxi";
+    pub const WORKSPACE_ROOT: &str = "/home/lingxi/.lingxi-workspaces";
     /// Guest workspace root for a selected profile.
     #[must_use]
     pub fn workspace_root_for_profile(profile: &BrandRuntimeProfile) -> String {
@@ -279,7 +282,7 @@ pub mod guest_paths {
         if components.len() < 4
             || components[0] != "home"
             || components[1] != profile.linux_user
-            || components[2] != profile.config_dir_name
+            || components[2] != format!("{}-workspaces", profile.config_dir_name)
         {
             return None;
         }
@@ -1290,29 +1293,30 @@ mod tests {
         );
         assert_eq!(
             guest_paths::projects_root_for_profile(&profile),
-            "/home/guest/.atlas-config/projects"
+            "/home/guest/.atlas-config-workspaces/projects"
         );
         assert_eq!(
             profile.workspace_container_guest_path(),
-            Path::new("/home/guest/.atlas-config")
+            Path::new("/home/guest/.atlas-config-workspaces")
         );
         assert_eq!(
             guest_paths::workspace_for_profile(&profile, "projects"),
-            "/home/guest/.atlas-config/projects"
+            "/home/guest/.atlas-config-workspaces/projects"
         );
         for workspace in ["chat", "code", "projects", "scheduled/job"] {
-            let guest = format!("/home/guest/.atlas-config/{workspace}");
+            let guest = format!("/home/guest/.atlas-config-workspaces/{workspace}");
             assert_eq!(
                 guest_paths::workspace_host_path_for_profile(managed, &profile, &guest),
                 Some(
                     managed
-                        .join("persistent/guest/.atlas-config")
+                        .join("persistent/guest/.atlas-config-workspaces")
                         .join(workspace)
                 )
             );
         }
         for invalid in [
-            "/home/guest/.atlas-config",
+            "/home/guest/.atlas-config/projects",
+            "/home/guest/.atlas-config-workspaces",
             "/home/guest/atlas/projects",
             "/home/guest/.atlas-config-other/code",
             "/home/guest/.atlas-config/projects/../settings",
@@ -1320,16 +1324,25 @@ mod tests {
             "/home/guest/.atlas-config/./projects",
             "/home/guest/.atlas-config/projects/",
             r"/home/guest/.atlas-config/projects\..\settings",
+            "/home/guest/.atlas-config-workspaces-other/code",
+            "/home/guest/.atlas-config-workspaces/projects/../settings",
+            "/home/guest/.atlas-config-workspaces//projects",
+            "/home/guest/.atlas-config-workspaces/./projects",
+            "/home/guest/.atlas-config-workspaces/projects/",
+            r"/home/guest/.atlas-config-workspaces/projects\..\settings",
             "relative",
         ] {
             assert!(
                 guest_paths::workspace_host_path_for_profile(managed, &profile, invalid).is_none()
             );
         }
-        assert_eq!(guest_paths::WORKSPACE_ROOT, "/home/lingxi/.lingxi");
+        assert_eq!(
+            guest_paths::WORKSPACE_ROOT,
+            "/home/lingxi/.lingxi-workspaces"
+        );
         assert_eq!(
             guest_paths::projects_root(),
-            "/home/lingxi/.lingxi/projects"
+            "/home/lingxi/.lingxi-workspaces/projects"
         );
     }
 

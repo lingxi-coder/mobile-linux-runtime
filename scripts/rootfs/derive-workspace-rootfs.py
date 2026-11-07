@@ -58,7 +58,7 @@ if manifest.get("brand_profile") is not None or set(manifest["writable_paths"]) 
     raise SystemExit("historical manifest does not match the pinned input contract")
 adapted = copy.deepcopy(manifest)
 adapted["brand_profile"] = {"brand_id": "lingxi", "linux_user": "lingxi", "config_dir_name": ".lingxi"}
-adapted["writable_paths"] = sorted({"/home/lingxi", "/home/lingxi/.lingxi", "/root", "/tmp", "/var/tmp"})
+adapted["writable_paths"] = sorted({"/home/lingxi", "/home/lingxi/.lingxi-workspaces", "/root", "/tmp", "/var/tmp"})
 with tempfile.TemporaryDirectory(prefix="historical-rootfs-evidence-") as temporary:
     temporary = Path(temporary)
     for name in ("rootfs-build.lock.json", "rootfs.spdx.json", "executable-allowlist.json"):
@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix="historical-rootfs-evidence-") as tempor
 
 old = "home/lingxi/lingxi"
 home = "home/lingxi"
-added = ("home/lingxi/.lingxi", "home/lingxi/.lingxi/projects")
+added = ("home/lingxi/.lingxi", "home/lingxi/.lingxi-workspaces", "home/lingxi/.lingxi-workspaces/projects")
 with tarfile.open(archive, "r:gz") as source:
     members = source.getmembers()
     names = [member.name.rstrip("/") for member in members]

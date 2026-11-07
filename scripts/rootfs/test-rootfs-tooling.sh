@@ -461,7 +461,7 @@ for field in (None, "brand_id", "linux_user", "config_dir_name"):
         raise SystemExit(f"manifest unexpectedly accepted invalid brand field: {field}")
 custom = copy.deepcopy(current)
 custom["brand_profile"] = {"brand_id": "atlas", "linux_user": "atlas_guest", "config_dir_name": ".atlas-config"}
-custom["writable_paths"] = ["/home/atlas_guest", "/home/atlas_guest/.atlas-config", "/root", "/tmp", "/var/tmp"]
+custom["writable_paths"] = ["/home/atlas_guest", "/home/atlas_guest/.atlas-config-workspaces", "/root", "/tmp", "/var/tmp"]
 path = output / "custom-brand-manifest.json"
 path.write_text(json.dumps(custom))
 environment = dict(os.environ, LINGXI_BRAND_ID="atlas", LINGXI_LINUX_USER="atlas_guest", LINGXI_CONFIG_DIR_NAME=".atlas-config")

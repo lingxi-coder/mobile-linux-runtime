@@ -116,14 +116,14 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let config = guestEnvironmentConfig(stableWorkspaceId: "one")
         let environment = LXISHGuestEnvironment.merged(
             requestEnvironment: ["HOME": "/tmp/sdk-home", "BROWSER": "/tmp/caller-browser"],
-            cwd: "/home/lingxi/.lingxi/chat",
+            cwd: "/home/lingxi/.lingxi-workspaces/chat",
             config: config
         )
         XCTAssertEqual(environment["HOME"], "/tmp/sdk-home")
         XCTAssertEqual(environment["BROWSER"], "/tmp/caller-browser")
         XCTAssertNil(LXISHGuestEnvironment.merged(
             requestEnvironment: [:],
-            cwd: "/home/lingxi/.lingxi/chat",
+            cwd: "/home/lingxi/.lingxi-workspaces/chat",
             config: config
         )["BROWSER"])
     }
@@ -390,12 +390,12 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
         let stableWorkspaceId = "12345678-1234-4abc-8def-1234567890ab"
         let environment = LXISHGuestEnvironment.merged(
             requestEnvironment: [:],
-            cwd: "/home/lingxi/.lingxi/code",
+            cwd: "/home/lingxi/.lingxi-workspaces/code",
             config: guestEnvironmentConfig(stableWorkspaceId: stableWorkspaceId)
         )
 
         XCTAssertEqual(environment["HOME"], "/home/lingxi")
-        XCTAssertEqual(environment["PWD"], "/home/lingxi/.lingxi/code")
+        XCTAssertEqual(environment["PWD"], "/home/lingxi/.lingxi-workspaces/code")
         XCTAssertEqual(environment["TMPDIR"], "/tmp")
         XCTAssertEqual(environment["PATH"], "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         XCTAssertEqual(environment["XDG_CACHE_HOME"], "/home/lingxi/.cache")
@@ -416,7 +416,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
                 "GIT_CONFIG_KEY_0": "safe.directory",
                 "GIT_CONFIG_VALUE_0": "*"
             ],
-            cwd: "/home/lingxi/.lingxi/chat",
+            cwd: "/home/lingxi/.lingxi-workspaces/chat",
             config: guestEnvironmentConfig(stableWorkspaceId: stableWorkspaceId)
         )
 
@@ -635,7 +635,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
     func testRepeatedNativeMountPlanningPreservesNestedPersistentWorkspaceMarker() throws {
         let managedRoot = temporaryRoot.appendingPathComponent("nested-workspace-managed", isDirectory: true)
         let persistentHome = managedRoot.appendingPathComponent("persistent/lingxi", isDirectory: true)
-        let workspaceHost = persistentHome.appendingPathComponent(".lingxi/projects", isDirectory: true)
+        let workspaceHost = persistentHome.appendingPathComponent(".lingxi-workspaces/projects", isDirectory: true)
         let marker = workspaceHost.appendingPathComponent("marker.txt")
         try FileManager.default.createDirectory(at: workspaceHost, withIntermediateDirectories: true)
         try Data("workspace marker survives repeated mount planning".utf8).write(to: marker)
@@ -713,7 +713,7 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
     func testPersistentWorkspaceIsCoveredByHomeWithoutDroppingExternalOrReadOnlyOverlays() throws {
         let managed = temporaryRoot.appendingPathComponent("managed", isDirectory: true)
         let home = managed.appendingPathComponent("persistent/lingxi", isDirectory: true)
-        let workspace = home.appendingPathComponent(".lingxi/projects", isDirectory: true)
+        let workspace = home.appendingPathComponent(".lingxi-workspaces/projects", isDirectory: true)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         let sentinel = workspace.appendingPathComponent("source.txt")
         try Data("keep-workspace-source".utf8).write(to: sentinel)
@@ -721,12 +721,12 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
             stableWorkspaceId: "projects", abi: "arm64", rootfsVersion: "3.24.1",
             archiveSha256: nil, authorizationFile: nil, rootfsArchivePath: nil, defaultMountPath: nil)
         let external = LXISHMountSpec(hostPath: temporaryRoot.appendingPathComponent("external").path,
-            guestPath: "/home/lingxi/.lingxi/projects/external", readOnly: false, purpose: "external")
+            guestPath: "/home/lingxi/.lingxi-workspaces/projects/external", readOnly: false, purpose: "external")
         let readOnly = LXISHMountSpec(hostPath: workspace.appendingPathComponent("readonly").path,
-            guestPath: "/home/lingxi/.lingxi/projects/readonly", readOnly: true, purpose: "external")
+            guestPath: "/home/lingxi/.lingxi-workspaces/projects/readonly", readOnly: true, purpose: "external")
         for _ in 0..<3 {
             let mounts = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: [external, readOnly], config: config)
-            XCTAssertFalse(mounts.contains { $0.guestPath == "/home/lingxi/.lingxi/projects" })
+            XCTAssertFalse(mounts.contains { $0.guestPath == "/home/lingxi/.lingxi-workspaces/projects" })
             XCTAssertTrue(mounts.contains { $0.guestPath == external.guestPath && $0.hostPath == external.hostPath })
             XCTAssertTrue(mounts.contains { $0.guestPath == readOnly.guestPath && $0.readOnly })
             XCTAssertEqual(try Data(contentsOf: sentinel), Data("keep-workspace-source".utf8))
@@ -757,11 +757,11 @@ final class MobileLinuxNativeRegressionTests: XCTestCase {
 
     func testNaturalWorkspaceReadOnlyRequestIsNotOverriddenByHomeDefault() {
         let managed = temporaryRoot.appendingPathComponent("managed", isDirectory: true)
-        let workspace = managed.appendingPathComponent("persistent/lingxi/.lingxi/projects", isDirectory: true)
+        let workspace = managed.appendingPathComponent("persistent/lingxi/.lingxi-workspaces/projects", isDirectory: true)
         let config = LXISHNativeConfig(managedRoot: managed.path, brandId: "lingxi", linuxUser: "lingxi", configDirName: ".lingxi", workspaceHostPath: workspace.path,
             stableWorkspaceId: "projects", abi: "arm64", rootfsVersion: "3.24.1",
             archiveSha256: nil, authorizationFile: nil, rootfsArchivePath: nil, defaultMountPath: nil)
-        let readOnly = LXISHMountSpec(hostPath: workspace.path, guestPath: "/home/lingxi/.lingxi/projects",
+        let readOnly = LXISHMountSpec(hostPath: workspace.path, guestPath: "/home/lingxi/.lingxi-workspaces/projects",
             readOnly: true, purpose: "workspace")
         let mounts = LXISHRuntimeMountPlanner.effectiveMounts(requestedMounts: [readOnly], config: config)
         XCTAssertTrue(mounts.contains { $0.guestPath == readOnly.guestPath && $0.hostPath == workspace.path && $0.readOnly })

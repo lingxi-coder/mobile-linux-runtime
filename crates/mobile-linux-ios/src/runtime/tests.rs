@@ -658,7 +658,7 @@ fn command_request() -> LinuxCommandRequest {
     LinuxCommandRequest {
         command: "/bin/sh".to_string(),
         args: vec!["-lc".to_string(), "echo hi".to_string()],
-        cwd: Some("/home/lingxi/.lingxi/default".to_string()),
+        cwd: Some("/home/lingxi/.lingxi-workspaces/default".to_string()),
         env: BTreeMap::from([(String::from("TERM"), String::from("xterm-256color"))]),
         stdin: None,
         timeout_ms: Some(1000),
@@ -708,7 +708,7 @@ fn workspace_mount_accepts_the_managed_workspace_path() {
         normalize_host_path(&config.workspace_host_path, "workspace_host_path")
             .expect("normalized workspace path")
     );
-    assert_eq!(mount.guest_path, "/home/lingxi/.lingxi/default");
+    assert_eq!(mount.guest_path, "/home/lingxi/.lingxi-workspaces/default");
 }
 
 #[test]
@@ -719,16 +719,16 @@ fn branded_projects_mount_is_exact_without_exposing_other_config() {
     config.workspace_host_path = config
         .brand_profile
         .persistent_home_host_path(&config.managed_root)
-        .join(".lingxi/projects");
+        .join(".lingxi-workspaces/projects");
     fs::create_dir_all(&config.workspace_host_path).unwrap();
     let projects = validate_mount(&config.default_workspace_mount(), &config).unwrap();
-    assert_eq!(projects.guest_path, "/home/lingxi/.lingxi/projects");
+    assert_eq!(projects.guest_path, "/home/lingxi/.lingxi-workspaces/projects");
     assert_eq!(
         projects.host_path,
         fs::canonicalize(&config.workspace_host_path).unwrap()
     );
 
-    let grant = project_mount(&config, ".lingxi/projects/project/source");
+    let grant = project_mount(&config, ".lingxi-workspaces/projects/project/source");
     let config = config_with_project_mounts(config, vec![grant.clone()]).unwrap();
     assert!(validate_mount(&grant, &config).is_ok());
     let mut sensitive = config.clone();
@@ -752,7 +752,7 @@ fn managed_workspace_mounts_require_the_exact_profile_mapping() {
         config.workspace_host_path = config
             .brand_profile
             .persistent_home_host_path(&config.managed_root)
-            .join(".lingxi")
+            .join(".lingxi-workspaces")
             .join(name);
         fs::create_dir_all(&config.workspace_host_path).unwrap();
         assert!(
@@ -776,23 +776,23 @@ fn explicit_project_grants_cover_managed_roots_without_granting_siblings() {
     for name in ["chat", "code", "projects"] {
         for suffix in ["", "/selected/source"] {
             let config = test_config(&temp.path().join("app"));
-            let grant = project_mount(&config, &format!(".lingxi/{name}{suffix}"));
+            let grant = project_mount(&config, &format!(".lingxi-workspaces/{name}{suffix}"));
             let config = config_with_project_mounts(config, vec![grant.clone()]).unwrap();
             assert!(validate_mount(&grant, &config).is_ok(), "{name}{suffix}");
-            let sibling = project_mount(&config, &format!(".lingxi/{name}/unselected"));
+            let sibling = project_mount(&config, &format!(".lingxi-workspaces/{name}/unselected"));
             assert!(validate_mount(&sibling, &config).is_err(), "{name}{suffix}");
         }
     }
     let config = test_config(&temp.path().join("app"));
-    let allowed = project_mount(&config, ".lingxi/scheduled/selected/source");
+    let allowed = project_mount(&config, ".lingxi-workspaces/scheduled/selected/source");
     let granted = config_with_project_mounts(config.clone(), vec![allowed.clone()]).unwrap();
     assert!(validate_mount(&allowed, &granted).is_ok());
     for denied in [
-        ".lingxi/scheduled",
-        ".lingxi/scheduled/.lingxi/private",
-        ".lingxi/scheduled/provider",
-        ".lingxi/scheduled/selected/PROVIDERS",
-        ".lingxi/scheduled/selected/Library/Preferences",
+        ".lingxi-workspaces/scheduled",
+        ".lingxi-workspaces/scheduled/.lingxi/private",
+        ".lingxi-workspaces/scheduled/provider",
+        ".lingxi-workspaces/scheduled/selected/PROVIDERS",
+        ".lingxi-workspaces/scheduled/selected/Library/Preferences",
     ] {
         let grant = project_mount(&config, denied);
         assert!(
@@ -806,7 +806,7 @@ fn explicit_project_grants_cover_managed_roots_without_granting_siblings() {
 fn project_mount_grants_are_exact_profile_mapped_and_config_scoped() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config = test_config(&temp.path().join("app"));
-    let grant = project_mount(&config, ".lingxi/.apps/agent-wake-acceptance-abc-123");
+    let grant = project_mount(&config, ".lingxi-workspaces/apps/agent-wake-acceptance-abc-123");
     let config = config_with_project_mounts(config, vec![grant.clone()]).expect("valid grant");
 
     assert!(validate_mount(&grant, &config).is_ok());
@@ -822,14 +822,14 @@ fn project_mount_grants_are_exact_profile_mapped_and_config_scoped() {
     };
     assert!(validate_mount(&changed_purpose, &config).is_err());
 
-    let sibling = project_mount(&config, ".lingxi/.apps/another-app");
+    let sibling = project_mount(&config, ".lingxi-workspaces/apps/another-app");
     assert!(validate_mount(&sibling, &config).is_err());
 
     for relative in [
         ".lingxi",
         ".lingxi/settings",
-        ".lingxi/.apps",
-        ".lingxi/.apps/app/../nested",
+        ".lingxi-workspaces/apps",
+        ".lingxi-workspaces/apps/app/../nested",
     ] {
         let invalid = project_mount(&config, relative);
         let rejected = config_with_project_mounts(config.clone(), vec![invalid]);
@@ -841,17 +841,17 @@ fn project_mount_grants_are_exact_profile_mapped_and_config_scoped() {
 
     let wrong_profile = MountSpec {
         host_path: grant.host_path.clone(),
-        guest_path: "/home/another-user/.lingxi/.apps/agent-wake-acceptance-abc-123".into(),
+        guest_path: "/home/another-user/.lingxi-workspaces/apps/agent-wake-acceptance-abc-123".into(),
         ..grant.clone()
     };
     assert!(config_with_project_mounts(config.clone(), vec![wrong_profile]).is_err());
 
-    let nested_source = project_mount(&config, ".lingxi/.apps/agent app/source");
+    let nested_source = project_mount(&config, ".lingxi-workspaces/apps/agent app/source");
     let nested_config = config_with_project_mounts(config.clone(), vec![nested_source.clone()])
         .expect("nested source is an exact .apps descendant");
     assert!(validate_mount(&nested_source, &nested_config).is_ok());
 
-    let unsafe_leaf = project_mount(&config, ".lingxi/.apps/agent\\app");
+    let unsafe_leaf = project_mount(&config, ".lingxi-workspaces/apps/agent\\app");
     assert!(config_with_project_mounts(config, vec![unsafe_leaf]).is_err());
 }
 
@@ -865,15 +865,15 @@ fn project_grants_follow_the_selected_nondefault_brand_profile() {
             .unwrap()
             .join("persistent/atlas/.atlas"),
     );
-    let grant = project_mount(&config, ".atlas/.apps/project/source");
+    let grant = project_mount(&config, ".atlas-workspaces/apps/project/source");
     let config = config_with_project_mounts(config, vec![grant.clone()]).expect("valid grant");
 
-    assert_eq!(grant.guest_path, "/home/atlas/.atlas/.apps/project/source");
+    assert_eq!(grant.guest_path, "/home/atlas/.atlas-workspaces/apps/project/source");
     assert_eq!(
         grant.host_path,
         normalize_host_path(&config.managed_root, "managed_root")
             .unwrap()
-            .join("persistent/atlas/.atlas/.apps/project/source")
+            .join("persistent/atlas/.atlas-workspaces/apps/project/source")
     );
     assert!(validate_mount(&grant, &config).is_ok());
 }
@@ -909,14 +909,14 @@ fn project_mount_grant_list_is_bounded() {
 fn project_mount_grants_reject_symlink_sources_and_alias_requests() {
     let temp = tempfile::tempdir().expect("tempdir");
     let config = test_config(&temp.path().join("app"));
-    let grant = project_mount(&config, ".lingxi/.apps/agent-wake-acceptance-symlink");
+    let grant = project_mount(&config, ".lingxi-workspaces/apps/agent-wake-acceptance-symlink");
     let app_root = grant.host_path.parent().expect(".apps parent");
     let alias = app_root.join("symlink-alias");
     std::os::unix::fs::symlink(&grant.host_path, &alias).expect("create source symlink");
 
     let symlink_grant = MountSpec {
         host_path: alias.clone(),
-        guest_path: "/home/lingxi/.lingxi/.apps/symlink-alias".into(),
+        guest_path: "/home/lingxi/.lingxi-workspaces/apps/symlink-alias".into(),
         ..grant.clone()
     };
     assert!(config_with_project_mounts(config.clone(), vec![symlink_grant]).is_err());
@@ -936,8 +936,8 @@ async fn project_grants_are_seeded_configurable_and_required_before_per_run_use(
 
     let temp = tempfile::tempdir().expect("tempdir");
     let base = test_config(&temp.path().join("app"));
-    let grant = project_mount(&base, ".lingxi/.apps/agent-wake-acceptance-runtime");
-    let second = project_mount(&base, ".lingxi/.apps/another-acceptance-app");
+    let grant = project_mount(&base, ".lingxi-workspaces/apps/agent-wake-acceptance-runtime");
+    let second = project_mount(&base, ".lingxi-workspaces/apps/another-acceptance-app");
     let config = config_with_project_mounts(base, vec![grant.clone(), second.clone()])
         .expect("valid grants");
     let mut runtime = IosIshRuntime::new_state(config);
@@ -969,7 +969,7 @@ async fn failed_project_mount_reconfiguration_hides_uncertain_table_until_repair
 
     let temp = tempfile::tempdir().expect("tempdir");
     let base = test_config(&temp.path().join("app"));
-    let grant = project_mount(&base, ".lingxi/.apps/agent-wake-acceptance-failure");
+    let grant = project_mount(&base, ".lingxi-workspaces/apps/agent-wake-acceptance-failure");
     let config = config_with_project_mounts(base, vec![grant.clone()]).expect("valid grant");
     let mut runtime = IosIshRuntime::new_state(config);
     let transport = Arc::new(TestProcessTransport::default());
@@ -1006,7 +1006,7 @@ async fn mount_reconfiguration_preserves_live_scope_when_native_rejects_active_p
 
     let temp = tempfile::tempdir().expect("tempdir");
     let base = test_config(&temp.path().join("app"));
-    let grant = project_mount(&base, ".lingxi/.apps/agent-wake-acceptance-running");
+    let grant = project_mount(&base, ".lingxi-workspaces/apps/agent-wake-acceptance-running");
     let config = config_with_project_mounts(base, vec![grant.clone()]).expect("valid grant");
     let mut runtime = IosIshRuntime::new_state(config);
     let transport = Arc::new(TestProcessTransport::default());
@@ -1105,7 +1105,7 @@ fn merged_mounts_keep_default_workspace_and_home_binds() {
     assert_eq!(mounts.len(), 4);
     assert!(mounts
         .iter()
-        .any(|mount| mount.guest_path == "/home/lingxi/.lingxi/default"));
+        .any(|mount| mount.guest_path == "/home/lingxi/.lingxi-workspaces/default"));
     assert!(mounts
         .iter()
         .any(|mount| mount.guest_path == "/home/lingxi"));
@@ -1361,7 +1361,7 @@ fn validate_pty_request_rejects_invalid_env_and_nul() {
     let mut request = PtyOpenRequest {
         command: "/bin/sh".to_string(),
         args: vec!["-i".to_string()],
-        cwd: Some("/home/lingxi/.lingxi/default".to_string()),
+        cwd: Some("/home/lingxi/.lingxi-workspaces/default".to_string()),
         env: BTreeMap::from([(String::from("TERM"), String::from("xterm"))]),
         size: PtySize { cols: 80, rows: 24 },
         mounts: Vec::new(),
@@ -1373,7 +1373,7 @@ fn validate_pty_request_rejects_invalid_env_and_nul() {
     request = PtyOpenRequest {
         command: "/bin/\0sh".to_string(),
         args: vec!["-i".to_string()],
-        cwd: Some("/home/lingxi/.lingxi/default".to_string()),
+        cwd: Some("/home/lingxi/.lingxi-workspaces/default".to_string()),
         env: BTreeMap::new(),
         size: PtySize { cols: 80, rows: 24 },
         mounts: Vec::new(),
@@ -1526,7 +1526,7 @@ fn simulator_raw_stdio_fails_closed_without_using_pty() {
         .block_on(runtime.open_raw_stdio(RawStdioOpenRequest {
             command: "/opt/lingxi/toolchains/typescript/7.0.2/tsc".to_string(),
             args: vec!["--lsp".to_string(), "--stdio".to_string()],
-            cwd: Some("/home/lingxi/.lingxi/code".into()),
+            cwd: Some("/home/lingxi/.lingxi-workspaces/code".into()),
             env: BTreeMap::new(),
             network: NetworkPolicy::Disabled,
             resource_limits: mobile_linux_api::ResourceLimits {
@@ -1631,7 +1631,7 @@ fn different_workspaces_share_one_kernel_but_distinct_session_state() {
 fn project_grant_changes_create_a_new_session_without_changing_kernel_identity() {
     let dir = tempfile::tempdir().unwrap();
     let base = test_config(dir.path());
-    let grant = project_mount(&base, ".lingxi/.apps/agent-wake-acceptance-session");
+    let grant = project_mount(&base, ".lingxi-workspaces/apps/agent-wake-acceptance-session");
     let with_grant =
         config_with_project_mounts(base.clone(), vec![grant.clone()]).expect("valid Project grant");
     let without_grant = base;
@@ -1657,7 +1657,7 @@ fn public_runtime_constructor_seeds_only_validated_project_grants() {
     let base = test_config(temp.path());
     let grant = project_mount(
         &base,
-        ".lingxi/.apps/agent-wake-acceptance-constructor/source",
+        ".lingxi-workspaces/apps/agent-wake-acceptance-constructor/source",
     );
     let config = config_with_project_mounts(base, vec![grant.clone()]).expect("valid grant");
     let runtime = IosIshRuntime::new(config).expect("validated runtime configuration");

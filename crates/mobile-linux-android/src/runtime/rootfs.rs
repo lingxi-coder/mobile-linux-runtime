@@ -116,7 +116,13 @@ impl AndroidProotRuntime {
             .map_err(rootfs_store_error)?;
         let profile = &self.state.config.brand_profile;
         let home = profile.persistent_home_host_path(&self.state.config.managed_root);
-        fs::create_dir_all(home.join(&profile.config_dir_name).join("projects"))
+        fs::create_dir_all(home.join(&profile.config_dir_name))
+            .and_then(|()| {
+                fs::create_dir_all(
+                    home.join(format!("{}-workspaces", profile.config_dir_name))
+                        .join("projects"),
+                )
+            })
             .and_then(|()| {
                 fs::create_dir_all(self.state.config.managed_root.join("persistent/root"))
             })

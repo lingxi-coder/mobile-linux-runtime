@@ -126,39 +126,6 @@ pub(super) fn validate_mount(
     let managed_root = normalize_host_path(&config.managed_root, "managed_root")?;
     let app_root = normalize_host_path(&config.app_sandbox_root, "app_sandbox_root")?;
     let guest_home = mobile_linux_api::guest_paths::home_for_profile(&config.brand_profile);
-    let apps_guest = config
-        .brand_profile
-        .apps_guest_path()
-        .to_string_lossy()
-        .into_owned();
-    let local_app_config_root = normalize_host_path(
-        &config
-            .brand_profile
-            .persistent_home_host_path(&managed_root)
-            .join(&config.brand_profile.config_dir_name),
-        "Project config root",
-    )?;
-    let local_app_source = authorized_project
-        && guest_path_has_prefix(&mount.guest_path, &apps_guest)
-        && mount.guest_path != apps_guest.as_str();
-    let managed_project_source = authorized_project
-        && (["chat", "code", "projects"].iter().any(|name| {
-            Path::new(&mount.guest_path).starts_with(
-                config
-                    .brand_profile
-                    .workspace_container_guest_path()
-                    .join(name),
-            )
-        }) || {
-            let scheduled = config
-                .brand_profile
-                .workspace_container_guest_path()
-                .join("scheduled");
-            let guest = Path::new(&mount.guest_path);
-            guest.starts_with(&scheduled)
-                && guest != scheduled
-                && !guest.starts_with(scheduled.join(".lingxi"))
-        });
     if ["/", "/home"].contains(&mount.guest_path.as_str())
         || (guest_path_has_prefix(&mount.guest_path, &guest_home)
             && !matches!(mount.purpose, MountPurpose::Workspace)
@@ -181,11 +148,6 @@ pub(super) fn validate_mount(
     };
     for path in &config.protected_host_roots {
         let protected_path = normalize_host_path(path, "protected root")?;
-        if (local_app_source || managed_project_source || user_workspace)
-            && protected_path == local_app_config_root
-        {
-            continue;
-        }
         protected.push(protected_path);
     }
     if host_path == app_root
@@ -282,14 +244,7 @@ pub(super) fn validate_authorized_project_mounts(
                 "Project guest_path must be normalized".into(),
             ));
         }
-        let relative_components = if guest_components
-            .first()
-            .is_some_and(|part| part == config_dir)
-        {
-            &guest_components[1..]
-        } else {
-            &guest_components[..]
-        };
+        let relative_components = &guest_components[..];
         if relative_components.iter().any(|part| {
             part.eq_ignore_ascii_case(config_dir)
                 || part.eq_ignore_ascii_case("provider")
@@ -302,35 +257,24 @@ pub(super) fn validate_authorized_project_mounts(
             ));
         }
 
-        // The config tree remains protected. Only exact, normalized Project
-        // grants under the four managed workspaces or a Local App's `.apps`
-        // source are allowed. The container itself is never granted, and the
-        // `.apps` root still requires an explicit descendant.
-        let local_app_source = guest_components
-            .first()
-            .is_some_and(|part| part == config_dir)
-            && guest_components.get(1).map(String::as_str) == Some(".apps")
-            && guest_components.len() >= 3;
-        let managed_project_source = guest_components
-            .first()
-            .is_some_and(|part| part == config_dir)
-            && (guest_components
-                .get(1)
-                .is_some_and(|part| ["chat", "code", "projects"].contains(&part.as_str()))
-                || (guest_components.get(1).map(String::as_str) == Some("scheduled")
-                    && guest_components.len() >= 3
-                    && guest_components.get(2).map(String::as_str) != Some(".lingxi")));
+        // No Project grant can target configuration. Managed workspaces are
+        // siblings and have their own explicit directory boundaries.
+        let workspace_dir = format!("{config_dir}-workspaces");
         if guest_components
             .first()
-            .is_some_and(|part| part == config_dir)
+            .is_some_and(|part| part == &workspace_dir)
         {
-            if !(local_app_source || managed_project_source)
+            let category = guest_components.get(1).map(String::as_str);
+            let allowed = matches!(category, Some("chat" | "code" | "projects"))
+                || matches!(category, Some("apps" | "scheduled" | "cron"))
+                    && guest_components.len() >= 3;
+            if !allowed
                 || guest_components[2..]
                     .iter()
                     .any(|part| !is_safe_project_component(part))
             {
                 return Err(MobileLinuxError::InvalidRequest(
-                    "config Project mounts must target a normalized managed workspace or .apps descendant".into(),
+                    "Project mounts require an exact workspace or application source".into(),
                 ));
             }
         }
@@ -351,11 +295,6 @@ pub(super) fn validate_authorized_project_mounts(
         }
         for path in &config.protected_host_roots {
             let protected = normalize_host_path(path, "protected root")?;
-            let local_app_config_root =
-                normalize_host_path(&persistent_home.join(config_dir), "Project config root")?;
-            if (local_app_source || managed_project_source) && protected == local_app_config_root {
-                continue;
-            }
             if grant.host_path.starts_with(&protected) || protected.starts_with(&grant.host_path) {
                 return Err(MobileLinuxError::InvalidRequest(
                     "Project mount overlaps protected host storage".into(),

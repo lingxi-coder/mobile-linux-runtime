@@ -59,7 +59,7 @@ if not re.fullmatch(r"\.[a-z0-9][a-z0-9._-]{0,62}", config_dir_name):
     print("config directory name must be one hidden path component", file=sys.stderr)
     sys.exit(1)
 guest_home = f"/home/{linux_user}"
-workspace_root = f"{guest_home}/{config_dir_name}"
+workspace_root = f"{guest_home}/{config_dir_name}-workspaces"
 
 required = {
     "schema_version",

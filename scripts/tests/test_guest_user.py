@@ -74,7 +74,7 @@ class GuestUserTests(unittest.TestCase):
             self.assertIn('atlas_guest:!:', (root / 'etc/shadow').read_text())
             self.assertEqual((root / 'etc/doas.conf').read_text(), 'permit nopass atlas_guest as root\n')
             self.assertEqual((root / 'home/lingxi/lingxi/projects/app/index.html').read_text(), 'keep me')
-            self.assertTrue((root / 'home/atlas_guest/.atlas/projects').is_dir())
+            self.assertTrue((root / 'home/atlas_guest/.atlas-workspaces/projects').is_dir())
 
     def test_custom_brand_rejects_preprovisioned_foreign_uid_and_gid_without_rewriting_source(self):
         profile = guest_user.GuestUserProfile('atlas', 'atlas_guest', '.atlas')
@@ -137,7 +137,7 @@ class GuestUserTests(unittest.TestCase):
             with tarfile.open(root / 'atlas.tar.gz') as tar:
                 passwd = tar.extractfile('etc/passwd').read().decode()
                 self.assertIn('atlas_guest:x:1000:1000:atlas:/home/atlas_guest:/bin/sh', passwd)
-                for path in ('home/atlas_guest', 'home/atlas_guest/.atlas', 'home/atlas_guest/.atlas/projects'):
+                for path in ('home/atlas_guest', 'home/atlas_guest/.atlas', 'home/atlas_guest/.atlas-workspaces/projects'):
                     member = tar.getmember(path)
                     self.assertEqual((member.uid, member.gid, member.uname, member.gname),
                                      (1000, 1000, 'atlas_guest', 'atlas_guest'))
@@ -146,7 +146,7 @@ class GuestUserTests(unittest.TestCase):
         profile = guest_user.GuestUserProfile('atlas', 'atlas_guest', '.atlas')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            user_home = root / 'home/atlas_guest/.atlas/projects'
+            user_home = root / 'home/atlas_guest/.atlas-workspaces/projects'
             user_home.mkdir(parents=True)
             (user_home / 'source.txt').write_text('user data')
             (root / 'etc').mkdir()
@@ -157,9 +157,9 @@ class GuestUserTests(unittest.TestCase):
                 with mock.patch.object(rootfs_tool, 'validate_rootfs_tree'):
                     rootfs_tool.build_archive(argparse.Namespace(root=root, output=output, source_date_epoch=0))
                 with tarfile.open(output) as tar:
-                    for path in ('home/atlas_guest', 'home/atlas_guest/.atlas',
-                                 'home/atlas_guest/.atlas/projects',
-                                 'home/atlas_guest/.atlas/projects/source.txt'):
+                    for path in ('home/atlas_guest', 'home/atlas_guest/.atlas-workspaces',
+                                 'home/atlas_guest/.atlas-workspaces/projects',
+                                 'home/atlas_guest/.atlas-workspaces/projects/source.txt'):
                         member = tar.getmember(path)
                         self.assertEqual((member.uid, member.gid, member.uname, member.gname),
                                          (1000, 1000, 'atlas_guest', 'atlas_guest'))

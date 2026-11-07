@@ -1334,7 +1334,7 @@ fn terminal_transition_is_emitted_once() {
 fn normal_and_pty_launches_use_the_same_nonroot_identity_and_explicit_cwd() {
     let (_temp, runtime) = runtime();
     let request = LinuxCommandRequest {
-        cwd: Some("/home/lingxi/.lingxi/code".into()),
+        cwd: Some("/home/lingxi/.lingxi-workspaces/code".into()),
         ..request()
     };
     let command = runtime
@@ -1354,12 +1354,12 @@ fn normal_and_pty_launches_use_the_same_nonroot_identity_and_explicit_cwd() {
     assert_eq!(&args[..2], ["-i", "1000:1000"]);
     assert!(args
         .windows(2)
-        .any(|pair| pair == ["-w", "/home/lingxi/.lingxi/code"]));
+        .any(|pair| pair == ["-w", "/home/lingxi/.lingxi-workspaces/code"]));
     let (_, pty_args, env) = runtime
         .build_pty_invocation(
             "/bin/sh",
             &[],
-            Some("/home/lingxi/.lingxi/chat"),
+            Some("/home/lingxi/.lingxi-workspaces/chat"),
             &BTreeMap::new(),
             &[],
         )
@@ -1367,7 +1367,7 @@ fn normal_and_pty_launches_use_the_same_nonroot_identity_and_explicit_cwd() {
     assert_eq!(&pty_args[..2], ["-i", "1000:1000"]);
     assert!(pty_args
         .windows(2)
-        .any(|pair| pair == ["-w", "/home/lingxi/.lingxi/chat"]));
+        .any(|pair| pair == ["-w", "/home/lingxi/.lingxi-workspaces/chat"]));
     assert_eq!(env.get("HOME").unwrap(), "/home/lingxi");
     assert_eq!(env.get("USER").unwrap(), "lingxi");
 }
@@ -1377,7 +1377,11 @@ fn second_brand_profile_controls_runtime_mounts_environment_and_guest_mapping() 
     let profile = mobile_linux_api::BrandRuntimeProfile::new("atlas", "atlas_guest", ".atlas");
     let (_temp, runtime) = runtime_for_profile(profile.clone());
     let home = profile.persistent_home_host_path(&runtime.state.config.managed_root);
-    let projects = home.join(".atlas/projects");
+    let projects = home.join(".atlas-workspaces/projects");
+    runtime.prepare_execution().unwrap();
+    assert!(projects.is_dir());
+    assert!(home.join(".atlas").is_dir());
+    assert!(!home.join(".atlas/projects").exists());
     fs::create_dir_all(projects.join("app/src")).unwrap();
     let workspace = MountSpec {
         host_path: projects.clone(),
@@ -1391,14 +1395,14 @@ fn second_brand_profile_controls_runtime_mounts_environment_and_guest_mapping() 
     mounts.push(workspace);
     assert_eq!(
         mobile_linux_api::map_guest_path_to_host(
-            "/home/atlas_guest/.atlas/projects/app/src/main.rs",
+            "/home/atlas_guest/.atlas-workspaces/projects/app/src/main.rs",
             &mounts,
         ),
         Some(projects.join("app/src/main.rs"))
     );
 
     let request = LinuxCommandRequest {
-        cwd: Some("/home/atlas_guest/.atlas/code".into()),
+        cwd: Some("/home/atlas_guest/.atlas-workspaces/code".into()),
         ..request()
     };
     let command = runtime
@@ -1417,19 +1421,19 @@ fn second_brand_profile_controls_runtime_mounts_environment_and_guest_mapping() 
         .collect::<Vec<_>>();
     assert!(args
         .windows(2)
-        .any(|pair| pair == ["-w", "/home/atlas_guest/.atlas/code"]));
+        .any(|pair| pair == ["-w", "/home/atlas_guest/.atlas-workspaces/code"]));
     let (_, pty_args, env) = runtime
         .build_pty_invocation(
             "/bin/sh",
             &[],
-            Some("/home/atlas_guest/.atlas/chat"),
+            Some("/home/atlas_guest/.atlas-workspaces/chat"),
             &BTreeMap::new(),
             &[],
         )
         .unwrap();
     assert!(pty_args
         .windows(2)
-        .any(|pair| pair == ["-w", "/home/atlas_guest/.atlas/chat"]));
+        .any(|pair| pair == ["-w", "/home/atlas_guest/.atlas-workspaces/chat"]));
     assert_eq!(
         env.get("HOME").map(String::as_str),
         Some("/home/atlas_guest")

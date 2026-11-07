@@ -193,13 +193,13 @@ fn manifest_requires_the_complete_fixed_writable_path_set() {
     let mut manifest = manifest();
     manifest
         .writable_paths
-        .retain(|path| path != "/home/lingxi/.lingxi");
+        .retain(|path| path != "/home/lingxi/.lingxi-workspaces");
     let err = manifest
         .validate()
         .expect_err("missing fixed writable path must be rejected");
     assert!(matches!(
         err,
-        RootfsManifestError::MissingWritablePath(path) if path == "/home/lingxi/.lingxi"
+        RootfsManifestError::MissingWritablePath(path) if path == "/home/lingxi/.lingxi-workspaces"
     ));
 }
 
@@ -213,7 +213,7 @@ fn manifest_writable_guest_paths_follow_the_selected_brand() {
         "/root",
         "/tmp",
         "/var/tmp",
-        "/home/guest/.atlas-config",
+        "/home/guest/.atlas-config-workspaces",
     ]
     .into_iter()
     .map(str::to_string)

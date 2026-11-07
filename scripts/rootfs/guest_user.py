@@ -43,7 +43,7 @@ class GuestUserProfile:
 
     @property
     def workspace_root(self):
-        return self.guest_home / self.config_dir_name
+        return self.guest_home / (self.config_dir_name + '-workspaces')
 
     @property
     def projects_root(self):
@@ -94,6 +94,7 @@ def apply_account_profile(read, write, mkdir, profile):
     _validate_runtime_identity_source(read, profile)
     user = profile.linux_user
     home = profile.guest_home.as_posix().lstrip('/')
+    config = (profile.guest_home / profile.config_dir_name).as_posix().lstrip('/')
     workspace = profile.workspace_root.as_posix().lstrip('/')
     projects = profile.projects_root.as_posix().lstrip('/')
     gecos = 'LingXi' if profile == DEFAULT_PROFILE else profile.brand_id
@@ -102,7 +103,7 @@ def apply_account_profile(read, write, mkdir, profile):
     write('etc/group', account_lines(read('etc/group'), user, f'{user}:x:{UID}:'), 0o644)
     write('etc/shadow', account_lines(read('etc/shadow'), user, f'{user}:!:0:0:99999:7:::'), 0o640)
     write('etc/doas.conf', f'permit nopass {user} as root\n', 0o600)
-    for path, mode in [('home', 0o755), (home, 0o755), (workspace, 0o755), (projects, 0o755), ('root', 0o700)]:
+    for path, mode in [('home', 0o755), (home, 0o755), (config, 0o700), (workspace, 0o755), (projects, 0o755), ('root', 0o700)]:
         mkdir(path, mode)
 
 

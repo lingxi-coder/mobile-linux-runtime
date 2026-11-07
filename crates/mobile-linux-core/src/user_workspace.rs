@@ -44,7 +44,7 @@ pub fn is_persistent_user_workspace(
         return false;
     }
     let container = guest_paths::workspace_root_for_profile(profile);
-    if !["chat", "code", "projects", "scheduled"]
+    if !["chat", "code", "projects", "scheduled", "cron", "app-agents"]
         .iter()
         .any(|name| {
             let prefix = format!("{container}/{name}");
@@ -144,11 +144,11 @@ mod tests {
         let profile = BrandRuntimeProfile::new("atlas", "guest", ".atlas-config");
         let home = profile.persistent_home_host_path(root.path());
         for relative in ["chat", "code/nested", "projects/project", "scheduled/job"] {
-            let host = home.join(".atlas-config").join(relative);
+            let host = home.join(".atlas-config-workspaces").join(relative);
             std::fs::create_dir_all(&host).unwrap();
             let mount = MountSpec {
                 host_path: host,
-                guest_path: format!("/home/guest/.atlas-config/{relative}"),
+                guest_path: format!("/home/guest/.atlas-config-workspaces/{relative}"),
                 read_only: false,
                 purpose: MountPurpose::Workspace,
             };
@@ -185,7 +185,7 @@ mod tests {
         std::os::unix::fs::symlink(container.join("settings"), container.join("projects")).unwrap();
         let mount = MountSpec {
             host_path: container.join("projects"),
-            guest_path: "/home/lingxi/.lingxi/projects".into(),
+            guest_path: "/home/lingxi/.lingxi-workspaces/projects".into(),
             read_only: false,
             purpose: MountPurpose::Workspace,
         };
@@ -198,13 +198,13 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let profile = BrandRuntimeProfile::default();
         let home = profile.persistent_home_host_path(root.path());
-        let host = home.join(".lingxi/projects");
+        let host = home.join(".lingxi-workspaces/projects");
         std::fs::create_dir_all(&host).unwrap();
         let alias = root.path().join("projects-alias");
         std::os::unix::fs::symlink(&host, &alias).unwrap();
         let mount = MountSpec {
             host_path: host.clone(),
-            guest_path: "/home/lingxi/.lingxi/projects".into(),
+            guest_path: "/home/lingxi/.lingxi-workspaces/projects".into(),
             read_only: false,
             purpose: MountPurpose::Workspace,
         };
@@ -224,10 +224,10 @@ mod tests {
     fn rejects_symlink_escape_from_user_home() {
         let root = tempfile::tempdir().unwrap();
         let home = guest_paths::home_host_path(root.path());
-        std::fs::create_dir_all(home.join(".lingxi")).unwrap();
+        std::fs::create_dir_all(home.join(".lingxi-workspaces")).unwrap();
         let outside = root.path().join("alpine-rootfs");
         std::fs::create_dir_all(&outside).unwrap();
-        let host = home.join(".lingxi/projects");
+        let host = home.join(".lingxi-workspaces/projects");
         std::os::unix::fs::symlink(outside, &host).unwrap();
         let mount = MountSpec {
             host_path: host,
@@ -249,10 +249,10 @@ mod tests {
         let home = guest_paths::home_host_path(root.path());
         std::fs::create_dir_all(home.parent().unwrap()).unwrap();
         let outside = root.path().join("alpine-rootfs");
-        std::fs::create_dir_all(outside.join(".lingxi/projects")).unwrap();
+        std::fs::create_dir_all(outside.join(".lingxi-workspaces/projects")).unwrap();
         std::os::unix::fs::symlink(outside, &home).unwrap();
         let mount = MountSpec {
-            host_path: home.join(".lingxi/projects"),
+            host_path: home.join(".lingxi-workspaces/projects"),
             guest_path: guest_paths::workspace("projects"),
             read_only: false,
             purpose: MountPurpose::Workspace,
