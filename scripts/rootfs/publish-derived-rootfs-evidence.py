@@ -36,7 +36,7 @@ if output.exists():
 pins_path = sdk / "docs/toolchains/runtime-pins.json"
 pins = json.loads(pins_path.read_text())
 version = pins["rootfs_version"]
-if version != "3.24.2-user2":
+if version != "3.24.2-user3":
     raise SystemExit("current rootfs version is not the workspace-root successor")
 base = json.loads((historical / "rootfs-manifest.json").read_text())
 derivation = json.loads((archive.parent / "derivation-inputs.json").read_text())
